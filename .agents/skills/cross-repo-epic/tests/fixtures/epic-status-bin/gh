@@ -14,10 +14,10 @@ for argument in "$@"; do
 done
 case "$query" in query*) ;; *) printf 'operation does not start with query\n' >&2; exit 1 ;; esac
 case "$query" in *mutation*) printf 'mutation is forbidden\n' >&2; exit 1 ;; esac
-[ "$owner" = "GSA-TTS" ] && [ "$repo" = "agentic-coding-patterns" ] && [ "$number" = "357" ] || {
+if [ "$owner" != "GSA-TTS" ] || [ "$repo" != "agentic-coding-patterns" ] || [ "$number" != "357" ]; then
   printf 'wrong owner/repo/number inputs\n' >&2
   exit 1
-}
+fi
 case "$mode" in
   sleep) sleep 2 ;;
   failure) printf 'query failed\n\033[31mFORGED\u009b' >&2; exit 1 ;;
