@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    "GSA-TTS/agentic-coding-patterns",
+    "GSA-TTS/agentic-coding-quickstart",
+    "GSA-TTS/agentic-coding-playbook"
+  ],
+  "project": {
+    "owner": "GSA-TTS",
+    "number": 120
+  }
+}

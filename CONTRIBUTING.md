@@ -19,10 +19,16 @@
 At least one applicable CODEOWNER must review the change. Do not merge when CI
 is failing or required evidence is missing.
 
+For a new imported skill, include `SKILL.md`, `PROVENANCE.md`, offline tests,
+and any config schema/examples needed to keep consumer-specific values out of
+the reusable core. Do not package trusted host-control functionality as a guest
+sandbox kit.
+
 ## Sync Changes
 
 This repository is canonical after the initial import. Review any later source
-change before applying it here. Update the skill's `PROVENANCE.md` with the
-source revision and material adaptations. A downstream copy in
-`agentic/.agents/skills/cross-repo-epic` must record this repository's canonical
-commit in its `PROVENANCE.md` and pass both local fixture suites.
+change before applying it here. Update the selected skill's `PROVENANCE.md` with
+the source revision and material adaptations. A downstream copy in
+`agentic/.agents/skills/<skill-name>` must record this repository's canonical
+commit in its `PROVENANCE.md` and pass all applicable local fixture suites for
+that skill.

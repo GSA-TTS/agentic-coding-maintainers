@@ -1,14 +1,21 @@
 # Agentic Coding Maintainers
 
 Internal tools, runbooks, and automation for GSA-TTS agentic-coding
-maintainers. This repository is the canonical home for the included
-`cross-repo-epic` skill after its initial import.
+maintainers. This repository is the canonical home for both included skills
+after their initial reviewed imports.
 
-## Included Skill
+## Included Skills
 
 The skill at `.agents/skills/cross-repo-epic` provides read-only portfolio and
 epic reconciliation for the agentic-coding repositories. See its `SKILL.md`
 for requirements and use instructions.
+
+The skill at `.agents/skills/workspace-orchestrator` provides reusable,
+host-side coordination for multiple implementation/review workstreams: bounded
+worker admission, one-writer worktrees, fixed-head QA/security review,
+foreground GitHub monitoring, and fail-closed recovery. It accepts arbitrary
+GitHub repositories and an optional Project v2 board through validated consumer
+configuration. It is not an `acq` guest kit or a sandbox boundary.
 
 ## Provenance And Sync
 
@@ -32,18 +39,36 @@ the diff for sensitive state and unsafe behavior, apply selected changes
 manually, and update `PROVENANCE.md` with the source revision and material
 adaptations before merge.
 
-The agentic workspace consumes this repository at
-`agentic/.agents/skills/cross-repo-epic`. From this repository, update that copy
-with:
+The workspace-orchestrator import is separate because its source includes
+multiple binaries, role profiles, tests, and docs:
 
 ```bash
-scripts/sync-agentic-workspace.sh /path/to/agentic
+IMPORT_DIR="$(scripts/import-workspace-orchestrator.sh /path/to/review_things | sed -n 's/^STAGED=//p')"
+diff -ru "$IMPORT_DIR" .agents/skills/workspace-orchestrator
 ```
 
-The script copies only the canonical skill and removes stale files inside the
-destination skill directory. Review the destination diff, run both fixture
-suites, and record this repository's canonical commit in the destination
-`PROVENANCE.md`.
+The import records SHA-256 for every staged source file. After initial import,
+this repository is canonical; do not automatically overwrite reviewed
+destination adaptations with a newer workspace copy.
+
+The agentic workspace consumes these skills at
+`agentic/.agents/skills/<skill-name>`. From this repository, update one selected
+copy with:
+
+```bash
+scripts/sync-agentic-workspace.sh /path/to/agentic cross-repo-epic
+scripts/sync-agentic-workspace.sh /path/to/agentic workspace-orchestrator
+```
+
+The script stages then replaces only the selected canonical skill directory,
+with a transaction marker and trap that restores the previous copy if interrupted
+before installation completes. The brief two-rename replacement is not a
+cross-platform atomic exchange. An atomic per-skill lock refuses concurrent or
+uncertain stale transactions; process death outside trap handling requires human
+inspection rather than automatic takeover. It cannot delete a sibling skill.
+Review the destination diff, run every applicable
+fixture suite for the selected skill, and record this repository's canonical
+commit in the destination `PROVENANCE.md`.
 
 Do not sync runtime state or review artifacts. In particular, exclude secrets,
 Nexus records, certificate authority bundles, handoffs, issue drafts, and

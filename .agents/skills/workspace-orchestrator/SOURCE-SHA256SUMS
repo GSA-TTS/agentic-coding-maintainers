@@ -1,0 +1,15 @@
+96c7c3b1e6fcb925fa3e9de4a8fdfc5fc382ac0363f7fc09ec2c5e2685314d5d  ./bin/orchestrator-monitor.py
+9db14f7955e7d611e525fdf2fa90d7bc41ba43223935a2a1351796d851f8d086  ./bin/orchestrator-monitor.sh
+1e669b40f170ae8ad9c4d6eb49d395d9557271178438c7392cd660905075354b  ./bin/orchestrator-state.py
+ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
+25e4e9da75136a4052659bcbace429de3819b1a6ecf95202d479e1cc2eef3c43  ./docs/OPERATOR-GUIDE.md
+b584b4af88adb7eae460d9d490accb0bbd9409b4daec5a64356c0b5014461123  ./profiles/opencode-v1/backlog-project-monitor.md
+807f0474be534c03809bd60849f3b95e5a81984f290c5f2557e644174c0f4450  ./profiles/opencode-v1/implementation-worker.md
+ccbc526524b51c39728052cbe65391fa3e89d23f5e598b61b109cd1fdd281328  ./profiles/opencode-v1/orchestration-qa.md
+e7f90569dd687d1e874ba8ca450318cb428d0e15192f36611a29aea2916a9d84  ./profiles/opencode-v1/pr-review-coordinator.md
+a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/opencode-v1/qa-reviewer.md
+636adbe9ffaf013d25cabcc6fc19fbc217a6082babd8ff2b2bac5c415ba04609  ./profiles/opencode-v1/security-reviewer.md
+c9239524d3ce81cb2e8e500810914bc71e7fbe37ee87b3f0dc68964b603e5901  ./tests/fixtures/orchestrator-monitor-bin/gh
+dd004f330deebbd748c7a4a98e630c8a1d70245ec0c8ce2cedeaa86b8ba75db8  ./tests/orchestrator-demo.sh
+e15dc43e50d8323ad0ff8180f6d9a93f7f0ac253d4490cb8c3e8fa3c72dd9439  ./tests/orchestrator-monitor-test.sh
+9253967caf7818f4747a069ba2ae8007314e528708bd9c7ffa9c318adb89b89e  ./tests/orchestrator-state-test.sh
