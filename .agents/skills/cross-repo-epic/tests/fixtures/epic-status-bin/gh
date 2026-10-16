@@ -1,0 +1,126 @@
+#!/usr/bin/env sh
+mode="${EPIC_STUB_MODE:-success}"
+query=''
+owner=''
+repo=''
+number=''
+for argument in "$@"; do
+  case "$argument" in
+    query=*) query="${argument#query=}" ;;
+    owner=*) owner="${argument#owner=}" ;;
+    repo=*) repo="${argument#repo=}" ;;
+    number=*) number="${argument#number=}" ;;
+  esac
+done
+case "$query" in query*) ;; *) printf 'operation does not start with query\n' >&2; exit 1 ;; esac
+case "$query" in *mutation*) printf 'mutation is forbidden\n' >&2; exit 1 ;; esac
+[ "$owner" = "GSA-TTS" ] && [ "$repo" = "agentic-coding-patterns" ] && [ "$number" = "357" ] || {
+  printf 'wrong owner/repo/number inputs\n' >&2
+  exit 1
+}
+case "$mode" in
+  sleep) sleep 2 ;;
+  failure) printf 'query failed\n\033[31mFORGED\u009b' >&2; exit 1 ;;
+  malformed) printf 'not json\n'; exit 0 ;;
+  errors) printf '{"errors":[{"message":"partial"}],"data":{"repository":{"issue":null}}}\n'; exit 0 ;;
+  bad-errors) printf '{"errors":{},"data":{"repository":{"issue":null}}}\n'; exit 0 ;;
+  missing) printf '{"data":{"repository":{"issue":null}}}\n'; exit 0 ;;
+  truncated-fields)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: truncated","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD","number":120},"fieldValues":{"totalCount":21,"pageInfo":{"hasNextPage":true},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  no-children)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: empty","state":"OPEN","url":"https://example/patterns/357","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD","number":120},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}\n'
+    exit 0
+    ;;
+  control-title) title='Epic: catalog work\n\u001b[31mFORGED\ud800'; labels='[{"name":"epic"}]' ;;
+  wrong-project)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: wrong project","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"OTHER","number":120},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}\n'
+    exit 0
+    ;;
+  malformed-project)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: malformed","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":"bad","fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  malformed-field)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: malformed","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":"bad"}]}}]}}}}}\n'
+    exit 0
+    ;;
+  wrong-initial)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":999,"title":"Epic: wrong","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  bad-state)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"UNKNOWN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  bad-child-number)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad child","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"number":true,"title":"bad","state":"OPEN","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"}}]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  bad-page-info)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad page","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  falsey-project)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: falsey project","state":"OPEN","url":"wrong","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":[],"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  bad-total)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":true,"pageInfo":{"hasNextPage":false},"nodes":[]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}\n'
+    exit 0
+    ;;
+  malformed-label-name)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":[]}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}\n'
+    exit 0
+    ;;
+  malformed-field-name)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":[]}}]}}]}}}}}\n'
+    exit 0
+    ;;
+  malformed-field-value)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":[],"field":{"name":"Status"}}]}}]}}}}}\n'
+    exit 0
+    ;;
+  bad-issue-number)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":true,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}\n'
+    exit 0
+    ;;
+  bad-sub-page)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{},"nodes":[]},"projectItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}\n'
+    exit 0
+    ;;
+  bad-project-page)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":0,"pageInfo":{},"nodes":[]}}}}}\n'
+    exit 0
+    ;;
+  bad-field-page)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":0,"pageInfo":{},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
+  non-epic) title='Ordinary issue'; labels='[]'; label_count=0 ;;
+  *) title='Epic: catalog work'; labels='[{"name":"epic"}]'; label_count=1 ;;
+esac
+label_count="${label_count:-1}"
+
+case " $* " in
+  *" after=child-page-2 "*)
+    child_number=503
+    child_repo=GSA-TTS/agentic-coding-quickstart
+    total=2
+    [ "$mode" = "duplicate-child" ] && child_number=358 && child_repo=GSA-TTS/agentic-coding-patterns
+    [ "$mode" = "outside-child" ] && child_repo=other/repo
+    [ "$mode" = "changing-total" ] && total=3
+    if [ "$mode" = "identity-change" ]; then issue_number=999; else issue_number=357; fi
+    if [ "$mode" = "title-change" ]; then title='Epic: changed title'; fi
+    cat <<JSON
+{"data":{"repository":{"issue":{"__typename":"Issue","number":$issue_number,"title":"$title","state":"OPEN","url":"https://example/patterns/$issue_number","labels":{"totalCount":$label_count,"pageInfo":{"hasNextPage":false,"endCursor":"1"},"nodes":$labels},"subIssues":{"totalCount":$total,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":$child_number,"title":"Cross-repo child","state":"OPEN","url":"https://example/child","repository":{"nameWithOwner":"$child_repo"}}]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":"1"},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD","number":120,"title":"Agentic Coding"},"fieldValues":{"totalCount":4,"pageInfo":{"hasNextPage":false,"endCursor":"4"},"nodes":[{"name":"In Progress","field":{"name":"Status"}},{"name":"Feature","field":{"name":"Work Type"}},{"name":"SBX/Environment","field":{"name":"Area"}},{"name":"Blocked","field":{"name":"Flag"}}]}}]}}}}}
+JSON
+    ;;
+  *)
+    if [ "$mode" = repeated-cursor ]; then next=repeat; else next=child-page-2; fi
+    cat <<JSON
+{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"$title","state":"OPEN","url":"https://example/patterns/357","labels":{"totalCount":$label_count,"pageInfo":{"hasNextPage":false,"endCursor":"1"},"nodes":$labels},"subIssues":{"totalCount":2,"pageInfo":{"hasNextPage":true,"endCursor":"$next"},"nodes":[{"number":358,"title":"Closed child","state":"CLOSED","url":"https://example/patterns/358","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"}}]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":"1"},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD","number":120,"title":"Agentic Coding"},"fieldValues":{"totalCount":4,"pageInfo":{"hasNextPage":false,"endCursor":"4"},"nodes":[{"name":"In Progress","field":{"name":"Status"}},{"name":"Feature","field":{"name":"Work Type"}},{"name":"SBX/Environment","field":{"name":"Area"}},{"name":"Blocked","field":{"name":"Flag"}}]}}]}}}}}
+JSON
+    ;;
+esac
