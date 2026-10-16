@@ -13,6 +13,15 @@ esac
 SOURCE="$ROOT/.agents/skills/$SKILL/"
 DEST="$WORKSPACE/.agents/skills/$SKILL/"
 [[ -f "$SOURCE/SKILL.md" ]] || { echo "canonical skill is missing: $SKILL" >&2; exit 3; }
+source_commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf UNAVAILABLE)"
+source_dirty=false
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all -- "$SOURCE" 2>/dev/null)" ]] || source_dirty=true
+if [[ "$SKILL" == workspace-orchestrator ]]; then
+  tmp_manifest="$(mktemp)"
+  (cd "$SOURCE" && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$tmp_manifest"
+  diff -u "$SOURCE/CANONICAL-SHA256SUMS" "$tmp_manifest" >/dev/null || { rm -f "$tmp_manifest"; echo "canonical skill manifest mismatch" >&2; exit 3; }
+  rm -f "$tmp_manifest"
+fi
 
 [[ -f "$WORKSPACE/AGENTS.md" ]] || { echo "destination is not an agentic workspace" >&2; exit 3; }
 for path in "$WORKSPACE/.agents" "$WORKSPACE/.agents/skills" "${DEST%/}"; do
@@ -29,11 +38,12 @@ stage=""
 backup="$parent/.${SKILL}.previous.$$"
 marker="$parent/.${SKILL}.sync-in-progress"
 installed=false
+marker_created=false
 restore() {
   if [[ "$installed" != true && -e "$backup" && ! -e "${DEST%/}" ]]; then
     mv "$backup" "${DEST%/}"
   fi
-  rm -f "$marker"
+  [[ "$marker_created" != true ]] || rm -f "$marker"
   rmdir "$lock" 2>/dev/null || true
 }
 trap restore EXIT HUP INT TERM
@@ -52,6 +62,7 @@ fi
 stage="$(mktemp -d "$parent/.${SKILL}.sync.XXXXXX")"
 rsync -a --delete --exclude '__pycache__/' --exclude '*.py[co]' "$SOURCE" "$stage/"
 printf '%s\n' "$backup" > "$marker"
+marker_created=true
 if [[ -e "${DEST%/}" ]]; then mv "${DEST%/}" "$backup"; fi
 if ! mv "$stage" "${DEST%/}"; then
   [[ ! -e "$backup" ]] || mv "$backup" "${DEST%/}"
@@ -67,5 +78,6 @@ rmdir "$lock"
 trap - EXIT HUP INT TERM
 
 printf 'Synced skill to %s\n' "$DEST"
-printf 'Record canonical commit %s in destination PROVENANCE.md after review.\n' \
-  "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf 'UNCOMMITTED')"
+printf 'SOURCE_COMMIT=%s\n' "$source_commit"
+printf 'SOURCE_DIRTY=%s\n' "$source_dirty"
+printf 'Record this commit/dirty state in destination PROVENANCE.md after review.\n'

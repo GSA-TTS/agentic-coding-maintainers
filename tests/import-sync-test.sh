@@ -60,6 +60,10 @@ printf keep > "$consumer/.agents/skills/sibling/KEEP"
 "$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator >/dev/null
 [[ -f "$consumer/.agents/skills/workspace-orchestrator/SKILL.md" ]]
 [[ -f "$consumer/.agents/skills/sibling/KEEP" ]]
+expected_dirty=false
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all -- .agents/skills/workspace-orchestrator)" ]] || expected_dirty=true
+sync_out="$("$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator)"
+grep -q "SOURCE_DIRTY=$expected_dirty" <<<"$sync_out"
 
 set +e
 ln -s /tmp "$consumer/.agents/skills/cross-repo-epic"
@@ -82,5 +86,14 @@ set -e
 [[ -f "$target/KEEP" ]]
 [[ -f "$consumer/.agents/skills/workspace-orchestrator/ORIGINAL" ]]
 [[ -z "$(find "$consumer/.agents/skills" -maxdepth 1 \( -name '.workspace-orchestrator.previous.*' -o -name '.workspace-orchestrator.sync.*' -o -name '.workspace-orchestrator.sync-in-progress' -o -name '.workspace-orchestrator.sync-lock' \) -print)" ]]
+
+# A pre-existing uncertain marker is not deleted by a later refused invocation.
+printf 'prior-evidence\n' > "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress"
+set +e
+"$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" cross-repo-epic >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 3 ]]
+grep -q prior-evidence "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress"
 
 printf 'import-sync tests: PASS\n'

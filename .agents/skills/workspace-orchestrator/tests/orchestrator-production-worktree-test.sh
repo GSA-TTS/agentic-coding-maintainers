@@ -59,6 +59,14 @@ PY
 "$CMD" transition production-task Reviewing >/dev/null
 "$CMD" record production-task reviewer qa-reviewer --reviewed-sha "$head" >/dev/null
 "$CMD" record production-task validation 'production fixture passed' >/dev/null
+printf unreviewed > "$WORKTREE/untracked.txt"
+set +e
+"$CMD" transition production-task 'Ready for human review' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 4 ]]
+grep -q '"state": "Reviewing"' "$CONSUMER/.orchestrator/tasks/production-task/task.json"
+rm "$WORKTREE/untracked.txt"
 "$CMD" transition production-task 'Ready for human review' >/dev/null
 "$CMD" record production-task finding 'late correctness finding' >/dev/null
 grep -q '"state": "Rework"' "$CONSUMER/.orchestrator/tasks/production-task/task.json"
@@ -114,5 +122,21 @@ rc=$?
 set -e
 [[ "$rc" -eq 3 ]]
 grep -q '"state": "Claimed"' "$CONSUMER/.orchestrator/tasks/path-swap-task/task.json"
+
+# An existing base object from unrelated history cannot anchor the initial diff.
+git -C "$REPO" switch -q --orphan unrelated-base
+git -C "$REPO" rm -q --ignore-unmatch -rf .
+printf unrelated > "$REPO/unrelated.txt"
+git -C "$REPO" add unrelated.txt
+git -C "$REPO" commit -q -m 'test: unrelated base'
+unrelated="$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" switch -q main 2>/dev/null || git -C "$REPO" switch -q master
+set +e
+"$CMD" create unrelated-task --scope 'example/repo:path:unrelated' --kind implementation \
+  --repo example/repo --branch task/one --worktree "$WORKTREE" \
+  --base-sha "$unrelated" --owned-path unrelated >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 2 ]]
 
 printf 'orchestrator production worktree tests: PASS\n'

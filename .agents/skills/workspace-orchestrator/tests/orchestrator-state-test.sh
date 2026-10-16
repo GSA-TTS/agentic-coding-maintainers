@@ -8,6 +8,7 @@ WORK_REVIEW="$(mktemp -d "${TMPDIR:-/tmp}/orchestrator-review.XXXXXX")"
 export ORCHESTRATOR_STATE_DIR="$STATE"
 export ORCHESTRATOR_TEST_MODE=1
 CMD="$ROOT/bin/orchestrator-state.sh"
+REVIEW_SHA="$(printf 'b%.0s' {1..40})"
 
 fail() { printf 'orchestrator-state test FAILED: %s\n' "$*" >&2; exit 1; }
 expect_rc() {
@@ -23,7 +24,7 @@ expect_rc() {
   --repo x/y --worktree "$WORK" --base-sha "$(printf 'a%.0s' {1..40})" \
   --owned-path a --acceptance 'a works' >/dev/null
 "$CMD" create review-b --scope 'repo:x:pr:2:head:bbbb' --kind review \
-  --repo x/y --worktree "$WORK_REVIEW" --base-sha "$(printf 'b%.0s' {1..40})" >/dev/null
+  --repo x/y --worktree "$WORK_REVIEW" --base-sha "$REVIEW_SHA" --head-sha "$REVIEW_SHA" >/dev/null
 
 state="$($CMD show impl-a | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
 [[ "$state" == Ready ]] || fail "new task is not Ready"
@@ -71,8 +72,8 @@ PY
 
 # Duplicate exact scope is a verified refusal, not UNKNOWN.
 mkdir "$WORK/scope-owner"
-"$CMD" create scope-owner --scope 'repo:x:path:shared' --kind review --worktree "$WORK/scope-owner" >/dev/null
-expect_rc 4 "$CMD" create scope-duplicate --scope 'repo:x:path:shared' --kind review --worktree "$WORK"
+"$CMD" create scope-owner --scope 'repo:x:path:shared' --kind review --worktree "$WORK/scope-owner" --head-sha "$REVIEW_SHA" >/dev/null
+expect_rc 4 "$CMD" create scope-duplicate --scope 'repo:x:path:shared' --kind review --worktree "$WORK" --head-sha "$REVIEW_SHA"
 [[ ! -e "$STATE/tasks/scope-duplicate/task.json" ]] || fail "duplicate task record was written"
 
 # Invalid transition and direct Unknown are caller errors.
@@ -82,7 +83,7 @@ expect_rc 2 "$CMD" transition scope-owner Unknown
 # Six active slots are admitted; a seventh is refused and stays Ready.
 for n in 1 2 3 4 5 6 7; do
   mkdir "$WORK/review-$n"
-  "$CMD" create "review-$n" --scope "repo:x:review:$n" --kind review --worktree "$WORK/review-$n" >/dev/null
+  "$CMD" create "review-$n" --scope "repo:x:review:$n" --kind review --worktree "$WORK/review-$n" --head-sha "$REVIEW_SHA" >/dev/null
 done
 for n in 1 2 3 4 5 6; do "$CMD" claim "review-$n" --owner "r$n" --pid $$ >/dev/null; done
 expect_rc 4 "$CMD" claim review-7 --owner r7 --pid $$
@@ -90,7 +91,7 @@ expect_rc 4 "$CMD" claim review-7 --owner r7 --pid $$
 grep -q '"state": "Ready"' "$STATE/tasks/review-7/task.json" || fail "refused task was partially claimed"
 
 # Invalid owner input is refused before reservation and cannot leak capacity.
-"$CMD" create bad-owner --scope 'repo:x:review:bad-owner' --kind review >/dev/null
+"$CMD" create bad-owner --scope 'repo:x:review:bad-owner' --kind review --head-sha "$REVIEW_SHA" >/dev/null
 too_long="$(printf 'x%.0s' {1..501})"
 expect_rc 2 "$CMD" claim bad-owner --owner "$too_long" --pid $$
 [[ "$(find "$STATE/slots" -name '*.lock' -type d | wc -l | tr -d ' ')" == 6 ]] || fail "invalid owner leaked a slot"
@@ -99,12 +100,21 @@ grep -q '"state": "Ready"' "$STATE/tasks/bad-owner/task.json" || fail "invalid o
 # A post-reservation persistence failure rolls the slot back and leaves the task
 # claimable rather than creating an orphan/Unknown state.
 "$CMD" transition review-1 Cancelled >/dev/null
-"$CMD" create claim-write-fail --scope 'repo:x:review:claim-write-fail' --kind review >/dev/null
+"$CMD" create claim-write-fail --scope 'repo:x:review:claim-write-fail' --kind review --head-sha "$REVIEW_SHA" >/dev/null
 export ORCHESTRATOR_TEST_FAIL_CLAIM_WRITE=1
 expect_rc 3 "$CMD" claim claim-write-fail --owner reviewer --pid $$
 unset ORCHESTRATOR_TEST_FAIL_CLAIM_WRITE
 [[ "$(find "$STATE/slots" -name '*.lock' -type d | wc -l | tr -d ' ')" == 5 ]] || fail "failed claim leaked a slot"
 grep -q '"state": "Ready"' "$STATE/tasks/claim-write-fail/task.json" || fail "failed claim changed task state"
+
+expect_rc 2 "$CMD" create headless-review --scope 'repo:x:review:headless' --kind review
+
+# Leading dots are identity-bearing, and identical paths in different repos do
+# not conflict mechanically.
+mkdir "$WORK/dot-a" "$WORK/dot-b"
+"$CMD" create dot-a --scope 'repo:a:dot' --kind review --repo owner/a --worktree "$WORK/dot-a" --head-sha "$REVIEW_SHA" --owned-path .github/workflows >/dev/null
+"$CMD" create dot-b --scope 'repo:b:dot' --kind review --repo owner/b --worktree "$WORK/dot-b" --head-sha "$REVIEW_SHA" --owned-path .github/workflows >/dev/null
+grep -q '".github/workflows"' "$STATE/tasks/dot-a/task.json"
 
 # Corrupt state must be UNKNOWN (3), never recreated or reported healthy.
 printf '{"schema_version":1' > "$STATE/tasks/review-7/task.json"

@@ -12,7 +12,7 @@ test:
 	bash tests/import-sync-test.sh
 
 check: test
-	@set -euo pipefail; tmp="$$(mktemp)"; find .agents/skills/workspace-orchestrator -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
+	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
 	@set -euo pipefail; while IFS= read -r file; do bash -n "$$file"; done < <(git ls-files --cached --others --exclude-standard -- '*.sh' '.agents/skills/*/tests/fixtures/*/gh')
 	@PYTHONDONTWRITEBYTECODE=1 python3 -c 'import ast, pathlib, subprocess; files = [pathlib.Path(p) for p in subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py"], text=True).splitlines()]; [compile(ast.parse(p.read_text(encoding="utf-8"), filename=str(p)), str(p), "exec") for p in files]; print(f"python syntax: PASS ({len(files)} files)")'
 	@PYTHONDONTWRITEBYTECODE=1 python3 -c 'import json, pathlib, subprocess; files = [pathlib.Path(p) for p in subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.json"], text=True).splitlines()]; [json.loads(p.read_text(encoding="utf-8")) for p in files]; print(f"json syntax: PASS ({len(files)} files)")'

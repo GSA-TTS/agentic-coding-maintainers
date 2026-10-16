@@ -61,10 +61,16 @@ done
   find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 > "$manifest"
   mv "$manifest" SOURCE-SHA256SUMS
 )
-git -C "$SOURCE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "source Git metadata is unavailable" >&2; exit 3; }
-base_commit="$(git -C "$SOURCE" rev-parse HEAD)" || { echo "source HEAD is unavailable" >&2; exit 3; }
+git_safe() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$SOURCE" "$@"
+}
+git_safe rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "source Git metadata is unavailable" >&2; exit 3; }
+base_commit="$(git_safe rev-parse HEAD)" || { echo "source HEAD is unavailable" >&2; exit 3; }
 dirty=false
-status="$(git -C "$SOURCE" status --porcelain --untracked-files=all)" || { echo "source status is unavailable" >&2; exit 3; }
+status="$(git_safe status --porcelain --untracked-files=all)" || { echo "source status is unavailable" >&2; exit 3; }
 [[ -z "$status" ]] || dirty=true
 cat > "$DEST/IMPORT-METADATA.json" <<JSON
 {

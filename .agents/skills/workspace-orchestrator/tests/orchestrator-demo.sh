@@ -29,7 +29,7 @@ print("two lanes admitted:", lanes)
 PY
 
 echo '== simulated exact resource conflict =='
-"$CMD" create owner --scope 'demo:shared-interface' --kind review --worktree "$WORK/review" >/dev/null
+"$CMD" create owner --scope 'demo:shared-interface' --kind review --worktree "$WORK/review" --head-sha "$(printf 'b%.0s' {1..40})" >/dev/null
 set +e
 "$CMD" create conflict --scope 'demo:shared-interface' --kind implementation --worktree "$WORK" >/dev/null 2>&1
 rc=$?

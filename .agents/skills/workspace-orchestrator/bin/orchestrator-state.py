@@ -123,7 +123,9 @@ def resource_path(value: str) -> str:
     path = Path(value)
     if not value or path.is_absolute() or ".." in path.parts or any(ord(c) < 32 for c in value):
         raise InputError("owned/restricted paths must be relative, non-traversing paths")
-    normalized = path.as_posix().lstrip("./")
+    normalized = path.as_posix()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
     if not normalized or len(normalized) > 500:
         raise InputError("owned/restricted path is empty or too long")
     return normalized
@@ -396,6 +398,14 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             raise InputError("implementation worktree HEAD does not match --head-sha")
         if not args.head_sha:
             args.head_sha = head.stdout.strip()
+        ancestry = subprocess.run(
+            ["git", "-C", worktree, "merge-base", "--is-ancestor", args.base_sha, args.head_sha],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+        if ancestry.returncode != 0:
+            raise InputError("implementation head does not descend from base SHA")
+    if args.kind == "review" and not args.head_sha:
+        raise InputError("review tasks require a full head SHA")
     owned_paths = [resource_path(p) for p in args.owned_path]
     restricted_paths = [resource_path(p) for p in args.restricted_path]
     if args.tracker_type == "none" and args.tracker_number != 0:
@@ -415,10 +425,11 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if args.branch and existing["repo"] == args.repo and existing["branch"] == args.branch:
                 raise BusyError(f"branch is already assigned to {existing['task_id']}")
             current_paths = [str(Path(p)) for p in existing["owned_paths"] + existing["restricted_paths"]]
-            for left in incoming_paths:
-                for right in current_paths:
-                    if left == right or left.startswith(right.rstrip("/") + "/") or right.startswith(left.rstrip("/") + "/"):
-                        raise BusyError(f"path resource overlaps task {existing['task_id']}: {left!r} / {right!r}")
+            if existing["repo"] == args.repo:
+                for left in incoming_paths:
+                    for right in current_paths:
+                        if left == right or left.startswith(right.rstrip("/") + "/") or right.startswith(left.rstrip("/") + "/"):
+                            raise BusyError(f"path resource overlaps task {existing['task_id']}: {left!r} / {right!r}")
         metadata = {"schema_version": SCHEMA, "task_id": task_id, "scope": scope, "token": uuid.uuid4().hex}
         stamp = now()
         record = {
@@ -513,6 +524,15 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                 raise BusyError("reviewed SHA does not match task head SHA")
             if record["findings"]:
                 raise BusyError("readiness is blocked by unresolved findings")
+            if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+                dirty = subprocess.run(
+                    ["git", "-C", record["worktree"], "status", "--porcelain", "--untracked-files=all"],
+                    capture_output=True, text=True, check=False, timeout=5,
+                )
+                if dirty.returncode != 0:
+                    raise UnknownError("cannot establish implementation worktree cleanliness")
+                if dirty.stdout:
+                    raise BusyError("implementation worktree has uncommitted or untracked changes")
         if args.state == "Rework":
             if record["rework_count"] >= 3:
                 raise BusyError("three rework cycles reached; checkpoint and escalate")
