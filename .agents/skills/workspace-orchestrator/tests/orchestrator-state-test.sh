@@ -28,6 +28,8 @@ expect_rc() {
 
 state="$($CMD show impl-a | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
 [[ "$state" == Ready ]] || fail "new task is not Ready"
+expect_rc 2 "$CMD" transition impl-a Claimed
+grep -q '"state": "Ready"' "$STATE/tasks/impl-a/task.json" || fail "direct Claimed transition changed Ready task"
 
 # Persisted schema-1 task records remain readable and are upgraded on the next
 # mutation rather than forcing an operator to discard coordination evidence.
@@ -88,6 +90,15 @@ expect_rc 4 "$CMD" create scope-duplicate --scope 'repo:x:path:shared' --kind re
 # Invalid transition and direct Unknown are caller errors.
 expect_rc 2 "$CMD" transition scope-owner Done
 expect_rc 2 "$CMD" transition scope-owner Unknown
+
+# Rework also requires a fresh atomic claim, not a state-only transition.
+mkdir "$WORK/rework-owner"
+"$CMD" create rework-owner --scope 'repo:x:rework' --kind implementation --worktree "$WORK/rework-owner" --head-sha "$(printf 'c%.0s' {1..40})" >/dev/null
+"$CMD" claim rework-owner --owner worker-r --pid $$ >/dev/null
+"$CMD" transition rework-owner Reviewing >/dev/null
+"$CMD" transition rework-owner Rework >/dev/null
+expect_rc 2 "$CMD" transition rework-owner Claimed
+grep -q '"state": "Rework"' "$STATE/tasks/rework-owner/task.json" || fail "direct Claimed transition changed Rework task"
 
 # Six active slots are admitted; a seventh is refused and stays Ready.
 for n in 1 2 3 4 5 6 7; do
