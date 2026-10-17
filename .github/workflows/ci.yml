@@ -25,6 +25,14 @@ jobs:
           persist-credentials: false
       - name: Run checks
         run: make check
+      - name: Install pinned core quality tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/install-ci-tools.sh "$RUNNER_TEMP/quality-tools"
+          echo "$RUNNER_TEMP/quality-tools/bin" >> "$GITHUB_PATH"
+      - name: Run core quality checks
+        run: scripts/core-quality-check.sh
       - name: Install pinned Gitleaks
         shell: bash
         run: |

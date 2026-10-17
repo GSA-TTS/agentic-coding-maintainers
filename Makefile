@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: test check
+.PHONY: test check strict-check
 
 test:
 	PYTHONDONTWRITEBYTECODE=1 bash .agents/skills/cross-repo-epic/tests/portfolio-status-test.sh
@@ -20,3 +20,9 @@ check: test
 	@! git ls-files --cached --others --exclude-standard | grep -E '(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.nexus-agents)(/|$$)|(^|/)(HANDOFF(-ARCHIVE)?\.md|\.env($$|\.)|[^/]+\.(pem|key|crt|p12|pfx)|.*issue[-_]?draft.*|.*engagement.*)$$'
 	@set -euo pipefail; pattern='-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}'; while IFS= read -r file; do if grep -Iq . "$$file" && grep -En -- "$$pattern" "$$file"; then exit 1; fi; done < <(git ls-files --cached --others --exclude-standard)
 	@printf '%s\n' 'repository checks: PASS'
+
+strict-check: ## Run all pinned local quality/security gates
+	@bash scripts/strict-check.sh
+
+core-quality-check: ## Run the quality subset also enforced by hosted CI
+	@bash scripts/core-quality-check.sh
