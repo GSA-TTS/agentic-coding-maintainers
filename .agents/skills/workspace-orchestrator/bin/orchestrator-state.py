@@ -31,11 +31,14 @@ STATES = {
 ACTIVE = {"Claimed", "Implementing", "Reviewing"}
 TERMINAL = {"Cancelled", "Done"}
 TRANSITIONS = {
-    "Ready": {"Claimed", "Blocked", "Cancelled"},
+    # `Claimed` is entered only by command_claim(), which atomically records the
+    # worker identity and reserves a global slot. A generic transition cannot
+    # establish those ownership invariants.
+    "Ready": {"Blocked", "Cancelled"},
     "Claimed": {"Implementing", "Reviewing", "Blocked", "Cancelled"},
     "Implementing": {"Reviewing", "Blocked", "Cancelled"},
     "Reviewing": {"Rework", "Ready for human review", "Blocked", "Cancelled"},
-    "Rework": {"Claimed", "Blocked", "Cancelled"},
+    "Rework": {"Blocked", "Cancelled"},
     "Ready for human review": {"Rework", "Done", "Blocked", "Cancelled"},
     "Blocked": {"Ready", "Rework", "Cancelled"},
     "Cancelled": set(),
