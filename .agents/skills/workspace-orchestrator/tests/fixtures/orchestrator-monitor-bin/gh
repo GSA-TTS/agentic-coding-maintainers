@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mode="${MONITOR_STUB_MODE:-success}"
+case "$mode" in
+  failure) printf '\033[31mforged failure\033[0m\n' >&2; exit 1 ;;
+  malformed) printf '{bad json\n'; exit 0 ;;
+esac
+if [[ "$*" == *"project item-list"* ]]; then
+  case "$mode" in
+    project-failure) echo 'project unavailable' >&2; exit 1 ;;
+    project-incomplete) printf '{"items":[{"id":"one"}],"totalCount":2}\n' ;;
+    changed) printf '{"items":[{"id":"changed"}],"totalCount":1}\n' ;;
+    *) printf '{"items":[{"id":"stable"}],"totalCount":1}\n' ;;
+  esac
+  exit 0
+fi
+if [[ "$*" == *"pr list"* ]]; then
+  repo="unknown/repo"
+  for ((i=1; i<=$#; i++)); do
+    [[ "${!i}" == -R ]] && { j=$((i+1)); repo="${!j}"; }
+  done
+  number=1
+  [[ "$repo" == *quickstart ]] && number=2
+  [[ "$repo" == *playbook ]] && number=3
+  head="$(printf '%040d' "$number")"
+  [[ "$mode" == changed ]] && head="$(printf 'f%.0s' {1..40})"
+  printf '[{"number":%d,"title":"Title\\u001b[31mFORGED","author":{"login":"x"},"isDraft":false,"state":"OPEN","headRefOid":"%s","updatedAt":"2026-10-16T00:00:00Z","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}]}]\n' "$number" "$head"
+  exit 0
+fi
+printf 'unexpected gh invocation: %s\n' "$*" >&2
+exit 1

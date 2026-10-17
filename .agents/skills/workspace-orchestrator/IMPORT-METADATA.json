@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "source_base_commit": "c9248ac748ee3835df5b837ae8009fce4c3a389b",
+  "source_dirty": true,
+  "source_mappings": {
+    "docs/ORCHESTRATION.md": "docs/OPERATOR-GUIDE.md",
+    ".opencode/agents/*.md": "profiles/opencode-v1/*.md"
+  }
+}
