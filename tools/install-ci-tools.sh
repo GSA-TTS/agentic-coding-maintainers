@@ -46,5 +46,7 @@ python3 -m venv "$DEST/venv"
   -r "$TOOLS_DIR/ci/bandit-requirements-linux-x86_64.txt"
 ln -sf "$DEST/venv/bin/bandit" "$DEST/bin/bandit"
 
-(cd "$TOOLS_DIR/ci" && npm ci --ignore-scripts --no-audit --no-fund)
-ln -sf "$TOOLS_DIR/ci/node_modules/.bin/pyright" "$DEST/bin/pyright"
+mkdir -p "$DEST/pyright"
+cp "$TOOLS_DIR/ci/package.json" "$TOOLS_DIR/ci/package-lock.json" "$DEST/pyright/"
+(cd "$DEST/pyright" && npm ci --ignore-scripts --no-audit --no-fund)
+ln -sf "$DEST/pyright/node_modules/.bin/pyright" "$DEST/bin/pyright"
