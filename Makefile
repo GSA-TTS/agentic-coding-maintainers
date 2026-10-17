@@ -10,6 +10,7 @@ test:
 	PYTHONDONTWRITEBYTECODE=1 bash .agents/skills/workspace-orchestrator/tests/orchestrator-demo.sh
 	PYTHONDONTWRITEBYTECODE=1 bash .agents/skills/workspace-orchestrator/tests/orchestrator-production-worktree-test.sh
 	bash tests/import-sync-test.sh
+	bash tests/opencode-compat-test.sh
 
 check: test
 	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
