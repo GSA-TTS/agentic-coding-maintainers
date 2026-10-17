@@ -86,6 +86,8 @@ tools.
 
 Repository administrators must complete and verify
 [`docs/REPOSITORY-SETUP.md`](docs/REPOSITORY-SETUP.md) after bootstrap.
+Maintainers troubleshooting GitHub Actions log downloads on managed macOS hosts
+should use [`docs/MACOS-GITHUB-TLS.md`](docs/MACOS-GITHUB-TLS.md).
 
 ## License
 
