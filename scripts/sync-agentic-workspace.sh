@@ -13,6 +13,14 @@ esac
 SOURCE="$ROOT/.agents/skills/$SKILL/"
 DEST="$WORKSPACE/.agents/skills/$SKILL/"
 [[ -f "$SOURCE/SKILL.md" ]] || { echo "canonical skill is missing: $SKILL" >&2; exit 3; }
+if find "$SOURCE" -type l -print -quit | grep -q .; then
+  echo "canonical skill contains a symlink" >&2
+  exit 3
+fi
+if find "$SOURCE" ! -type f ! -type d -print -quit | grep -q .; then
+  echo "canonical skill contains an unsupported entry type" >&2
+  exit 3
+fi
 git_safe() {
   env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
     -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
@@ -77,6 +85,14 @@ if [[ -e "${DEST%/}" ]]; then
 fi
 stage="$(mktemp -d "$parent/.${SKILL}.sync.XXXXXX")"
 rsync -a --delete --exclude '__pycache__/' --exclude '*.py[co]' "$SOURCE" "$stage/"
+if find "$stage" -type l -print -quit | grep -q .; then
+  echo "staged skill contains a symlink" >&2
+  exit 3
+fi
+if find "$stage" ! -type f ! -type d -print -quit | grep -q .; then
+  echo "staged skill contains an unsupported entry type" >&2
+  exit 3
+fi
 if [[ -e "${DEST%/}" ]]; then mv "${DEST%/}" "$backup"; fi
 if ! mv "$stage" "${DEST%/}"; then
   [[ ! -e "$backup" ]] || mv "$backup" "${DEST%/}"

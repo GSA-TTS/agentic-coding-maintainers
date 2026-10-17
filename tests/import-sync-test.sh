@@ -97,4 +97,17 @@ set -e
 [[ "$rc" -eq 3 ]]
 grep -q prior-evidence "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress/owner"
 
+# Unmanifested symlinks in the canonical source are never copied.
+target2="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-canonical-target.XXXXXX")"
+printf keep > "$target2/KEEP"
+ln -s "$target2" "$ROOT/.agents/skills/workspace-orchestrator/canonical-link"
+set +e
+"$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator >/dev/null 2>&1
+rc=$?
+set -e
+rm "$ROOT/.agents/skills/workspace-orchestrator/canonical-link"
+[[ "$rc" -eq 3 ]]
+[[ -f "$target2/KEEP" ]]
+[[ ! -e "$consumer/.agents/skills/workspace-orchestrator/canonical-link" ]]
+
 printf 'import-sync tests: PASS\n'
