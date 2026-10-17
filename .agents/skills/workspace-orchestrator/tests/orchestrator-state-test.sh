@@ -22,7 +22,7 @@ expect_rc() {
 
 "$CMD" create impl-a --scope 'repo:x:path:a' --kind implementation \
   --repo x/y --worktree "$WORK" --base-sha "$(printf 'a%.0s' {1..40})" \
-  --owned-path a --acceptance 'a works' >/dev/null
+  --head-sha "$(printf 'a%.0s' {1..40})" --owned-path a --acceptance 'a works' >/dev/null
 "$CMD" create review-b --scope 'repo:x:pr:2:head:bbbb' --kind review \
   --repo x/y --worktree "$WORK_REVIEW" --base-sha "$REVIEW_SHA" --head-sha "$REVIEW_SHA" >/dev/null
 
@@ -42,6 +42,15 @@ PY
 "$CMD" show review-b | grep -q '"schema_version": 2'
 "$CMD" record review-b validation 'migration preserved task' >/dev/null
 grep -q '"schema_version": 2' "$STATE/tasks/review-b/task.json"
+# Legacy headless review records cannot be declared ready until rebound.
+"$CMD" claim review-b --owner legacy-reviewer --pid $$ >/dev/null
+"$CMD" transition review-b Reviewing >/dev/null
+"$CMD" record review-b reviewer qa --reviewed-sha "$REVIEW_SHA" >/dev/null
+set +e
+"$CMD" transition review-b 'Ready for human review' >/dev/null 2>&1; rc=$?
+set -e
+[[ "$rc" -eq 4 ]]
+"$CMD" transition review-b Cancelled >/dev/null
 
 "$CMD" claim impl-a --owner worker-a --pid $$ >/dev/null
 "$CMD" transition impl-a Implementing >/dev/null

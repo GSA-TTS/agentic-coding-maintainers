@@ -13,9 +13,16 @@ esac
 SOURCE="$ROOT/.agents/skills/$SKILL/"
 DEST="$WORKSPACE/.agents/skills/$SKILL/"
 [[ -f "$SOURCE/SKILL.md" ]] || { echo "canonical skill is missing: $SKILL" >&2; exit 3; }
-source_commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf UNAVAILABLE)"
+git_safe() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$ROOT" "$@"
+}
+source_commit="$(git_safe rev-parse HEAD)" || { echo "canonical commit is unavailable" >&2; exit 3; }
 source_dirty=false
-[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all -- "$SOURCE" 2>/dev/null)" ]] || source_dirty=true
+source_status="$(git_safe status --porcelain --untracked-files=all -- "$SOURCE")" || { echo "canonical status is unavailable" >&2; exit 3; }
+[[ -z "$source_status" ]] || source_dirty=true
 if [[ "$SKILL" == workspace-orchestrator ]]; then
   tmp_manifest="$(mktemp)"
   (cd "$SOURCE" && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$tmp_manifest"
@@ -37,18 +44,27 @@ fi
 stage=""
 backup="$parent/.${SKILL}.previous.$$"
 marker="$parent/.${SKILL}.sync-in-progress"
+marker_token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 installed=false
 marker_created=false
 restore() {
   if [[ "$installed" != true && -e "$backup" && ! -e "${DEST%/}" ]]; then
     mv "$backup" "${DEST%/}"
   fi
-  [[ "$marker_created" != true ]] || rm -f "$marker"
+  if [[ "$marker_created" == true && -f "$marker/owner" && "$(cat "$marker/owner")" == "$marker_token" ]]; then
+    rm -f "$marker/owner"
+    rmdir "$marker"
+  fi
   rmdir "$lock" 2>/dev/null || true
 }
 trap restore EXIT HUP INT TERM
 [[ ! -e "$backup" ]] || { echo "sync backup already exists: $backup" >&2; exit 3; }
-[[ ! -e "$marker" ]] || { echo "prior sync marker exists: $marker" >&2; exit 3; }
+if ! mkdir "$marker" 2>/dev/null; then
+  echo "prior sync marker exists: $marker" >&2
+  exit 3
+fi
+printf '%s\n' "$marker_token" > "$marker/owner"
+marker_created=true
 if [[ -e "${DEST%/}" ]]; then
   if find "${DEST%/}" -type l -print -quit | grep -q .; then
     echo "existing skill contains a symlink; refusing replacement" >&2
@@ -61,8 +77,6 @@ if [[ -e "${DEST%/}" ]]; then
 fi
 stage="$(mktemp -d "$parent/.${SKILL}.sync.XXXXXX")"
 rsync -a --delete --exclude '__pycache__/' --exclude '*.py[co]' "$SOURCE" "$stage/"
-printf '%s\n' "$backup" > "$marker"
-marker_created=true
 if [[ -e "${DEST%/}" ]]; then mv "${DEST%/}" "$backup"; fi
 if ! mv "$stage" "${DEST%/}"; then
   [[ ! -e "$backup" ]] || mv "$backup" "${DEST%/}"
@@ -73,7 +87,8 @@ if [[ -e "$backup" ]]; then
   find "$backup" -depth -type f -delete
   find "$backup" -depth -type d -exec rmdir {} +
 fi
-rm -f "$marker"
+rm -f "$marker/owner"
+rmdir "$marker"
 rmdir "$lock"
 trap - EXIT HUP INT TERM
 

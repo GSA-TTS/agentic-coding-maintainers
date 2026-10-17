@@ -93,6 +93,24 @@ rc=$?
 set -e
 [[ "$rc" -eq 2 ]]
 
+# Production review tasks are bound to a real repository/worktree/head.
+REVIEW_WORKTREE="$CONSUMER/work/review"
+git -C "$REPO" worktree add -q --detach "$REVIEW_WORKTREE" "$head"
+"$CMD" create fixed-review --scope 'example/repo:pr:1' --kind review \
+  --repo example/repo --worktree "$REVIEW_WORKTREE" --head-sha "$head" >/dev/null
+"$CMD" claim fixed-review --owner reviewer --pid $$ >/dev/null
+"$CMD" transition fixed-review Reviewing >/dev/null
+"$CMD" record fixed-review reviewer qa --reviewed-sha "$head" >/dev/null
+"$CMD" record fixed-review validation 'fixed review evidence' >/dev/null
+"$CMD" transition fixed-review 'Ready for human review' >/dev/null
+
+set +e
+"$CMD" create fabricated-review --scope 'example/repo:pr:2' --kind review \
+  --repo example/repo --worktree "$REVIEW_WORKTREE" --head-sha "$(printf 'f%.0s' {1..40})" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 2 ]]
+
 # Transition-time identity checks reject unrecorded branch/head drift.
 git -C "$REPO" worktree add -q -b task/tamper "$CONSUMER/work/tamper" "$base"
 "$CMD" create tamper-task --scope 'example/repo:path:tamper' --kind implementation \

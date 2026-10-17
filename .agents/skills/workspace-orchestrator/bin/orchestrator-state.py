@@ -51,6 +51,10 @@ class UnknownError(Exception):
     pass
 
 
+class AmbiguousWriteError(UnknownError):
+    pass
+
+
 class BusyError(Exception):
     pass
 
@@ -148,11 +152,14 @@ def atomic_json(path: Path, data: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
-        dfd = os.open(path.parent, os.O_RDONLY)
         try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
+            dfd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError as exc:
+            raise AmbiguousWriteError(f"record replacement durability is unknown: {exc}") from exc
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -406,6 +413,16 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             raise InputError("implementation head does not descend from base SHA")
     if args.kind == "review" and not args.head_sha:
         raise InputError("review tasks require a full head SHA")
+    if args.kind == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+        if not worktree or not args.repo:
+            raise InputError("review tasks require repository and worktree identity")
+        top = subprocess.run(["git", "-C", worktree, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False, timeout=5)
+        commit = subprocess.run(["git", "-C", worktree, "cat-file", "-e", f"{args.head_sha}^{{commit}}"], capture_output=True, text=True, check=False, timeout=5)
+        head = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True, check=False, timeout=5)
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(worktree):
+            raise InputError("review path is not the worktree root")
+        if commit.returncode != 0 or head.returncode != 0 or head.stdout.strip() != args.head_sha:
+            raise InputError("review head is not the assigned worktree HEAD")
     owned_paths = [resource_path(p) for p in args.owned_path]
     restricted_paths = [resource_path(p) for p in args.restricted_path]
     if args.tracker_type == "none" and args.tracker_number != 0:
@@ -471,6 +488,8 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             record["leases"]["global_slot"] = slot
             record["leases"]["implementation_lane"] = None
             write_task(root, record)
+        except AmbiguousWriteError:
+            raise
         except Exception:
             release_dir(root / "slots" / f"{slot}.lock", worker["token"])
             raise
@@ -516,12 +535,16 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         if args.reason:
             safe_scope(args.reason)
         if args.state == "Ready for human review":
+            if not record["head_sha"]:
+                raise BusyError("readiness requires a fixed head SHA")
             if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
                 verify_worktree_identity(record, require_head=True)
             if not record["reviewers"] or not record["validation"] or not record["reviewed_sha"]:
                 raise BusyError("readiness requires a reviewer, validation evidence, and reviewed SHA")
-            if record["head_sha"] and record["reviewed_sha"] != record["head_sha"]:
+            if record["reviewed_sha"] != record["head_sha"]:
                 raise BusyError("reviewed SHA does not match task head SHA")
+            if record["kind"] == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+                verify_review_identity(record)
             if record["findings"]:
                 raise BusyError("readiness is blocked by unresolved findings")
             if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
@@ -582,6 +605,16 @@ def verify_worktree_identity(record: dict[str, Any], require_head: bool) -> None
         raise UnknownError("assigned branch changed")
     if require_head and (head.returncode != 0 or head.stdout.strip() != record["head_sha"]):
         raise UnknownError("assigned worktree HEAD differs from recorded head")
+
+
+def verify_review_identity(record: dict[str, Any]) -> None:
+    worktree = record["worktree"]
+    top = subprocess.run(["git", "-C", worktree, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False, timeout=5)
+    head = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True, check=False, timeout=5)
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(worktree):
+        raise UnknownError("review worktree identity changed")
+    if head.returncode != 0 or head.stdout.strip() != record["head_sha"]:
+        raise UnknownError("review worktree HEAD differs from recorded head")
 
 
 def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:

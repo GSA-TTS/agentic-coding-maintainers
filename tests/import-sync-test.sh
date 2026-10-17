@@ -88,12 +88,13 @@ set -e
 [[ -z "$(find "$consumer/.agents/skills" -maxdepth 1 \( -name '.workspace-orchestrator.previous.*' -o -name '.workspace-orchestrator.sync.*' -o -name '.workspace-orchestrator.sync-in-progress' -o -name '.workspace-orchestrator.sync-lock' \) -print)" ]]
 
 # A pre-existing uncertain marker is not deleted by a later refused invocation.
-printf 'prior-evidence\n' > "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress"
+mkdir "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress"
+printf 'prior-evidence\n' > "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress/owner"
 set +e
 "$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" cross-repo-epic >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" -eq 3 ]]
-grep -q prior-evidence "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress"
+grep -q prior-evidence "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress/owner"
 
 printf 'import-sync tests: PASS\n'
