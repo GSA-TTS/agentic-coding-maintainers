@@ -24,7 +24,7 @@ At least one applicable CODEOWNER must review the change. Do not merge when CI
 is failing or required evidence is missing.
 
 Hosted CI runs `make check`, pinned Gitleaks, and the core Ruff/Pyright/Bandit/
-ShellCheck/actionlint/zizmor gate. The local strict hook additionally runs
+ShellCheck/actionlint/zizmor gate under pinned Python 3.12.15. The local strict hook additionally runs
 history/staged Gitleaks and Trivy secret scanning. It requires no Nexus runtime.
 
 For a new imported skill, include `SKILL.md`, `PROVENANCE.md`, offline tests,

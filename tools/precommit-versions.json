@@ -3,6 +3,7 @@
   "bandit": "1.9.4",
   "gitleaks": "8.30.1",
   "pre-commit": "4.7.0",
+  "pre-commit-hooks": "3e8a8703264a2f4a69428a0aa4dcb512790b2c8c",
   "pyright": "1.1.414",
   "ruff": "0.17.1",
   "shellcheck": "0.11.0",

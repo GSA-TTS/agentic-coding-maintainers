@@ -5,6 +5,10 @@ set -euo pipefail
   echo "CI tool installer supports Linux x86_64 only" >&2
   exit 2
 }
+[[ "$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" == 3.12 ]] || {
+  echo "CI tool installer requires Python 3.12 for the hash-locked Bandit wheel set" >&2
+  exit 2
+}
 
 DEST="${1:?usage: install-ci-tools.sh DEST}"
 TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
