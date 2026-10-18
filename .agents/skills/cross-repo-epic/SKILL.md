@@ -1,6 +1,10 @@
 ---
 name: cross-repo-epic
 description: Use for multi-repo epic planning, status reconciliation, prioritization, and completion checks across GSA-TTS agentic-coding-patterns, quickstart, and playbook. Queries Project 120, then verifies one epic and its direct cross-repo children from owning issues before any PR decision.
+compatibility: OpenCode 1.19+ and 2.0+; requires Bash, Python 3, GitHub CLI, and Project v2 read access.
+metadata:
+  audience: maintainers
+  workflow: github-project-v2
 ---
 
 # Cross-Repo Epic Coordination

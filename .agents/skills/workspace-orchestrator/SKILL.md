@@ -1,6 +1,10 @@
 ---
 name: workspace-orchestrator
 description: Use for coordinating multiple coding-agent workstreams with bounded concurrency, isolated Git worktrees, fixed-revision QA/security review, foreground GitHub monitoring, and fail-closed recovery. Works with arbitrary GitHub repositories and an optional GitHub Project v2 board.
+compatibility: OpenCode 1.19+ and 2.0+; requires Bash, Python 3.10+, Git, ps, and GitHub CLI for monitoring.
+metadata:
+  audience: maintainers
+  workflow: multi-workstream
 ---
 
 # Workspace Orchestrator

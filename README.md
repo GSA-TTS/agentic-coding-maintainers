@@ -17,6 +17,11 @@ foreground GitHub monitoring, and fail-closed recovery. It accepts arbitrary
 GitHub repositories and an optional Project v2 board through validated consumer
 configuration. It is not an `acq` guest kit or a sandbox boundary.
 
+Both skills use the portable Agent Skills layout and are tested with OpenCode
+1.19+ and 2.0+. See
+[`docs/OPENCODE-COMPATIBILITY.md`](docs/OPENCODE-COMPATIBILITY.md) for verified
+interfaces, provider-config differences, and model-free runtime probes.
+
 ## Provenance And Sync
 
 The skill originated in the source author's `review_things` repository and was
