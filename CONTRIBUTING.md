@@ -4,7 +4,8 @@
 
 - Open an issue for material behavior or governance changes.
 - Do not include secrets, sensitive state, private infrastructure details, or
-  engagement artifacts.
+  unposted issue drafts. Maintainer runbooks, run journals, and orchestration
+  records for the agentic-coding repositories are in scope and welcome.
 - Preserve the provenance of imported tools and runbooks.
 
 ## Make A Change

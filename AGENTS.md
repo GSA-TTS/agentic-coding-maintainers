@@ -18,7 +18,13 @@ here.
 - Keep operations read-only unless a reviewed requirement explicitly permits a
   write.
 - Never add secrets, controlled data, personal data, Nexus records, certificate
-  authority bundles, handoffs, issue drafts, or engagement artifacts.
+  authority bundles, handoffs, or unposted issue drafts. `make check` enforces
+  this by path; `scripts/forbidden-paths.sh` is the single definition.
+- DO add maintainer workflow records — runbooks, run journals, orchestration
+  state snapshots, and review evidence for the agentic-coding repositories.
+  This repository exists to hold that work, so a filename rule that refused it
+  would refuse the repository's own purpose. Sensitivity is decided by content
+  and by the explicit patterns, not guessed from a filename.
 - Preserve executable modes and provenance when syncing skills.
 - Use Conventional Commits and a verified contributor identity.
 - Use pull-request-level AI disclosure when AI materially assisted the change.
