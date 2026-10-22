@@ -2,43 +2,55 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVAL="$ROOT/scripts/evaluate-workflow.py"
-# A private, dated outbox OUTSIDE the checkout keeps synthetic token-shaped
-# task state out of Gitleaks' repository-wide directory scan. The operator
-# empties this outbox; we do not launder deletion through another executable.
-OUTBOX="${EVALUATION_TEST_OUTBOX:-${TMPDIR:-/tmp}/maintainer-evaluation-disposal}"
-[[ ! -L "$OUTBOX" ]] || { echo 'UNVERIFIED: disposal outbox is a symlink' >&2; exit 3; }
+# Use Python's system temporary path, which is also the root the canonical
+# test-mode state tool accepts. A fixture is created in its FINAL dated path;
+# there is never a second active directory to move on failure or interrupt.
+TEMP_ROOT="$(python3 -I -B -c 'import tempfile; print(tempfile.gettempdir())')"
+OUTBOX="$TEMP_ROOT/maintainer-evaluation-disposal"
+if [[ -L "$OUTBOX" ]]; then
+  echo 'UNVERIFIED: evaluation disposal outbox is a symlink' >&2
+  exit 3
+fi
+umask 077
 mkdir -p "$OUTBOX"
-[[ -d "$OUTBOX" && ! -L "$OUTBOX" ]] || { echo 'UNVERIFIED: disposal outbox unavailable' >&2; exit 3; }
-FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation.XXXXXX")"
-stage_fixture() {
+python3 -I -B - "$OUTBOX" <<'PY' || { echo 'UNVERIFIED: evaluation disposal outbox is not private' >&2; exit 3; }
+import os
+import pathlib
+import stat
+import sys
+directory = pathlib.Path(sys.argv[1])
+import tempfile
+root = pathlib.Path(tempfile.gettempdir()).resolve()
+assert directory.resolve().is_relative_to(root)
+info = directory.lstat()
+assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
+PY
+FIXTURE="$(mktemp -d "$OUTBOX/$(date -u +%Y-%m-%d)-evaluation.XXXXXX")"
+CHECKS="not_started"
+finish_fixture() {
   result=$?
   trap - EXIT HUP INT TERM
-  if [[ -e "$FIXTURE" ]]; then
-    date_scope="$(date -u +%Y-%m-%d)"
-    if ! staged="$(mktemp -d "$OUTBOX/$date_scope-evaluation.XXXXXX")" ||
-       ! mv "$FIXTURE" "$staged/fixture" ||
-       [[ -e "$FIXTURE" ]] ||
-       [[ ! -f "$staged/fixture/MANIFEST.md" ]]; then
-      echo 'UNVERIFIED: synthetic test fixture could not be staged for disposal' >&2
-      exit 3
-    fi
-    printf 'evaluation_fixture_staged=%s\n' "$staged" >&2
+  if ! printf '\nExit: %s; checks: %s\n' "$result" "$CHECKS" >> "$FIXTURE/MANIFEST.md"; then
+    echo 'UNVERIFIED: evaluation fixture manifest could not be finalized' >&2
+    exit 3
   fi
+  printf 'evaluation_fixture_staged=%s\n' "$FIXTURE" >&2
   exit "$result"
 }
-trap stage_fixture EXIT
+trap finish_fixture EXIT
 trap 'exit 3' HUP INT TERM
 cat > "$FIXTURE/MANIFEST.md" <<'EOF'
 # Evaluation test fixture
 
-This whole `fixture/` directory was created by `tests/evaluate-workflow-test.sh`.
-It contains only synthetic task state, a malicious-validator sentinel that was
-never imported, and deliberately malformed task records. These established
-that empty/corrupt/symlinked stores are UNVERIFIED and legacy rework is unknown.
-No real maintainer task, user evidence, or secret is referenced here. Safe for
-the operator to delete. It is kept OUTSIDE the repository because Gitleaks
-scans ignored files too; synthetic random lease tokens made that scan red.
+This dated directory was created by `tests/evaluate-workflow-test.sh`. It
+contains only synthetic test input: a malicious-validator sentinel that should
+never be imported, synthetic task state and, on completed runs, malformed task
+records used to assert UNVERIFIED results. No real maintainer evidence is
+referenced. Safe for the operator to delete. The exit status and actual check
+progress below distinguish a completed run from an interrupted one. Stored
+outside the repository because Gitleaks scans ignored files too.
 EOF
+CHECKS="fixture_created"
 if [[ "${EVALUATION_TEST_ABORT_AFTER_FIXTURE:-}" == 1 ]]; then
   exit 17 # Test the EXIT trap's failure path without creating a task record.
 fi
@@ -60,14 +72,13 @@ python3 -c 'import json,sys; assert json.load(sys.stdin)["coverage"] == "no_evid
 
 # Emit a record through the canonical state tool in its sanctioned temporary
 # test mode, then copy only the task record into the disposable consumer.
-STATE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation-state.XXXXXX")"
+STATE="$FIXTURE/test-state-source"
 export ORCHESTRATOR_STATE_DIR="$STATE" ORCHESTRATOR_TEST_MODE=1
 export WORKSPACE_ORCHESTRATOR_ROOT="$FIXTURE"
 python3 "$ROOT/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py" \
   create eval-case --scope 'evaluation:case:1' --kind review \
   --head-sha "$(printf 'a%.0s' {1..40})" >/dev/null
 cp -R "$STATE/tasks/eval-case" "$FIXTURE/.orchestrator/tasks/"
-mv "$STATE" "$FIXTURE/test-state-source"
 report="$(python3 -I -B "$EVAL" --workspace "$FIXTURE")"
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["coverage"]=="parsed_task_records" and d["task_count"]==1 and d["by_state"]=={"Ready":1}; assert d["cases"][0]["id"]=="eval-case" and "time in state" in d["unmeasured"] and "reservation/lease consistency" in d["unmeasured"]' <<<"$report"
 [[ ! -e "$ROOT/.agents/skills/workspace-orchestrator/bin/__pycache__" ]]
@@ -132,4 +143,5 @@ linked="$(python3 -I -B "$EVAL" --workspace "$FIXTURE" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 3 && "$linked" == *UNVERIFIED* ]]
+CHECKS="passed"
 printf 'evaluate-workflow tests: PASS\n'
