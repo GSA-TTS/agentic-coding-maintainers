@@ -81,6 +81,34 @@ engagement artifacts.
 
 ## Development
 
+### Run maintainer work from this repository
+
+The skills are self-contained. For this engagement, copy
+`orchestrator.example.json` to the gitignored `orchestrator.json` and review
+its repository list and Project board before using it. The default example
+does **not** become live configuration automatically.
+
+```bash
+bin/orchestrator-state.sh reconcile
+bin/orchestrator-state.sh list
+bin/portfolio-status.sh
+bin/epic-status.sh patterns#357
+# Once a monitor task has been created and claimed:
+bin/orchestrator-monitor.sh --task-id portfolio-monitor --loop
+```
+
+The `bin/` scripts are thin entry points into the canonical skills. A missing
+monitor config exits 3 (UNVERIFIED). Keep `.orchestrator/` task records,
+`work/` task worktrees, `clones/` upstream clones, and `orchestrator.json`
+host-local and uncommitted. `.opencode/agents/` contains installed copies of
+the canonical role profiles; the test suite checks their byte equality.
+Restart OpenCode after changing agents or commands.
+
+See `AGENTS.md` for worker limits, ownership, recovery and the trust boundary:
+a worktree is not a sandbox for untrusted PR code.
+
+## Checks
+
 ```bash
 make test
 make check
