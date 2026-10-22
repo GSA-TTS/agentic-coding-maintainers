@@ -80,6 +80,64 @@ def git_probe(worktree: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def verify_clean_checkout(worktree: str) -> None:
+    """Fail closed without Git status/diff's checkout-defined clean filters.
+
+    Compare raw worktree bytes to indexed blobs. Attributes with conversions
+    can produce a false dirty result, never a false clean result. Untracked or
+    staged changes are refused. Neither cat-file nor ls-files transforms files.
+    """
+    root = Path(worktree).resolve()
+    staged = git_probe(worktree, "diff-index", "--cached", "--quiet", "HEAD", "--")
+    if staged.returncode == 1:
+        raise BusyError("worktree has staged changes")
+    if staged.returncode != 0:
+        raise UnknownError("cannot establish staged checkout cleanliness")
+    unknown = git_probe(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    if unknown.returncode != 0:
+        raise UnknownError("cannot enumerate untracked checkout files")
+    if unknown.stdout:
+        raise BusyError("worktree has untracked files")
+    tracked = git_probe(worktree, "ls-files", "--stage", "-z")
+    if tracked.returncode != 0:
+        raise UnknownError("cannot enumerate tracked checkout files")
+    for item in tracked.stdout.split("\0"):
+        if not item:
+            continue
+        try:
+            metadata, name = item.split("\t", 1)
+            mode, oid, stage = metadata.split(" ")
+        except ValueError as exc:
+            raise UnknownError("tracked checkout index is malformed") from exc
+        if stage != "0" or mode not in {"100644", "100755", "120000"} or not re.fullmatch(r"[0-9a-f]{40,64}", oid):
+            raise UnknownError("cannot compare non-regular or conflicted checkout entry")
+        file = root / name
+        if not file.parent.resolve().is_relative_to(root):
+            raise UnknownError("tracked checkout path escapes worktree")
+        # `git hash-object --no-filters` reads the bytes directly. Do not use
+        # Git's normal diff/status comparisons, which may invoke filters.
+        try:
+            if mode == "120000":
+                actual = os.readlink(file).encode("utf-8", errors="surrogateescape")
+            else:
+                if file.is_symlink() or not file.is_file():
+                    raise BusyError("tracked checkout entry changed type")
+                actual = file.read_bytes()
+                executable = bool(file.stat().st_mode & 0o111)
+                if executable != (mode == "100755"):
+                    raise BusyError("tracked checkout entry changed mode")
+        except OSError as exc:
+            raise UnknownError("cannot read tracked checkout entry") from exc
+        # An object ID over raw bytes is sufficient: no filters, no text-mode
+        # decoding of arbitrary binary objects, and no remote object lookup.
+        if len(oid) == 40:
+            digest = hashlib.sha1(b"blob " + str(len(actual)).encode() + b"\0" + actual, usedforsecurity=False)
+        else:
+            digest = hashlib.sha256(b"blob " + str(len(actual)).encode() + b"\0" + actual)
+        if digest.hexdigest() != oid:
+            raise BusyError("tracked checkout bytes differ from indexed object")
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -531,12 +589,15 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         raise InputError("target state is invalid; Unknown is derived only")
     with CoordinatorLock(root):
         record = read_task(root, args.task_id)
+        verify_reservations(root, record)
         if args.state not in TRANSITIONS[record["state"]]:
             raise InputError(f"transition {record['state']!r} -> {args.state!r} is not allowed")
         if args.state == "Implementing" and (record["kind"] != "implementation" or not record.get("worker")):
             raise InputError("only a claimed implementation task can enter Implementing")
         if args.state == "Implementing" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
             verify_worktree_identity(record, require_head=True)
+        if args.state == "Reviewing" and record["kind"] == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+            verify_review_identity(record)
         if args.reason:
             safe_scope(args.reason)
         if args.state == "Ready for human review":
@@ -553,14 +614,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if record["findings"]:
                 raise BusyError("readiness is blocked by unresolved findings")
             if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
-                # Worktree-local Git configuration is not trusted. `git status`
-                # can execute core.fsmonitor, so disable it before touching a
-                # PR checkout; do not inherit GIT_* redirects from the caller.
-                dirty = git_probe(record["worktree"], "status", "--porcelain", "--untracked-files=all")
-                if dirty.returncode != 0:
-                    raise UnknownError("cannot establish implementation worktree cleanliness")
-                if dirty.stdout:
-                    raise BusyError("implementation worktree has uncommitted or untracked changes")
+                verify_clean_checkout(record["worktree"])
         if args.state == "Rework":
             if record["rework_count"] >= 3:
                 raise BusyError("three rework cycles reached; checkpoint and escalate")
@@ -611,6 +665,7 @@ def verify_review_identity(record: dict[str, Any]) -> None:
         raise UnknownError("review worktree identity changed")
     if head.returncode != 0 or head.stdout.strip() != record["head_sha"]:
         raise UnknownError("review worktree HEAD differs from recorded head")
+    verify_clean_checkout(worktree)
 
 
 def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
@@ -769,9 +824,7 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
             raise UnknownError("cannot recover readiness: review evidence changed")
         if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
             verify_worktree_identity(record, require_head=True)
-            dirty = git_probe(record["worktree"], "status", "--porcelain", "--untracked-files=all")
-            if dirty.returncode != 0 or dirty.stdout:
-                raise UnknownError("cannot recover readiness: worktree is unverified or dirty")
+            verify_clean_checkout(record["worktree"])
         if record["kind"] == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
             verify_review_identity(record)
     if target == "Implementing" and record["leases"]["implementation_lane"] is None:

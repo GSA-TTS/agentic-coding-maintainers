@@ -53,7 +53,9 @@ def load_config(path: Path) -> dict[str, Any]:
     repositories = config.get("repositories")
     if not isinstance(repositories, list) or not 1 <= len(repositories) <= 50:
         raise MonitorError("monitor config repositories must contain 1-50 entries")
-    if len(set(repositories)) != len(repositories) or any(not isinstance(r, str) or not REPO_RE.fullmatch(r) for r in repositories):
+    if any(not isinstance(r, str) or not REPO_RE.fullmatch(r) for r in repositories):
+        raise MonitorError("monitor repositories must be owner/name values")
+    if len(set(repositories)) != len(repositories):
         raise MonitorError("monitor repositories must be unique owner/name values")
     project = config.get("project")
     if project is not None:
