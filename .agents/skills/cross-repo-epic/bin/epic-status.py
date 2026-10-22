@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch one epic, Project 120 metadata, and all direct cross-repo children."""
+"""Fetch one epic, its board metadata, and all direct cross-repo children.
+
+Which repositories and which Project v2 board are configured, not hardcoded;
+see portfolio_config.py.
+"""
 
 from __future__ import annotations
 
@@ -11,14 +15,15 @@ import sys
 import time
 import unicodedata
 from datetime import datetime, timezone
+from pathlib import Path
 
-ALIASES = {
-    "patterns": "agentic-coding-patterns",
-    "quickstart": "agentic-coding-quickstart",
-    "playbook": "agentic-coding-playbook",
-}
-ALLOWED = {f"GSA-TTS/{repo}" for repo in ALIASES.values()}
-PROJECT_ID = "PVT_kwDOBbooB84BlPkD"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import portfolio_config  # noqa: E402  (sibling module, path set above)
+
+CONFIG = portfolio_config.load("epic")
+ALLOWED = set(CONFIG["repositories"])
+ALIASES = portfolio_config.short_names(CONFIG["repositories"])
+
 MAX_ISSUE_NUMBER = 2_147_483_647
 MAX_PAGES = 20
 GH_TIMEOUT_SECONDS = 60.0
@@ -35,7 +40,7 @@ QUERY = r"""query($owner:String!,$repo:String!,$number:Int!,$after:String){
       projectItems(first:20){
         totalCount pageInfo{hasNextPage endCursor}
         nodes{
-          project{id number title}
+          project{id number title owner{__typename ... on Organization{login} ... on User{login}}}
           fieldValues(first:20){
             totalCount pageInfo{hasNextPage endCursor}
             nodes{... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2SingleSelectField{name}}}}
@@ -55,11 +60,23 @@ def fail(message: str, code: int = 3) -> None:
 
 
 def parse_ref(value: str) -> tuple[str, int]:
-    short = re.fullmatch(r"(patterns|quickstart|playbook)#([1-9][0-9]*)", value)
-    qualified = re.fullmatch(r"GSA-TTS/(agentic-coding-(?:patterns|quickstart|playbook))#([1-9][0-9]*)", value)
-    url = re.fullmatch(
-        r"https://github\.com/GSA-TTS/(agentic-coding-(?:patterns|quickstart|playbook))/issues/([1-9][0-9]*)/?",
-        value,
+    """Resolve a reference to (owner/name, issue number).
+
+    Accepts a configured short alias (`patterns#357`), a full `owner/name#N`,
+    or an issue URL. The accepted set is built from the CONFIGURED repositories
+    and aliases, so this stays a scope-confinement check and not just parsing:
+    a syntactically valid reference to an unconfigured repository is refused
+    before any network call. Alternations are escaped so a repository name
+    containing regex metacharacters cannot widen the pattern.
+    """
+    alias_re = "|".join(re.escape(a) for a in sorted(ALIASES, key=len, reverse=True))
+    full_re = "|".join(re.escape(r) for r in sorted(ALLOWED, key=len, reverse=True))
+    short = re.fullmatch(rf"({alias_re})#([1-9][0-9]*)", value) if alias_re else None
+    qualified = re.fullmatch(rf"({full_re})#([1-9][0-9]*)", value) if full_re else None
+    url = (
+        re.fullmatch(rf"https://github\.com/({full_re})/issues/([1-9][0-9]*)/?", value)
+        if full_re
+        else None
     )
     match = short or qualified or url
     if match:
@@ -70,9 +87,28 @@ def parse_ref(value: str) -> tuple[str, int]:
         if number > MAX_ISSUE_NUMBER:
             fail("issue number is out of range", 2)
         if short:
-            return ALIASES[short.group(1)], number
+            return ALIASES[match.group(1)], number
         return match.group(1), number
-    fail("expected patterns#N, quickstart#N, playbook#N, a qualified GSA-TTS repo#N, or an issue URL", 2)
+    hint = ", ".join(f"{a}#N" for a in sorted(ALIASES)) or "owner/name#N"
+    fail(f"expected {hint}, a configured owner/name#N, or an issue URL", 2)
+
+
+def matches_configured_board(project: dict) -> bool:
+    """True when this project item belongs to the board named in config."""
+    board = CONFIG["project"]
+    if board is None:
+        return False
+    if project.get("number") != board["number"]:
+        return False
+    owner = project.get("owner")
+    if not isinstance(owner, dict):
+        fail("board owner metadata is not an object")
+    login = owner.get("login")
+    kind = owner.get("__typename")
+    if not isinstance(login, str) or not isinstance(kind, str):
+        fail("board owner login or type is not a string")
+    expected_kind = "Organization" if board["owner_type"] == "organization" else "User"
+    return login == board["owner"] and kind == expected_kind
 
 
 def safe_text(value: object, limit: int = 240) -> str:
@@ -110,10 +146,11 @@ def operation_timeout() -> float:
     return value
 
 
-def query(repo: str, number: int, after: str | None, deadline: float) -> dict:
+def query(full_repo: str, number: int, after: str | None, deadline: float) -> dict:
+    owner, name = full_repo.split("/", 1)
     command = [
-        "gh", "api", "graphql", "-f", f"query={QUERY}", "-f", "owner=GSA-TTS",
-        "-f", f"repo={repo}", "-F", f"number={number}",
+        "gh", "api", "graphql", "-f", f"query={QUERY}", "-f", f"owner={owner}",
+        "-f", f"repo={name}", "-F", f"number={number}",
     ]
     if after:
         command += ["-f", f"after={after}"]
@@ -157,8 +194,19 @@ def query(repo: str, number: int, after: str | None, deadline: float) -> dict:
     return issue
 
 
-repo, number = parse_ref(sys.argv[1] if len(sys.argv) == 2 else "")
-full_repo = f"GSA-TTS/{repo}"
+full_repo, number = parse_ref(sys.argv[1] if len(sys.argv) == 2 else "")
+# Defense in depth, and NOT dead code — this was verified by mutation rather
+# than assumed. parse_ref builds its patterns from ALLOWED, so it normally
+# refuses an out-of-portfolio reference first. But if its regex escaping
+# regresses, a name like `acme/a.i` becomes the pattern `a.i`, `acme/aXi`
+# matches, and THIS check is the only thing that still refuses it. The two
+# guards fail independently, which is the point of keeping both.
+#
+# Removing THIS line alone is not detectable by the suite, because parse_ref
+# still refuses first — mutation testing reports it as surviving. Removing it
+# TOGETHER with the escaping is detected (rc moves 2 -> 3, and the reference
+# reaches the network path). So it is a real second layer, not dead code, and
+# its survival as a single mutant is expected rather than a coverage gap.
 if full_repo not in ALLOWED:
     fail("unsupported repository", 2)
 
@@ -171,7 +219,7 @@ expected_children = None
 epic_identity = None
 deadline = time.monotonic() + operation_timeout()
 for page_number in range(1, MAX_PAGES + 1):
-    page_issue = query(repo, number, cursor, deadline)
+    page_issue = query(full_repo, number, cursor, deadline)
     if type(page_issue.get("number")) is not int or page_issue["number"] != number:
         fail("returned epic identity does not match the requested issue")
     if page_issue.get("state") not in {"OPEN", "CLOSED"}:
@@ -242,31 +290,34 @@ for item in issue["projectItems"]["nodes"]:
     project = item.get("project")
     if not isinstance(project, dict):
         fail("project item project metadata is not an object")
-    if project.get("id") != PROJECT_ID:
+    # Match the CONFIGURED board. A bare number is ambiguous — two owners can
+    # each have a project #120 — so compare owner login and kind as well. This
+    # keeps the match exact without a second round-trip to resolve a node id.
+    if not matches_configured_board(project):
         continue
     project_matches += 1
-    values = check_connection(item.get("fieldValues"), "Project 120 fieldValues")
+    values = check_connection(item.get("fieldValues"), "board fieldValues")
     if values["pageInfo"].get("hasNextPage") or len(values["nodes"]) != values["totalCount"]:
-        fail("Project 120 fields were truncated")
+        fail("board fields were truncated")
     for value in values["nodes"]:
         field = value.get("field")
         if field is not None and not isinstance(field, dict):
-            fail("Project 120 field metadata is not an object")
+            fail("board field metadata is not an object")
         if not isinstance(field, dict):
             continue
         field_name = field.get("name")
         if field_name is not None and not isinstance(field_name, str):
-            fail("Project 120 field name is not a string")
+            fail("board field name is not a string")
         if field_name:
             field_value = value.get("name")
             if field_value is not None and not isinstance(field_value, str):
-                fail("Project 120 field value is not a string")
+                fail("board field value is not a string")
             project_fields[field_name] = safe_text(field_value or "")
 
 if project_matches == 0:
-    fail("epic is not present in Project 120")
+    fail("epic is not present on the configured board")
 if project_matches > 1:
-    fail("epic has duplicate Project 120 items")
+    fail("epic has duplicate items on the configured board")
 
 board_status = project_fields.get("Status") or "UNAVAILABLE"
 live_state = safe_text(issue.get("state"))
@@ -281,10 +332,10 @@ print(f"Evidence timestamp: {timestamp}")
 print(f"Epic: {full_repo}#{number} — {title}")
 print(f"URL: https://github.com/{full_repo}/issues/{number}")
 print(f"Live state: {live_state}")
-print(f"Project 120 Status: {safe_text(board_status)}" + (" [BOARD/LIVE MISMATCH]" if mismatch else ""))
+print(f"Board Status: {safe_text(board_status)}" + (" [BOARD/LIVE MISMATCH]" if mismatch else ""))
 for field in ("Work Type", "Area", "Flag"):
-    print(f"Project 120 {field}: {safe_text(project_fields.get(field) or 'UNAVAILABLE')}")
-print("Project 120 Parent/Sub-issues progress: UNAVAILABLE from API")
+    print(f"Board {field}: {safe_text(project_fields.get(field) or 'UNAVAILABLE')}")
+print("Board Parent/Sub-issues progress: UNAVAILABLE from API")
 print(f"Direct sub-issues: {len(children)} total; {len(open_children)} open; {len(closed_children)} closed")
 
 for heading, subset in (("Open", open_children), ("Closed", closed_children)):
@@ -296,5 +347,5 @@ for heading, subset in (("Open", open_children), ("Closed", closed_children)):
         print(f"  {child_repo}#{child.get('number')} — {safe_text(child.get('title'))}")
         print(f"    https://github.com/{child_repo}/issues/{child.get('number')}")
 
-print("Coverage: COMPLETE for epic, Project 120 metadata, and direct sub-issues")
+print("Coverage: COMPLETE for epic, board metadata, and direct sub-issues")
 print("PR reviews/checks/mergeability: NOT CHECKED — verify directly before acting")

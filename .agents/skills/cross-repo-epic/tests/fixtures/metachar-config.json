@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    "acme/a.i",
+    "acme/web"
+  ],
+  "project": {
+    "owner": "acme-dev",
+    "number": 7,
+    "owner_type": "user"
+  }
+}
