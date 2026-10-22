@@ -29,20 +29,12 @@ hardened in the agentic workspace. Its `PROVENANCE.md` records the authorized
 source commit and destination adaptations. Keep that record when moving or
 revising the skill.
 
-After this repository's initial import, make authoritative changes here. To
-bring in a later authorized change from a `review_things` checkout:
-
-```bash
-IMPORT_DIR="$(scripts/import-review-things.sh /path/to/review_things | sed -n 's/^STAGED=//p')"
-diff -ru "$IMPORT_DIR" .agents/skills/cross-repo-epic
-make check
-```
-
-The importer creates a new unique staging directory under ignored `.import/`
-and never overwrites the canonical hardened copy or an earlier import. Review
-the diff for sensitive state and unsafe behavior, apply selected changes
-manually, and update `PROVENANCE.md` with the source revision and material
-adaptations before merge.
+After this repository's initial import, make authoritative changes here. The
+old `scripts/import-review-things.sh` expected skill files at obsolete root
+paths in `review_things` and could no longer import them. It was removed rather
+than encouraging a broken, backwards import from a consumer into the canonical
+repository. The original authorized import remains documented in each skill's
+`PROVENANCE.md`.
 
 The workspace-orchestrator import is separate because its source includes
 multiple binaries, role profiles, tests, and docs:
@@ -76,8 +68,9 @@ fixture suite for the selected skill, and record this repository's canonical
 commit in the destination `PROVENANCE.md`.
 
 Do not sync runtime state or review artifacts. In particular, exclude secrets,
-Nexus records, certificate authority bundles, handoffs, issue drafts, and
-engagement artifacts.
+Nexus records, certificate authority bundles, handoffs and unposted issue
+drafts. Reviewed maintainer runbooks and nonsensitive operating records may
+live here; check their contents, not only their filenames.
 
 ## Development
 
