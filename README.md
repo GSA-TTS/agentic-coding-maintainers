@@ -109,6 +109,12 @@ For an operator-invoked, read-only **current-state** task-record scorecard, run
 outcomes, cohort design and reflection guardrails. An empty or unreadable task
 store exits 3 (`UNVERIFIED`), never a healthy-looking zero-work report.
 
+The first **recorded-cohort** reflection parser is
+`python3 -I -B scripts/cohort-reflection.py --ledger /absolute/private/cases.jsonl
+--as-of <UTC>`. Its [contract](docs/COHORT-REFLECTION.md) distinguishes recorded
+events from independently verified outcomes; it cannot infer intake
+completeness or verified completions from the ledger alone.
+
 ```bash
 make test
 make check
