@@ -2,7 +2,17 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVAL="$ROOT/scripts/evaluate-workflow.py"
-FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation.XXXXXX")"
+mkdir -p "$ROOT/.import"
+FIXTURE="$(mktemp -d "$ROOT/.import/maintainer-evaluation.XXXXXX")"
+cat > "$FIXTURE/MANIFEST.md" <<'EOF'
+# Evaluation test fixture
+
+Created by `tests/evaluate-workflow-test.sh` in this ignored `.import/`
+directory. Contains only synthetic state and a deliberately malformed task
+record; it was never a real maintainer assignment. The test does not remove
+files through a workaround for the workspace's `rm` denial. Safe for the
+operator to dispose of after reviewing the test result.
+EOF
 mkdir -p "$FIXTURE/.agents/skills/workspace-orchestrator/bin" "$FIXTURE/.orchestrator/tasks"
 printf 'raise RuntimeError("workspace-selected code executed")\n' > \
   "$FIXTURE/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py"
@@ -21,13 +31,14 @@ python3 -c 'import json,sys; assert json.load(sys.stdin)["coverage"] == "no_evid
 
 # Emit a record through the canonical state tool in its sanctioned temporary
 # test mode, then copy only the task record into the disposable consumer.
-STATE="$FIXTURE/test-state"
+STATE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation-state.XXXXXX")"
 export ORCHESTRATOR_STATE_DIR="$STATE" ORCHESTRATOR_TEST_MODE=1
 export WORKSPACE_ORCHESTRATOR_ROOT="$FIXTURE"
 python3 "$ROOT/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py" \
   create eval-case --scope 'evaluation:case:1' --kind review \
   --head-sha "$(printf 'a%.0s' {1..40})" >/dev/null
 cp -R "$STATE/tasks/eval-case" "$FIXTURE/.orchestrator/tasks/"
+mv "$STATE" "$FIXTURE/test-state-source"
 report="$(python3 -I -B "$EVAL" --workspace "$FIXTURE")"
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["coverage"]=="parsed_task_records" and d["task_count"]==1 and d["by_state"]=={"Ready":1}; assert d["cases"][0]["id"]=="eval-case" and "time in state" in d["unmeasured"] and "reservation/lease consistency" in d["unmeasured"]' <<<"$report"
 [[ ! -e "$ROOT/.agents/skills/workspace-orchestrator/bin/__pycache__" ]]
@@ -51,7 +62,7 @@ set -e
 [[ "$rc" -eq 3 && "$corrupt" == *UNVERIFIED* ]]
 # A malformed type formerly raised an uncaught TypeError inside the canonical
 # validator. It must produce the same bounded UNVERIFIED response, not traceback.
-cp "$STATE/tasks/eval-case/task.json" "$FIXTURE/.orchestrator/tasks/eval-case/task.json"
+cp "$FIXTURE/test-state-source/tasks/eval-case/task.json" "$FIXTURE/.orchestrator/tasks/eval-case/task.json"
 python3 - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
 import json
 import sys
@@ -69,7 +80,7 @@ set -e
 [[ "$rc" -eq 3 && "$wrong_type" == *UNVERIFIED* && "$wrong_type" != *Traceback* ]]
 # Legacy schema-1 records were upgraded with a DEFAULT rework_count=0. A
 # default is not evidence of zero rework and must render as null.
-cp "$STATE/tasks/eval-case/task.json" "$FIXTURE/.orchestrator/tasks/eval-case/task.json"
+cp "$FIXTURE/test-state-source/tasks/eval-case/task.json" "$FIXTURE/.orchestrator/tasks/eval-case/task.json"
 python3 - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
 import json
 import sys

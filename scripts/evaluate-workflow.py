@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Read-only, local, current-state workflow scorecard; never infer history."""
 
+import sys
+
+# Must run before ANY non-built-in import. Without -I, a caller-controlled
+# PYTHONPATH could supply a module imported below and execute it on the host.
+if not sys.flags.isolated or not sys.dont_write_bytecode:
+    print("evaluation: UNVERIFIED — run with python3 -I -B", file=sys.stderr)
+    sys.exit(3)
+
 import argparse
 import importlib.util
 import json
 import os
 import stat
-import sys
 from collections import Counter
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,17 +42,6 @@ def instant(value: str) -> datetime:
 
 
 def snapshot(workspace: Path, as_of: datetime) -> dict:
-    root = workspace / ".orchestrator"
-    tasks = root / "tasks"
-    if root.is_symlink() or tasks.is_symlink() or not tasks.is_dir():
-        raise Unverified("private task store is absent or unsafe; no measured task coverage")
-    if not tasks.resolve().is_relative_to(workspace.resolve()):
-        raise Unverified("task store escapes workspace")
-    for directory in (root, tasks):
-        status = directory.stat()
-        if status.st_uid != os.getuid() or status.st_mode & 0o077:
-            raise Unverified("task store is not current-user private")
-
     # The validator is code from THIS trusted installation, never the selected
     # workspace. An import executes top-level Python, even when no function is
     # called: deriving its path from --workspace was a host-execution bug.
@@ -60,32 +57,45 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
 
     results = []
     total_bytes = 0
-    # Directory-descriptor-relative, no-follow reads. A pathname precheck then
-    # open() is raceable: a concurrent writer can swap it for an outside link.
-    tasks_fd = os.open(tasks, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        names = sorted(os.listdir(tasks_fd))
-        if len(names) > MAX_CASES:
-            raise Unverified("task count exceeds the evaluation limit")
-        for name in names:
+    # Walk each component by descriptor; O_NOFOLLOW on the final tasks path
+    # alone cannot prevent a concurrent swap of its .orchestrator parent.
+    with ExitStack() as stack:
+        workspace_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, workspace_fd)
+        root_fd = os.open(".orchestrator", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=workspace_fd)
+        stack.callback(os.close, root_fd)
+        tasks_fd = os.open("tasks", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        stack.callback(os.close, tasks_fd)
+        for fd in (root_fd, tasks_fd):
+            status = os.fstat(fd)
+            if status.st_uid != os.getuid() or status.st_mode & 0o077:
+                raise Unverified("task store is not current-user private")
+        # Stop enumeration at the limit BEFORE sorting/materializing.
+        with os.scandir(tasks_fd) as entries:
+            names = []
+            for entry in entries:
+                names.append(entry.name)
+                if len(names) > MAX_CASES:
+                    raise Unverified("task count exceeds the evaluation limit")
+        for name in sorted(names):
             if name in (".", ".."):
                 raise Unverified("task directory name is invalid")
             directory_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=tasks_fd)
             try:
-                entries = os.listdir(directory_fd)
-                if "task.json" not in entries:
-                    raise Unverified("task record is missing")
                 record_fd = os.open("task.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
                 try:
                     info = os.fstat(record_fd)
                     if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RECORD_BYTES:
                         raise Unverified("task record is not a bounded regular file")
-                    total_bytes += info.st_size
+                    with os.fdopen(record_fd, "rb") as handle:
+                        record_fd = -1
+                        data = handle.read(MAX_RECORD_BYTES + 1)
+                    if len(data) > MAX_RECORD_BYTES:
+                        raise Unverified("task record exceeds the evaluation limit")
+                    total_bytes += len(data)
                     if total_bytes > MAX_TOTAL_BYTES:
                         raise Unverified("task record bytes exceed the evaluation limit")
-                    with os.fdopen(record_fd, encoding="utf-8") as handle:
-                        record_fd = -1
-                        raw = json.load(handle)
+                    raw = json.loads(data)
                 finally:
                     if record_fd >= 0:
                         os.close(record_fd)
@@ -105,11 +115,12 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
                 "id": record["task_id"], "kind": record["kind"], "state": record["state"],
                 "age_days": round((as_of - created).total_seconds() / 86400, 2),
                 "since_last_write_days": round((as_of - updated).total_seconds() / 86400, 2),
-                "recorded_rework_count": record["rework_count"] if source_schema != 1 else None,
+                # Schema 1 may have been upgraded and persisted as schema 2
+                # with a *default* zero. Without provenance, a zero cannot
+                # distinguish no rework from unknown pre-upgrade history.
+                "recorded_rework_count": record["rework_count"] if source_schema != 1 and record["rework_count"] > 0 else None,
                 "unresolved_finding_count": len(record["findings"]),
             })
-    finally:
-        os.close(tasks_fd)
     return {
         "as_of": as_of.isoformat(), "coverage": "parsed_task_records" if results else "no_evidence",
         "task_count": len(results), "by_state": dict(sorted(Counter(x["state"] for x in results).items())),
@@ -132,8 +143,6 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, required=True)
     args = parser.parse_args()
     try:
-        if not sys.flags.isolated or not sys.dont_write_bytecode:
-            raise Unverified("run with python3 -I -B so imports cannot use workspace PYTHONPATH or write bytecode")
         workspace = args.workspace.expanduser()
         if workspace.is_symlink() or not workspace.is_dir():
             raise Unverified("workspace is not a real directory")
