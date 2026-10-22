@@ -2,18 +2,66 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVAL="$ROOT/scripts/evaluate-workflow.py"
-FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation.XXXXXX")"
+# Use Python's system temporary path, which is also the root the canonical
+# test-mode state tool accepts. A fixture is created in its FINAL dated path;
+# there is never a second active directory to move on failure or interrupt.
+# Use the approved system temporary parent, independent of inherited Python
+# temp redirects. /tmp may be an OS-managed symlink on macOS; resolve it and
+# require the owner to be root or this user and a world-writable parent to be
+# sticky before allocating anything.
+TEMP_ROOT="$(python3 -I -B -c 'import os; print(os.path.realpath("/tmp"))')"
+OUTBOX="$TEMP_ROOT/maintainer-evaluation-disposal"
+if [[ -L "$OUTBOX" ]]; then
+  echo 'UNVERIFIED: evaluation disposal outbox is a symlink' >&2
+  exit 3
+fi
+umask 077
+python3 -I -B - "$TEMP_ROOT" <<'PY' || { echo 'UNVERIFIED: temporary root is unsafe' >&2; exit 3; }
+import os
+import stat
+import sys
+info = os.stat(sys.argv[1])
+assert stat.S_ISDIR(info.st_mode) and info.st_uid in (0, os.getuid())
+assert not info.st_mode & 0o002 or info.st_mode & stat.S_ISVTX
+PY
+mkdir -p "$OUTBOX"
+python3 -I -B - "$OUTBOX" <<'PY' || { echo 'UNVERIFIED: evaluation disposal outbox is not private' >&2; exit 3; }
+import os
+import stat
+import sys
+info = os.lstat(sys.argv[1])
+assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
+PY
+export TMPDIR="$TEMP_ROOT/"
+FIXTURE="$(mktemp -d "$OUTBOX/$(date -u +%Y-%m-%d)-evaluation.XXXXXX")"
+CHECKS="not_started"
+finish_fixture() {
+  result=$?
+  trap - EXIT HUP INT TERM
+  if ! printf '\nExit: %s; checks: %s\n' "$result" "$CHECKS" >> "$FIXTURE/MANIFEST.md"; then
+    echo 'UNVERIFIED: evaluation fixture manifest could not be finalized' >&2
+    exit 3
+  fi
+  printf 'evaluation_fixture_staged=%s\n' "$FIXTURE" >&2
+  exit "$result"
+}
+trap finish_fixture EXIT
+trap 'exit 3' HUP INT TERM
 cat > "$FIXTURE/MANIFEST.md" <<'EOF'
 # Evaluation test fixture
 
-Created by `tests/evaluate-workflow-test.sh` outside the repository, under the
-system temporary directory. Contains only synthetic state and a deliberately malformed task
-record; it was never a real maintainer assignment. The test does not remove
-files through a workaround for the workspace's `rm` denial. Safe for the
-operator to dispose of after reviewing the test result. Kept OUTSIDE the repo
-because Gitleaks also scans gitignored files on CI: a synthetic scope token in
-`.import/` made the hosted secret scan red despite a clean tracked tree.
+This dated directory was created by `tests/evaluate-workflow-test.sh`. Depending
+on where the run stopped, it may contain a malicious-validator sentinel that
+should never be imported, synthetic task state, and malformed synthetic task
+records used to assert UNVERIFIED results. No real maintainer evidence is
+referenced. Safe for the operator to delete. The exit status and check progress
+below distinguish a completed run from an interrupted one. Stored outside the
+repository because Gitleaks scans ignored files too.
 EOF
+CHECKS="fixture_created"
+if [[ "${EVALUATION_TEST_ABORT_AFTER_FIXTURE:-}" == 1 ]]; then
+  exit 17 # Test the EXIT trap's failure path without creating a task record.
+fi
 mkdir -p "$FIXTURE/.agents/skills/workspace-orchestrator/bin" "$FIXTURE/.orchestrator/tasks"
 printf 'raise RuntimeError("workspace-selected code executed")\n' > \
   "$FIXTURE/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py"
@@ -32,21 +80,20 @@ python3 -c 'import json,sys; assert json.load(sys.stdin)["coverage"] == "no_evid
 
 # Emit a record through the canonical state tool in its sanctioned temporary
 # test mode, then copy only the task record into the disposable consumer.
-STATE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation-state.XXXXXX")"
+STATE="$FIXTURE/test-state-source"
 export ORCHESTRATOR_STATE_DIR="$STATE" ORCHESTRATOR_TEST_MODE=1
 export WORKSPACE_ORCHESTRATOR_ROOT="$FIXTURE"
-python3 "$ROOT/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py" \
+python3 -I -B "$ROOT/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py" \
   create eval-case --scope 'evaluation:case:1' --kind review \
   --head-sha "$(printf 'a%.0s' {1..40})" >/dev/null
 cp -R "$STATE/tasks/eval-case" "$FIXTURE/.orchestrator/tasks/"
-mv "$STATE" "$FIXTURE/test-state-source"
 report="$(python3 -I -B "$EVAL" --workspace "$FIXTURE")"
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["coverage"]=="parsed_task_records" and d["task_count"]==1 and d["by_state"]=={"Ready":1}; assert d["cases"][0]["id"]=="eval-case" and "time in state" in d["unmeasured"] and "reservation/lease consistency" in d["unmeasured"]' <<<"$report"
 [[ ! -e "$ROOT/.agents/skills/workspace-orchestrator/bin/__pycache__" ]]
 
 # A malformed record invalidates the entire report; it cannot be dropped from
 # a denominator. Stage the fixture for operator disposal, never use rm.
-python3 - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
+python3 -I -B - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
 import json
 import sys
 path = sys.argv[1]
@@ -64,7 +111,7 @@ set -e
 # A malformed type formerly raised an uncaught TypeError inside the canonical
 # validator. It must produce the same bounded UNVERIFIED response, not traceback.
 cp "$FIXTURE/test-state-source/tasks/eval-case/task.json" "$FIXTURE/.orchestrator/tasks/eval-case/task.json"
-python3 - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
+python3 -I -B - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
 import json
 import sys
 path = sys.argv[1]
@@ -82,7 +129,7 @@ set -e
 # Legacy schema-1 records were upgraded with a DEFAULT rework_count=0. A
 # default is not evidence of zero rework and must render as null.
 cp "$FIXTURE/test-state-source/tasks/eval-case/task.json" "$FIXTURE/.orchestrator/tasks/eval-case/task.json"
-python3 - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
+python3 -I -B - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
 import json
 import sys
 path = sys.argv[1]
@@ -104,4 +151,5 @@ linked="$(python3 -I -B "$EVAL" --workspace "$FIXTURE" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 3 && "$linked" == *UNVERIFIED* ]]
+CHECKS="passed"
 printf 'evaluate-workflow tests: PASS\n'
