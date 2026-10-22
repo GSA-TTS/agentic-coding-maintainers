@@ -82,7 +82,7 @@ engagement artifacts.
 ## Development
 
 For an operator-invoked, read-only **current-state** workflow scorecard, run
-`python3 scripts/evaluate-workflow.py --workspace .`. See
+`python3 -I -B scripts/evaluate-workflow.py --workspace .`. See
 [`docs/WORKFLOW-EVALUATION.md`](docs/WORKFLOW-EVALUATION.md) for the explicit
 unmeasured historical outcomes, cohort design and reflection guardrails. An
 empty or unreadable task store exits 3 (`UNVERIFIED`), never a healthy-looking

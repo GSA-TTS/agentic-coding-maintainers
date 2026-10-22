@@ -9,7 +9,7 @@ adopt.
 ## V1: what is measurable now
 
 ```bash
-python3 scripts/evaluate-workflow.py --workspace /path/to/maintainers
+python3 -I -B scripts/evaluate-workflow.py --workspace /path/to/maintainers
 ```
 
 The JSON report carries its `as_of` timestamp, task count, state/kind counts,

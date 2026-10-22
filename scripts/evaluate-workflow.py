@@ -5,6 +5,7 @@ import argparse
 import importlib.util
 import json
 import os
+import stat
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -15,7 +16,14 @@ class Unverified(Exception):
     pass
 
 
+MAX_CASES = 500
+MAX_RECORD_BYTES = 100_000
+MAX_TOTAL_BYTES = 5_000_000
+
+
 def instant(value: str) -> datetime:
+    if not isinstance(value, str):
+        raise Unverified("task timestamp is not a string")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
@@ -51,28 +59,57 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
     spec.loader.exec_module(module)
 
     results = []
-    for directory in sorted(tasks.iterdir()):
-        if directory.is_symlink() or not directory.is_dir():
-            raise Unverified("task store has an unexpected or symlinked entry")
-        path = directory / "task.json"
-        if not path.is_file() or path.is_symlink():
-            raise Unverified("task record missing or symlinked")
-        try:
-            record = module.validate_record(module.read_json(path, "evaluation task"), directory.name)
-        except Exception as exc:  # malformed field types may raise TypeError in the canonical validator
-            raise Unverified("a task record could not be validated") from exc
-        if record["transition_intent"] is not None:
-            raise Unverified("task transition is incomplete; reconcile first")
-        created, updated = instant(record["created_at"]), instant(record["updated_at"])
-        if created > updated or updated > as_of:
-            raise Unverified("task timestamps are inconsistent or in the future")
-        results.append({
-            "id": record["task_id"], "kind": record["kind"], "state": record["state"],
-            "age_days": round((as_of - created).total_seconds() / 86400, 2),
-            "since_last_write_days": round((as_of - updated).total_seconds() / 86400, 2),
-            "recorded_rework_count": record["rework_count"],
-            "unresolved_finding_count": len(record["findings"]),
-        })
+    total_bytes = 0
+    # Directory-descriptor-relative, no-follow reads. A pathname precheck then
+    # open() is raceable: a concurrent writer can swap it for an outside link.
+    tasks_fd = os.open(tasks, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        names = sorted(os.listdir(tasks_fd))
+        if len(names) > MAX_CASES:
+            raise Unverified("task count exceeds the evaluation limit")
+        for name in names:
+            if name in (".", ".."):
+                raise Unverified("task directory name is invalid")
+            directory_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=tasks_fd)
+            try:
+                entries = os.listdir(directory_fd)
+                if "task.json" not in entries:
+                    raise Unverified("task record is missing")
+                record_fd = os.open("task.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+                try:
+                    info = os.fstat(record_fd)
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RECORD_BYTES:
+                        raise Unverified("task record is not a bounded regular file")
+                    total_bytes += info.st_size
+                    if total_bytes > MAX_TOTAL_BYTES:
+                        raise Unverified("task record bytes exceed the evaluation limit")
+                    with os.fdopen(record_fd, encoding="utf-8") as handle:
+                        record_fd = -1
+                        raw = json.load(handle)
+                finally:
+                    if record_fd >= 0:
+                        os.close(record_fd)
+            finally:
+                os.close(directory_fd)
+            try:
+                source_schema = raw.get("schema_version") if isinstance(raw, dict) else None
+                record = module.validate_record(raw, name)
+            except Exception as exc:  # malformed field types may raise TypeError in the canonical validator
+                raise Unverified("a task record could not be validated") from exc
+            if record["transition_intent"] is not None:
+                raise Unverified("task transition is incomplete; reconcile first")
+            created, updated = instant(record["created_at"]), instant(record["updated_at"])
+            if created > updated or updated > as_of:
+                raise Unverified("task timestamps are inconsistent or in the future")
+            results.append({
+                "id": record["task_id"], "kind": record["kind"], "state": record["state"],
+                "age_days": round((as_of - created).total_seconds() / 86400, 2),
+                "since_last_write_days": round((as_of - updated).total_seconds() / 86400, 2),
+                "recorded_rework_count": record["rework_count"] if source_schema != 1 else None,
+                "unresolved_finding_count": len(record["findings"]),
+            })
+    finally:
+        os.close(tasks_fd)
     return {
         "as_of": as_of.isoformat(), "coverage": "parsed_task_records" if results else "no_evidence",
         "task_count": len(results), "by_state": dict(sorted(Counter(x["state"] for x in results).items())),
@@ -95,11 +132,15 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, required=True)
     args = parser.parse_args()
     try:
+        if not sys.flags.isolated or not sys.dont_write_bytecode:
+            raise Unverified("run with python3 -I -B so imports cannot use workspace PYTHONPATH or write bytecode")
         workspace = args.workspace.expanduser()
         if workspace.is_symlink() or not workspace.is_dir():
             raise Unverified("workspace is not a real directory")
         report = snapshot(workspace.resolve(), datetime.now(timezone.utc))
-    except (Unverified, OSError, ValueError) as exc:
+    except (Unverified, OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+        if not isinstance(exc, Unverified):
+            exc = Unverified("task store could not be read consistently")
         print(f"evaluation: UNVERIFIED — {exc}", file=sys.stderr)
         return 3
     print(json.dumps(report, indent=2, sort_keys=True))
