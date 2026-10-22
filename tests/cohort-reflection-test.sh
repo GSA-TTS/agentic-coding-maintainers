@@ -12,6 +12,7 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 as_of = datetime(2026, 10, 22, tzinfo=timezone.utc)
+key = b"synthetic-test-key-32-bytes-long!!"
 sha_a = "a" * 40
 sha_b = "b" * 40
 
@@ -43,13 +44,15 @@ rows = [
     row("excluded", 14, "intake", case_type="other", eligibility="excluded"),
     row("unknown", 15, "intake", case_type="other", eligibility="unknown"),
 ]
-report = module.reflect(read(rows), as_of)
+report = module.reflect(read(rows), as_of, key)
 assert len(report["eligible_ids"]) == 5
 assert len(report["unfinished_for_verified_throughput"]) == 5  # even claimed outcomes remain unverified
-assert report["documented_outcome_ids_unverified"] == ["complete"]
+assert report["documented_outcome_ids_unverified"] == [module.pseudonym("complete", key)]
 assert report["verified_completion_ids"] == []
-assert report["post_review_substantive_rework_ids"] == ["rework"]  # cycles don't inflate cases
-assert report["excluded_ids"] == ["excluded"] and report["unknown_eligibility_ids"] == ["unknown"]
+assert report["post_review_substantive_rework_ids"] == [module.pseudonym("rework", key)]  # cycles don't inflate cases
+assert report["excluded_ids"] == [module.pseudonym("excluded", key)]
+assert report["unknown_eligibility_ids"] == [module.pseudonym("unknown", key)]
+assert '"complete"' not in json.dumps(report)
 assert "UNMEASURED" in report["intake_completeness"]
 
 
@@ -80,7 +83,13 @@ late = [rows[0], dict(row("complete", 27, "transition", state="blocked"), occurr
         dict(row("complete", 28, "transition", state="open"), occurred_at="2026-10-12T00:00:00Z",
              recorded_at="2026-10-16T00:00:00Z")]
 late[1]["recorded_at"] = "2026-10-15T00:00:00Z"
-assert module.reflect(read(late), as_of)["unfinished_for_verified_throughput"][0]["state"] == "blocked"
+assert module.reflect(read(late), as_of, key)["unfinished_for_verified_throughput"][0]["state"] == "blocked"
+# Reproducing an earlier cutoff must not be invalidated by a later append.
+after = dict(row("complete", 29, "transition", state="cancelled"),
+             occurred_at="2026-10-24T00:00:00Z", recorded_at="2026-10-25T00:00:00Z")
+assert module.reflect(read(rows + [after]), as_of, key) == report
+only_excluded = module.reflect(read([rows[13]]), as_of, key)
+assert only_excluded["coverage"] == "no_eligible_evidence"
 try:
     module.events_from(b'{"truncated":true}', as_of)
 except module.Unverified:

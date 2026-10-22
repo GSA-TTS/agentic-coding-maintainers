@@ -9,6 +9,8 @@ if not sys.flags.isolated or not sys.dont_write_bytecode:
 
 import argparse
 import contextlib
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -57,6 +59,13 @@ def unique_fields(pairs: list[tuple[str, object]]) -> dict:
             raise Unverified("event has duplicate JSON fields")
         result[key] = value
     return result
+
+
+def pseudonym(case_id: str, key: bytes) -> str:
+    # A keyed local pseudonym resists trivial enumeration of issue-like IDs.
+    # The key stays in a separate private file; the report cannot be used to
+    # recover case identifiers without it. Never echo caller-supplied IDs.
+    return "case-" + hmac.new(key, case_id.encode(), hashlib.sha256).hexdigest()[:24]
 
 
 def private_file(path: Path) -> bytes:
@@ -124,7 +133,7 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
             raise Unverified("duplicate event identifier")
         occurred = timestamp(event["occurred_at"])
         recorded = timestamp(event["recorded_at"])
-        if occurred > recorded or recorded > as_of:
+        if occurred > recorded:
             raise Unverified("event timestamp ordering is inconsistent")
         if prior_recorded is not None and recorded < prior_recorded:
             raise Unverified("append order disagrees with recorded time")
@@ -166,10 +175,15 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
     return events
 
 
-def reflect(events: list[dict], as_of: datetime) -> dict:
+def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     start = as_of - timedelta(days=28)
     case_events: dict[str, list[dict]] = {}
     for event in events:
+        # Validate the whole append-only ledger first; later recorded events
+        # are normal when reproducing an earlier snapshot. The reporting view
+        # uses recorded_at as its cutoff, not occurrence alone.
+        if timestamp(event["recorded_at"]) > as_of:
+            continue
         case_events.setdefault(event["case_id"], []).append(event)
     cohort = {
         case_id: rows for case_id, rows in case_events.items()
@@ -178,7 +192,7 @@ def reflect(events: list[dict], as_of: datetime) -> dict:
     eligible = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "eligible")
     excluded = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "excluded")
     unknown = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "unknown")
-    unfinished = []
+    unfinished: list[tuple[str, str, float]] = []
     documented_outcomes = []
     reworked = []
     reviewed = []
@@ -192,24 +206,31 @@ def reflect(events: list[dict], as_of: datetime) -> dict:
             documented_outcomes.append(case_id)
         # Recorded outcomes remain unfinished for VERIFIED throughput until a
         # separate repository/head/check attestation has been established.
-        unfinished.append({"case_id": case_id, "state": latest,
-                           "age_days": round((as_of - timestamp(rows[0]["occurred_at"])).total_seconds() / 86400, 2)})
+        unfinished.append((case_id, latest,
+                           round((as_of - timestamp(rows[0]["occurred_at"])).total_seconds() / 86400, 2)))
         if any(row["event_type"] == "review" and row["independent"] == "yes" for row in rows):
             reviewed.append(case_id)
         if any(row["event_type"] == "rework" and row["substantive"] == "yes" and
                kinds[row["review_event_id"]]["independent"] == "yes" for row in rows):
             reworked.append(case_id)
+    label = {case_id: pseudonym(case_id, key) for case_id in cohort}
+    if len(set(label.values())) != len(label):
+        raise Unverified("report case labels collide")
     return {
         "as_of": as_of.isoformat(), "window_days": 28,
-        "coverage": "recorded_events_only" if cohort else "no_evidence",
+        "coverage": "recorded_eligible_cohort" if eligible else "no_eligible_evidence",
         "out_of_window_recorded_case_count": len(case_events) - len(cohort),
         "intake_completeness": "UNMEASURED: independent request inventory absent",
-        "eligible_ids": eligible, "excluded_ids": excluded, "unknown_eligibility_ids": unknown,
-        "documented_outcome_ids_unverified": sorted(documented_outcomes),
+        "eligible_ids": [label[cid] for cid in eligible], "excluded_ids": [label[cid] for cid in excluded],
+        "unknown_eligibility_ids": [label[cid] for cid in unknown],
+        "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
         "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: no live GitHub/head/check attestation",
-        "unfinished_for_verified_throughput": sorted(unfinished, key=lambda row: (-row["age_days"], row["case_id"])),
-        "independent_review_recorded_ids": sorted(reviewed),
-        "post_review_substantive_rework_ids": sorted(reworked),
+        "unfinished_for_verified_throughput": sorted(
+            ({"case_id": label[cid], "state": state, "age_days": age} for cid, state, age in unfinished),
+            key=lambda row: (-row["age_days"], row["case_id"]),
+        ),
+        "independent_review_recorded_ids": sorted(label[cid] for cid in reviewed),
+        "post_review_substantive_rework_ids": sorted(label[cid] for cid in reworked),
         "recommendations": [
             "Reconcile the intake cohort against an independently defined request inventory.",
             "Verify outcome head, checks and repository event before counting any completion.",
@@ -220,16 +241,20 @@ def reflect(events: list[dict], as_of: datetime) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, required=True)
+    parser.add_argument("--key-file", type=Path, required=True, help="absolute private file containing a random pseudonym key")
     parser.add_argument("--as-of", required=True, help="fixed UTC snapshot, e.g. 2026-10-22T00:00:00Z")
     args = parser.parse_args()
     try:
         as_of = timestamp(args.as_of)
-        report = reflect(events_from(private_file(args.ledger), as_of), as_of)
+        key = private_file(args.key_file)
+        if len(key) < 32 or len(key) > 128:
+            raise Unverified("pseudonym key must be 32-128 random bytes")
+        report = reflect(events_from(private_file(args.ledger), as_of), as_of, key)
     except (Unverified, OSError, ValueError, TypeError) as exc:
         print(f"reflection: UNVERIFIED — {exc if isinstance(exc, Unverified) else 'ledger unavailable'}", file=sys.stderr)
         return 3
     print(json.dumps(report, sort_keys=True, indent=2))
-    return 0 if report["coverage"] == "recorded_events_only" else 3
+    return 0 if report["coverage"] == "recorded_eligible_cohort" else 3
 
 
 if __name__ == "__main__":

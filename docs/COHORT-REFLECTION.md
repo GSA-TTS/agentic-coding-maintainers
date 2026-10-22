@@ -7,7 +7,8 @@ fixed UTC cutoff:
 
 ```bash
 python3 -I -B scripts/cohort-reflection.py \
-  --ledger /absolute/private/path/cases.jsonl --as-of 2026-10-22T00:00:00Z
+  --ledger /absolute/private/path/cases.jsonl \
+  --key-file /absolute/private/path/report.key --as-of 2026-10-22T00:00:00Z
 ```
 
 The ledger is host-local, current-user-owned and private (`0700` directory,
@@ -16,7 +17,12 @@ reviews. Keep only bounded opaque identifiers, enumerated classifications,
 full 40-hex heads and UTC timestamps. No titles, finding descriptions,
 credentials, operator IDs, URLs, raw PR text, or shell output. Each line has
 `schema_version: 1`, an opaque unique `event_id` and `case_id`, `event_type`,
-`occurred_at` and `recorded_at`, followed by exactly these typed fields:
+`occurred_at` and `recorded_at`, followed by exactly these typed fields. Generate
+the separate private report key with `python3 -I -B -c 'import secrets,sys;
+sys.stdout.buffer.write(secrets.token_bytes(32))' > /absolute/private/path/report.key`
+under a `umask 077`; never commit or publish it. Keep this key stable across
+reports so a case can be followed by the same pseudonym, and rotate it when
+access to the mapping changes:
 
 | Event | Additional fields |
 |---|---|
@@ -33,7 +39,9 @@ references, out-of-order recorded timestamps, and incomplete final lines. It
 limits total bytes and event count; any failure is `UNVERIFIED` (exit 3), not a
 partial clean report. The cohort is the 28-day window of **first intake** events
 before `--as-of`. Eligible blocked and cancelled cases stay in the denominator;
-excluded and unknown eligibility cases are disclosed separately. Late-recorded
+excluded and unknown eligibility cases are disclosed separately. Report IDs
+are keyed pseudonyms, not raw case IDs; preserve the private key to reconcile
+them with the ledger. Late-recorded
 transitions use occurrence time to determine current state, with append order
 as a tie-breaker.
 
