@@ -317,19 +317,19 @@ def release_dir(path: Path, token: str) -> None:
 
 
 def reserve_first(root: Path, group: str, count: int, metadata: dict[str, Any]) -> int:
-    unknown = []
+    # Validate EVERY existing reservation before admitting a worker. An empty
+    # slot after a corrupt lock does not make capacity measurable again.
+    for idx in range(count):
+        path = root / group / f"{idx}.lock"
+        if path.exists() or path.is_symlink():
+            read_json(path / "owner.json", f"{group} {idx} owner")
     for idx in range(count):
         path = root / group / f"{idx}.lock"
         try:
             acquire_dir(path, metadata)
             return idx
         except BusyError:
-            try:
-                read_json(path / "owner.json", f"{group} {idx} owner")
-            except UnknownError as exc:
-                unknown.append(str(exc))
-    if unknown:
-        raise UnknownError("; ".join(unknown))
+            read_json(path / "owner.json", f"{group} {idx} owner")
     raise BusyError(f"no {group} capacity available")
 
 
@@ -448,7 +448,7 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if existing["repo"] == args.repo:
                 for left in incoming_paths:
                     for right in current_paths:
-                        if left == right or left.startswith(right.rstrip("/") + "/") or right.startswith(left.rstrip("/") + "/"):
+                        if left == "." or right == "." or left == right or left.startswith(right.rstrip("/") + "/") or right.startswith(left.rstrip("/") + "/"):
                             raise BusyError(f"path resource overlaps task {existing['task_id']}: {left!r} / {right!r}")
         metadata = {"schema_version": SCHEMA, "task_id": task_id, "scope": scope, "token": uuid.uuid4().hex}
         stamp = now()
@@ -551,9 +551,16 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if record["findings"]:
                 raise BusyError("readiness is blocked by unresolved findings")
             if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+                # Worktree-local Git configuration is not trusted. `git status`
+                # can execute core.fsmonitor, so disable it before touching a
+                # PR checkout; do not inherit GIT_* redirects from the caller.
+                git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+                git_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_OPTIONAL_LOCKS="0")
                 dirty = subprocess.run(
-                    ["git", "-C", record["worktree"], "status", "--porcelain", "--untracked-files=all"],
-                    capture_output=True, text=True, check=False, timeout=5,
+                    ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+                     "-c", f"core.hooksPath={os.devnull}", "-C", record["worktree"],
+                     "status", "--porcelain", "--untracked-files=all"],
+                    capture_output=True, text=True, check=False, timeout=5, env=git_env,
                 )
                 if dirty.returncode != 0:
                     raise UnknownError("cannot establish implementation worktree cleanliness")

@@ -95,11 +95,11 @@ def load(tool: str) -> dict:
     repositories = config.get("repositories")
     if not isinstance(repositories, list) or not 1 <= len(repositories) <= 50:
         fail(tool, f"{path}: repositories must be a list of 1-50 entries")
-    if len(set(repositories)) != len(repositories):
-        fail(tool, f"{path}: repositories contains duplicates")
     for entry in repositories:
         if not isinstance(entry, str) or not REPO_RE.fullmatch(entry):
             fail(tool, f"{path}: {entry!r} is not a valid owner/name repository")
+    if len(set(repositories)) != len(repositories):
+        fail(tool, f"{path}: repositories contains duplicates")
 
     project = config.get("project")
     if project is not None:

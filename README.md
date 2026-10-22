@@ -93,8 +93,9 @@ bin/orchestrator-state.sh reconcile
 bin/orchestrator-state.sh list
 bin/portfolio-status.sh
 bin/epic-status.sh patterns#357
-# Once a monitor task has been created and claimed:
-bin/orchestrator-monitor.sh --task-id portfolio-monitor --loop
+# After creating a kind=monitor task named portfolio-monitor, claim and exec
+# in the SAME process (the recorded worker PID must be the monitor's PID):
+sh -c 'bin/orchestrator-state.sh claim portfolio-monitor --owner monitor --pid $$ >/dev/null && exec bin/orchestrator-monitor.sh --task-id portfolio-monitor --loop'
 ```
 
 The `bin/` scripts are thin entry points into the canonical skills. A missing

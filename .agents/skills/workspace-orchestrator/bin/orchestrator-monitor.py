@@ -312,6 +312,9 @@ def main() -> int:
             validate_monitor_task(root, args.task_id)
             acquire(lock)
             try:
+                # A running monitor must never silently keep watching old
+                # repositories after the host-local config changes.
+                config = load_config(args.config)
                 status, _observation, changed = poll(root, config)
                 if status == "CHANGED":
                     print(f"monitor: CHANGED at {now()}")

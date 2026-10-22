@@ -167,7 +167,8 @@ tmp_cfg_dir="$(mktemp -d)"
 printf 'not json\n' > "$tmp_cfg_dir/malformed.json"
 printf '{"schema_version":1,"repositories":["acme/api"],"project":null}\n' > "$tmp_cfg_dir/noboard.json"
 printf '{"schema_version":1,"repositories":["acme/api"],"project":{"owner":"o","number":1,"owner_type":"neither"}}\n' > "$tmp_cfg_dir/badtype.json"
-for cfg in "$tmp_cfg_dir/absent.json" "$tmp_cfg_dir/malformed.json" "$tmp_cfg_dir/noboard.json" "$tmp_cfg_dir/badtype.json"; do
+printf '{"schema_version":1,"repositories":[["acme/api"]],"project":{"owner":"o","number":1}}\n' > "$tmp_cfg_dir/unhashable.json"
+for cfg in "$tmp_cfg_dir/absent.json" "$tmp_cfg_dir/malformed.json" "$tmp_cfg_dir/noboard.json" "$tmp_cfg_dir/badtype.json" "$tmp_cfg_dir/unhashable.json"; do
   set +e
   cfg_err="$(PATH="$generic_bin:/usr/bin:/bin" CROSS_REPO_EPIC_CONFIG="$cfg" "$ROOT/bin/portfolio-status.sh" 2>&1 >/dev/null)"
   rc=$?
