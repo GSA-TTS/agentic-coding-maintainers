@@ -11,6 +11,12 @@ __pycache__/
 venv/
 .nexus-agents/
 .import/
+# Runtime state and checkouts for this maintainer workspace, never source.
+.orchestrator/
+work/
+clones/*
+!clones/AGENTS.md
+orchestrator.json
 *.pem
 *.key
 *.crt

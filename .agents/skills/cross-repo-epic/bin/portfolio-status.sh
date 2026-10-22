@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# portfolio-status.sh — read-only cross-repo epic view from GSA-TTS Project 120.
+# portfolio-status.sh — read-only epic view from the configured Project v2 board.
 # Exit: 0 = coverage printed; 2 = usage; 3 = UNVERIFIED.
 set -uo pipefail
 
