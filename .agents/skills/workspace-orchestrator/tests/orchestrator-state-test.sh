@@ -87,6 +87,12 @@ mkdir "$WORK/scope-owner"
 expect_rc 4 "$CMD" create scope-duplicate --scope 'repo:x:path:shared' --kind review --worktree "$WORK" --head-sha "$REVIEW_SHA"
 [[ ! -e "$STATE/tasks/scope-duplicate/task.json" ]] || fail "duplicate task record was written"
 
+# A root path owns ALL children; a path check that treats '.' as a regular
+# segment admits a second writer to src/example beneath it.
+mkdir "$WORK/whole-repo" "$WORK/nested-repo"
+"$CMD" create whole-repo --scope 'repo:x:path:all' --kind review --repo x/whole --worktree "$WORK/whole-repo" --head-sha "$REVIEW_SHA" --owned-path . >/dev/null
+expect_rc 4 "$CMD" create nested-repo --scope 'repo:x:path:nested' --kind review --repo x/whole --worktree "$WORK/nested-repo" --head-sha "$REVIEW_SHA" --owned-path src/example
+
 # Invalid transition and direct Unknown are caller errors.
 expect_rc 2 "$CMD" transition scope-owner Done
 expect_rc 2 "$CMD" transition scope-owner Unknown
@@ -146,6 +152,16 @@ grep -q Unknown /tmp/orch-out.$$ || fail "corrupt state did not emit Unknown"
 mkdir "$STATE/slots/orphan.lock"
 expect_rc 3 "$CMD" reconcile
 [[ -d "$STATE/slots/orphan.lock" ]] || fail "ambiguous lock was removed automatically"
+
+# An earlier ambiguous slot must block admission even when a LATER slot is
+# free; otherwise global capacity is falsely reported as measurable.
+STATE3="$(mktemp -d "${TMPDIR:-/tmp}/orchestrator-ambiguous.XXXXXX")"
+export ORCHESTRATOR_STATE_DIR="$STATE3"
+"$CMD" create ambiguous-slot --scope 'repo:x:review:ambiguous' --kind review --head-sha "$REVIEW_SHA" >/dev/null
+mkdir "$STATE3/slots/0.lock"
+expect_rc 3 "$CMD" claim ambiguous-slot --owner reviewer --pid $$
+[[ ! -e "$STATE3/slots/1.lock" ]] || fail "ambiguous slot allowed a later free slot to be claimed"
+grep -q '"state": "Ready"' "$STATE3/tasks/ambiguous-slot/task.json" || fail 'ambiguous slot partially claimed a task'
 
 # Dead workers become Blocked and release capacity. Use a PID that we actually
 # owned and waited for, not an assumed high PID.

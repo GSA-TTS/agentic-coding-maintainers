@@ -12,6 +12,8 @@ test:
 	bash tests/import-sync-test.sh
 	bash tests/opencode-compat-test.sh
 	bash tests/forbidden-paths-test.sh
+	bash tests/evaluate-workflow-test.sh
+	bash tests/operating-surface-test.sh
 
 check: test
 	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"

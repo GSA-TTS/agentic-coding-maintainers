@@ -104,6 +104,25 @@ git -C "$REPO" worktree add -q --detach "$REVIEW_WORKTREE" "$head"
 "$CMD" record fixed-review validation 'fixed review evidence' >/dev/null
 "$CMD" transition fixed-review 'Ready for human review' >/dev/null
 
+# An ignored file changes what a test or reviewer may read. The fixed-head
+# readiness check must reject it, even though `git status` may omit it.
+git -C "$REVIEW_WORKTREE" config --local core.excludesfile /dev/null
+git -C "$REVIEW_WORKTREE" config --local core.fsmonitor false
+git -C "$REPO" worktree add -q --detach "$CONSUMER/work/ignored-review" "$head"
+"$CMD" create ignored-review --scope 'example/repo:pr:ignored' --kind review \
+  --repo example/repo --worktree "$CONSUMER/work/ignored-review" --head-sha "$head" >/dev/null
+"$CMD" claim ignored-review --owner reviewer --pid $$ >/dev/null
+"$CMD" transition ignored-review Reviewing >/dev/null
+"$CMD" record ignored-review reviewer qa --reviewed-sha "$head" >/dev/null
+"$CMD" record ignored-review validation 'offline fixed-head fixture' >/dev/null
+printf '*.scratch\n' > "$CONSUMER/work/ignored-review/.gitignore"
+printf 'changed\n' > "$CONSUMER/work/ignored-review/local.scratch"
+set +e
+"$CMD" transition ignored-review 'Ready for human review' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 4 ]]
+
 set +e
 "$CMD" create fabricated-review --scope 'example/repo:pr:2' --kind review \
   --repo example/repo --worktree "$REVIEW_WORKTREE" --head-sha "$(printf 'f%.0s' {1..40})" >/dev/null 2>&1
