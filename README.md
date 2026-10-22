@@ -110,6 +110,12 @@ a worktree is not a sandbox for untrusted PR code.
 
 ## Checks
 
+For an operator-invoked, read-only **current-state** task-record scorecard, run
+`python3 -I -B scripts/evaluate-workflow.py --workspace .`. See
+[`docs/WORKFLOW-EVALUATION.md`](docs/WORKFLOW-EVALUATION.md) for its unmeasured
+outcomes, cohort design and reflection guardrails. An empty or unreadable task
+store exits 3 (`UNVERIFIED`), never a healthy-looking zero-work report.
+
 ```bash
 make test
 make check

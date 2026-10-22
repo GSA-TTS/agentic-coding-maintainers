@@ -12,6 +12,7 @@ test:
 	bash tests/import-sync-test.sh
 	bash tests/opencode-compat-test.sh
 	bash tests/forbidden-paths-test.sh
+	bash tests/evaluate-workflow-test.sh
 	bash tests/operating-surface-test.sh
 
 check: test
