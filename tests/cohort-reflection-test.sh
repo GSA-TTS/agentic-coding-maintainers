@@ -113,6 +113,15 @@ import tempfile
 
 fixture = pathlib.Path(tempfile.mkdtemp(prefix="cohort-cli-"))
 os.chmod(fixture, 0o700)
+manifest = fixture / "MANIFEST.md"
+manifest.write_text(
+    "# Cohort reflection CLI fixture\n\n"
+    "Created by tests/cohort-reflection-test.sh under the system temporary directory. "
+    "It contains only synthetic case events, a synthetic test key, symlink and oversized input. "
+    "No real case, credential or task evidence. This private directory can be deleted by the operator. "
+    "An interrupted test may contain only some of these items.\n",
+    encoding="utf-8",
+)
 ledger = fixture / "cases.jsonl"
 key_file = fixture / "report.key"
 key_file.write_bytes(key)
@@ -170,9 +179,6 @@ early = subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str
                         "--key-file", str(key_file), "--as-of", "0001-01-01T00:00:00Z"],
                        capture_output=True, text=True, check=False)
 assert early.returncode == 3 and "UNVERIFIED" in early.stderr and "Traceback" not in early.stderr
-manifest = fixture / "MANIFEST.md"
-manifest.write_text("Synthetic CLI fixtures for cohort-reflection-test.sh: ledger, key, symlink and oversized input. "
-                    "All are test data created by this run; safe for the operator to delete.\n", encoding="utf-8")
 print("cohort_cli_fixture=" + str(fixture), file=sys.stderr)
 print("cohort-reflection tests: PASS")
 PY
