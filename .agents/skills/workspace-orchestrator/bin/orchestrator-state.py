@@ -93,7 +93,9 @@ def verify_clean_checkout(worktree: str) -> None:
         raise BusyError("worktree has staged changes")
     if staged.returncode != 0:
         raise UnknownError("cannot establish staged checkout cleanliness")
-    unknown = git_probe(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    # Include ignored files too: a build/test may consume an ignored config,
+    # and a fixed-SHA review cannot claim a clean checkout with those present.
+    unknown = git_probe(worktree, "ls-files", "--others", "-z")
     if unknown.returncode != 0:
         raise UnknownError("cannot enumerate untracked checkout files")
     if unknown.stdout:
@@ -826,6 +828,11 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
             verify_worktree_identity(record, require_head=True)
             verify_clean_checkout(record["worktree"])
         if record["kind"] == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+            verify_review_identity(record)
+    if target in {"Reviewing", "Implementing"} and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+        if record["kind"] == "implementation":
+            verify_worktree_identity(record, require_head=True)
+        elif record["kind"] == "review":
             verify_review_identity(record)
     if target == "Implementing" and record["leases"]["implementation_lane"] is None:
         if record["kind"] != "implementation" or not record.get("worker"):

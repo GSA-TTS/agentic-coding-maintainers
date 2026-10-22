@@ -243,7 +243,7 @@ def project_snapshot(project: dict[str, Any] | None) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def poll(root: Path, config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
+def poll(root: Path, config: dict[str, Any], config_path: Path | None = None) -> tuple[str, dict[str, Any], list[str]]:
     checkpoint = root / "checkpoint.json"
     project = project_snapshot(config["project"])
     prs = pr_snapshot(config["repositories"])
@@ -253,6 +253,10 @@ def poll(root: Path, config: dict[str, Any]) -> tuple[str, dict[str, Any], list[
         "prs": prs,
         "project_sha256": hashlib.sha256(project.encode()).hexdigest() if config["project"] else None,
     }
+    # Do not persist a successful poll of old targets after config changed
+    # while the network queries ran. The caller must reconcile and restart.
+    if config_path is not None and load_config(config_path) != config:
+        raise MonitorError("monitor configuration changed during poll; restart before reporting coverage")
     previous = None
     if checkpoint.exists():
         try:
@@ -319,7 +323,7 @@ def main() -> int:
                 current_config = load_config(args.config)
                 if current_config != config:
                     raise MonitorError("monitor configuration changed; stop, reconcile targets, and restart")
-                status, _observation, changed = poll(root, current_config)
+                status, _observation, changed = poll(root, current_config, args.config)
                 if status == "CHANGED":
                     print(f"monitor: CHANGED at {now()}")
                     for item in changed:
