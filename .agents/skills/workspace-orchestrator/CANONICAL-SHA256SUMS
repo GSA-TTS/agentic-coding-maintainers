@@ -19,5 +19,5 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 390ad903199381a3029ddfc964b38a9cfe32254068535e641df9c6ffa6290be1  ./tests/fixtures/orchestrator-monitor-bin/gh
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh
 d471914b0812094b5670093d4a1d7b31c15ea379d0697be952bf68fe6ab2bb99  ./tests/orchestrator-monitor-test.sh
-320993024ad2b2eea0e681f1792907504ffcc398c997173d3c65f28d13a68cd2  ./tests/orchestrator-production-worktree-test.sh
+6d47797f5943327b8ac04248fb43c392dd9cafbccd74773dc84c211d74e091f8  ./tests/orchestrator-production-worktree-test.sh
 b05ded63c465c17a1587f13507fb0115588e710299cb372ba3ef61be915a5d52  ./tests/orchestrator-state-test.sh
