@@ -57,12 +57,24 @@ def load_config(path: Path) -> dict[str, Any]:
         raise MonitorError("monitor repositories must be unique owner/name values")
     project = config.get("project")
     if project is not None:
-        if not isinstance(project, dict) or set(project) != {"owner", "number"}:
-            raise MonitorError("project must contain only owner and number")
+        if not isinstance(project, dict) or not {"owner", "number"} <= set(project):
+            raise MonitorError("project must contain owner and number")
+        # owner_type is OPTIONAL and defaults to "organization": GraphQL exposes
+        # projectV2 under separate organization/user root fields with no neutral
+        # one, so a consumer that reads the board needs the type stated rather
+        # than probed. Accepting it here (instead of rejecting it as unknown)
+        # keeps one config file shared with the cross-repo-epic skill. The
+        # monitor itself does not use it.
+        if not set(project) <= {"owner", "number", "owner_type"}:
+            unknown = sorted(set(project) - {"owner", "number", "owner_type"})
+            raise MonitorError(f"project contains unsupported field(s): {', '.join(unknown)}")
         if not isinstance(project["owner"], str) or not OWNER_RE.fullmatch(project["owner"]):
             raise MonitorError("project owner is invalid")
         if type(project["number"]) is not int or project["number"] <= 0:
             raise MonitorError("project number must be positive")
+        owner_type = project.get("owner_type", "organization")
+        if owner_type not in {"organization", "user"}:
+            raise MonitorError("project owner_type must be organization or user")
     return {"schema_version": 1, "repositories": repositories, "project": project}
 
 

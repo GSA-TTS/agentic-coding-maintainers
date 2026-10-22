@@ -1,0 +1,61 @@
+#!/usr/bin/env sh
+# Stub for a DIFFERENT portfolio than the original engagement: a user-owned
+# board (#7 under acme-dev) and repositories spanning two owners. Exists to
+# prove the tools are config-driven rather than merely indirected — a suite
+# whose every fixture uses the original three repos cannot show that.
+mode="${GENERIC_STUB_MODE:-success}"
+query='' project_id='' owner='' number='' repo=''
+for argument in "$@"; do
+  case "$argument" in
+    query=*) query="${argument#query=}" ;;
+    id=*) project_id="${argument#id=}" ;;
+    owner=*) owner="${argument#owner=}" ;;
+    number=*) number="${argument#number=}" ;;
+    repo=*) repo="${argument#repo=}" ;;
+  esac
+done
+case "$query" in query*) ;; *) printf 'operation does not start with query\n' >&2; exit 1 ;; esac
+case "$query" in *mutation*) printf 'mutation is forbidden\n' >&2; exit 1 ;; esac
+
+# Resolve step: must use the USER root field, and the configured owner/number.
+case "$query" in
+  *"user(login:"*)
+    [ "$owner" = "acme-dev" ] || { printf 'wrong resolve owner: %s\n' "$owner" >&2; exit 1; }
+    [ "$number" = "7" ] || { printf 'wrong resolve number: %s\n' "$number" >&2; exit 1; }
+    printf '{"data":{"user":{"projectV2":{"id":"PVT_generic7"}}}}\n'
+    exit 0
+    ;;
+  *"organization(login:"*)
+    printf 'organization root used for a user-owned board\n' >&2
+    exit 1
+    ;;
+esac
+
+# Board paging: must carry the id the resolve step returned.
+case "$query" in
+  *"node(id:"*)
+    [ "$project_id" = "PVT_generic7" ] || { printf 'wrong project id: %s\n' "$project_id" >&2; exit 1; }
+    # Payload generated and json.loads-validated when this fixture was written;
+    # hand-assembled JSON across multiple printf calls produced an unbalanced
+    # brace twice, and a malformed fixture tests the parser, not the feature.
+    printf '%s\n' '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","number":11,"title":"Epic: api work","state":"OPEN","url":"https://github.com/acme/api/issues/11","repository":{"nameWithOwner":"acme/api"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}},{"content":{"__typename":"Issue","number":22,"title":"Epic: infra work","state":"OPEN","url":"https://github.com/other-org/infra/issues/22","repository":{"nameWithOwner":"other-org/infra"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"In Progress","field":{"name":"Status"}}]}},{"content":{"__typename":"Issue","number":99,"title":"Epic: unconfigured","state":"OPEN","url":"https://github.com/stranger/repo/issues/99","repository":{"nameWithOwner":"stranger/repo"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}'
+    exit 0
+    ;;
+esac
+
+# Epic fetch for acme/api#11, including a cross-owner child.
+case "$query" in
+  *"repository(owner:"*)
+    [ "$owner" = "acme" ] || { printf 'wrong epic owner: %s\n' "$owner" >&2; exit 1; }
+    [ "$repo" = "api" ] || { printf 'wrong epic repo: %s\n' "$repo" >&2; exit 1; }
+    case "$mode" in
+      board-wrong-owner) printf '%s\n' '{"data":{"repository":{"issue":{"__typename":"Issue","number":11,"title":"Epic: api work","state":"OPEN","url":"https://github.com/acme/api/issues/11","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":5,"title":"Cross-owner child","state":"OPEN","url":"https://github.com/other-org/infra/issues/5","repository":{"nameWithOwner":"other-org/infra"}}]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_other","number":7,"title":"Imposter","owner":{"__typename":"User","login":"attacker"}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}'; exit 0 ;;
+      board-wrong-kind) printf '%s\n' '{"data":{"repository":{"issue":{"__typename":"Issue","number":11,"title":"Epic: api work","state":"OPEN","url":"https://github.com/acme/api/issues/11","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":5,"title":"Cross-owner child","state":"OPEN","url":"https://github.com/other-org/infra/issues/5","repository":{"nameWithOwner":"other-org/infra"}}]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_other","number":7,"title":"Imposter","owner":{"__typename":"Organization","login":"acme-dev"}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}'; exit 0 ;;
+      child-outside) printf '%s\n' '{"data":{"repository":{"issue":{"__typename":"Issue","number":11,"title":"Epic: api work","state":"OPEN","url":"https://github.com/acme/api/issues/11","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":5,"title":"Cross-owner child","state":"OPEN","url":"https://github.com/stranger/repo/issues/5","repository":{"nameWithOwner":"stranger/repo"}}]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_generic7","number":7,"title":"Acme","owner":{"__typename":"User","login":"acme-dev"}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}'; exit 0 ;;
+    esac
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":11,"title":"Epic: api work","state":"OPEN","url":"https://github.com/acme/api/issues/11","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":5,"title":"Cross-owner child","state":"OPEN","url":"https://github.com/other-org/infra/issues/5","repository":{"nameWithOwner":"other-org/infra"}}]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_generic7","number":7,"title":"Acme","owner":{"__typename":"User","login":"acme-dev"}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}\n'
+    exit 0
+    ;;
+esac
+printf 'unexpected query\n' >&2
+exit 1

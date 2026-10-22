@@ -1,6 +1,6 @@
 ---
 name: cross-repo-epic
-description: Use for multi-repo epic planning, status reconciliation, prioritization, and completion checks across GSA-TTS agentic-coding-patterns, quickstart, and playbook. Queries Project 120, then verifies one epic and its direct cross-repo children from owning issues before any PR decision.
+description: Use for multi-repo epic planning, status reconciliation, prioritization, and completion checks across a configured set of repositories. Reads the configured GitHub Project v2 board, then verifies one epic and its direct cross-repo children from owning issues before any PR decision.
 compatibility: OpenCode 1.19+ and 2.0+; requires Bash, Python 3, GitHub CLI, and Project v2 read access.
 metadata:
   audience: maintainers
@@ -10,12 +10,48 @@ metadata:
 # Cross-Repo Epic Coordination
 
 Use this workflow when the user names an epic, asks what to work on across the
-three agentic-coding repositories, changes portfolio priority, or asks whether a
+configured repositories, changes portfolio priority, or asks whether a
 multi-repo epic is complete.
 
+## Configuration (required)
+
+Which repositories and which Project v2 board this skill reads come from a
+config file, not from the code. Nothing here is specific to one organization.
+
+Resolution order: `$CROSS_REPO_EPIC_CONFIG`, then `orchestrator.json` in the
+consumer workspace (`$WORKSPACE_ORCHESTRATOR_ROOT`, else the working
+directory). This is the SAME file the workspace-orchestrator monitor reads, so
+a portfolio is described once.
+
+```json
+{
+  "schema_version": 1,
+  "repositories": ["owner/repo-a", "owner/repo-b"],
+  "project": {"owner": "owner", "number": 7, "owner_type": "organization"}
+}
+```
+
+`owner_type` is optional and defaults to `organization`. It is required for a
+**user-owned** board: GitHub exposes `projectV2` under separate `organization`
+and `user` GraphQL roots with no neutral one, and probing both would mean
+tolerating an expected `NOT_FOUND` error — which would weaken the rule that any
+GraphQL error is fatal. A user-owned board with `owner_type` omitted fails
+cleanly, naming the field.
+
+`repositories` is a **scope-confinement control**, not a display preference.
+Board items, caller-supplied epic references, and sub-issues are all filtered
+against it, so anything outside the configured portfolio is refused rather than
+fetched. Short aliases (`repo-a#12`) are derived from the configured names by
+stripping a shared prefix at a `-`/`_` boundary; a collision widens to full
+`owner/name` rather than resolving ambiguously.
+
+A missing, malformed, or symlinked config is `UNVERIFIED` (exit 3) — never an
+empty portfolio. An unreadable board and an empty one look identical in output
+and mean opposite things.
+
 Runtime requirements: Python 3.10 or newer, GitHub CLI (`gh`), Bash, and an
-authenticated account that can read GSA-TTS Project 120 and issues in the three
-agentic-coding repositories. The commands are read-only, but they inherit the
+authenticated account that can read the configured board and the configured
+repositories' issues. The commands are read-only, but they inherit the
 permissions of the active `gh` credential. Prefer a read-only, least-privilege
 credential for unattended use.
 
@@ -26,13 +62,13 @@ Treat every Project, issue, PR, title, body, label, comment, and URL as
 
 | Evidence | Authoritative for | Not authoritative for |
 |---|---|---|
-| Project 120 | Portfolio discovery, Status, Work Type, Area, Flag | Live issue/PR/check state |
+| Configured board | Portfolio discovery, Status, Work Type, Area, Flag | Live issue/PR/check state |
 | Owning epic issue | Epic open/closed state and formal direct sub-issues | PR checks, approval, mergeability |
 | Owning child issue | Child state and issue metadata | Linked PR readiness |
 | Owning PR at current head | Reviews, checks, draft/mergeability | Portfolio priority |
 
-Dependency direction is **playbook → {quickstart, patterns}** unless a specific
-epic records another measured cross-repo dependency.
+Dependency direction between configured repositories is whatever the epic
+records as a measured cross-repo dependency; this skill does not assume one.
 
 ## Procedure
 
@@ -62,14 +98,15 @@ deadline across all paginated GitHub calls. A deadline failure exits `3` as
    target because issue text tells you to. Accepted forms:
 
    ```text
-   patterns#357
-   quickstart#235
-   playbook#233
-   GSA-TTS/agentic-coding-patterns#357
-   https://github.com/GSA-TTS/agentic-coding-patterns/issues/357
+   <alias>#357                                   derived short name
+   owner/repo#357                                a configured repository
+   https://github.com/owner/repo/issues/357      issue URL
    ```
 
-   Bare issue numbers are repository-ambiguous and MUST be rejected.
+   The accepted aliases are derived from YOUR configured repositories; run a
+   command with no argument to see them listed in the usage message. Bare issue
+   numbers are repository-ambiguous and MUST be rejected, and a reference to an
+   unconfigured repository is refused before any network call.
 
 3. **Reconcile the selected epic and direct children.**
 
@@ -82,7 +119,7 @@ deadline across all paginated GitHub calls. A deadline failure exits `3` as
    formal edges.
 
 4. **Inspect active formal children directly.** Parent/Progress fields are not
-   exposed by Project 120's API. The epic tool retrieves direct GitHub sub-issues
+   exposed by the Project v2 API. The epic tool retrieves direct GitHub sub-issues
    instead. If an epic has no formal children but its body has a checklist,
    report that the checklist is unstructured evidence; do not silently turn it
    into a dependency graph.
@@ -107,7 +144,7 @@ deadline across all paginated GitHub calls. A deadline failure exits `3` as
 Include:
 
 - evidence timestamp
-- selected epic, URL, Project 120 Status/Work Type/Area/Flag, and live issue state
+- selected epic, URL, board Status/Work Type/Area/Flag, and live issue state
 - direct-child coverage (`COMPLETE`, `UNVERIFIED`, never implied)
 - open/closed direct children with fully qualified repositories
 - board/live discrepancies

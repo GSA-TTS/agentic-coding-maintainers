@@ -2,12 +2,36 @@
 mode="${PORTFOLIO_STUB_MODE:-success}"
 query=''
 project_id=''
+owner=''
+number=''
 for argument in "$@"; do
   case "$argument" in
     query=*) query="${argument#query=}" ;;
     id=*) project_id="${argument#id=}" ;;
+    owner=*) owner="${argument#owner=}" ;;
+    number=*) number="${argument#number=}" ;;
   esac
 done
+
+# The board is now addressed by configured owner+number, so the tool first
+# resolves a node id. Answer that query here; the paging queries below still
+# require the resolved id, which keeps them honest about what they were given.
+case "$query" in
+  *projectV2\(number:*)
+    [ "$owner" = "GSA-TTS" ] || { printf 'unexpected resolve owner: %s\n' "$owner" >&2; exit 1; }
+    [ "$number" = "120" ] || { printf 'unexpected resolve number: %s\n' "$number" >&2; exit 1; }
+    case "$mode" in
+      resolve-failure) printf 'resolve failed\n' >&2; exit 1 ;;
+      resolve-malformed) printf 'not json\n'; exit 0 ;;
+      resolve-missing) printf '{"data":{"organization":{"projectV2":null}}}\n'; exit 0 ;;
+      resolve-bad-id) printf '{"data":{"organization":{"projectV2":{"id":"nope"}}}}\n'; exit 0 ;;
+      resolve-errors) printf '{"errors":[{"message":"x"}],"data":{}}\n'; exit 0 ;;
+      sleep) sleep 2 ;;
+      *) printf '{"data":{"organization":{"projectV2":{"id":"PVT_kwDOBbooB84BlPkD"}}}}\n'; exit 0 ;;
+    esac
+    ;;
+esac
+
 [ "$project_id" = "PVT_kwDOBbooB84BlPkD" ] || { printf 'wrong project id\n' >&2; exit 1; }
 case "$query" in query*) ;; *) printf 'operation does not start with query\n' >&2; exit 1 ;; esac
 case "$query" in *mutation*) printf 'mutation is forbidden\n' >&2; exit 1 ;; esac
