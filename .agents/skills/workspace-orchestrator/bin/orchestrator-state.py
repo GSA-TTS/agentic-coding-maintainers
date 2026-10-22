@@ -62,6 +62,24 @@ class BusyError(Exception):
     pass
 
 
+def git_probe(worktree: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Inspect a checkout without repository-configured execution or lazy fetch.
+
+    These probes only inspect identity, ancestry, or cleanliness. A partial
+    clone missing an object is UNVERIFIED, not a reason to fetch it using the
+    checkout's configured remote or credential helper on the host.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+               GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0")
+    return subprocess.run(
+        ["git", "-c", "protocol.allow=never", "-c", "core.fsmonitor=false",
+         "-c", "core.untrackedCache=false", "-c", f"core.hooksPath={os.devnull}",
+         "-C", worktree, *args],
+        capture_output=True, text=True, check=False, timeout=5, env=env,
+    )
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -376,42 +394,24 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             raise InputError("implementation worktree must resolve inside work/") from exc
         if not args.branch or not args.base_sha:
             raise InputError("implementation tasks require branch and base SHA")
-        probe = subprocess.run(
-            ["git", "-C", worktree, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
+        probe = git_probe(worktree, "rev-parse", "--is-inside-work-tree")
         if probe.returncode != 0 or probe.stdout.strip() != "true":
             raise InputError("implementation path is not a git worktree")
-        top = subprocess.run(
-            ["git", "-C", worktree, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
+        top = git_probe(worktree, "rev-parse", "--show-toplevel")
         if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(worktree):
             raise InputError("implementation path is not the worktree root")
-        branch = subprocess.run(
-            ["git", "-C", worktree, "symbolic-ref", "--quiet", "--short", "HEAD"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
+        branch = git_probe(worktree, "symbolic-ref", "--quiet", "--short", "HEAD")
         if branch.returncode != 0 or branch.stdout.strip() != args.branch:
             raise InputError("implementation worktree branch does not match --branch")
-        base = subprocess.run(
-            ["git", "-C", worktree, "cat-file", "-e", f"{args.base_sha}^{{commit}}"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
+        base = git_probe(worktree, "cat-file", "-e", f"{args.base_sha}^{{commit}}")
         if base.returncode != 0:
             raise InputError("base SHA is not a commit in the implementation repository")
-        head = subprocess.run(
-            ["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True,
-            text=True, check=False, timeout=5,
-        )
+        head = git_probe(worktree, "rev-parse", "HEAD")
         if head.returncode != 0 or (args.head_sha and head.stdout.strip() != args.head_sha):
             raise InputError("implementation worktree HEAD does not match --head-sha")
         if not args.head_sha:
             args.head_sha = head.stdout.strip()
-        ancestry = subprocess.run(
-            ["git", "-C", worktree, "merge-base", "--is-ancestor", args.base_sha, args.head_sha],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
+        ancestry = git_probe(worktree, "merge-base", "--is-ancestor", args.base_sha, args.head_sha)
         if ancestry.returncode != 0:
             raise InputError("implementation head does not descend from base SHA")
     if args.kind == "review" and not args.head_sha:
@@ -419,9 +419,9 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if args.kind == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
         if not worktree or not args.repo:
             raise InputError("review tasks require repository and worktree identity")
-        top = subprocess.run(["git", "-C", worktree, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False, timeout=5)
-        commit = subprocess.run(["git", "-C", worktree, "cat-file", "-e", f"{args.head_sha}^{{commit}}"], capture_output=True, text=True, check=False, timeout=5)
-        head = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True, check=False, timeout=5)
+        top = git_probe(worktree, "rev-parse", "--show-toplevel")
+        commit = git_probe(worktree, "cat-file", "-e", f"{args.head_sha}^{{commit}}")
+        head = git_probe(worktree, "rev-parse", "HEAD")
         if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(worktree):
             raise InputError("review path is not the worktree root")
         if commit.returncode != 0 or head.returncode != 0 or head.stdout.strip() != args.head_sha:
@@ -434,6 +434,7 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         raise InputError("issue/pr tracker number must be positive")
     scope_dir = root / "scopes" / f"{scope_key(scope)}.lock"
     with CoordinatorLock(root):
+        validate_admission_reservations(root)
         if task_path(root, task_id).exists():
             raise BusyError(f"task {task_id!r} already exists")
         incoming_paths = owned_paths + restricted_paths
@@ -476,6 +477,7 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 
 def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     with CoordinatorLock(root):
+        validate_admission_reservations(root)
         record = read_task(root, args.task_id)
         if record["state"] not in {"Ready", "Rework"}:
             raise BusyError(f"task is not claimable from state {record['state']!r}")
@@ -554,14 +556,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                 # Worktree-local Git configuration is not trusted. `git status`
                 # can execute core.fsmonitor, so disable it before touching a
                 # PR checkout; do not inherit GIT_* redirects from the caller.
-                git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-                git_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_OPTIONAL_LOCKS="0")
-                dirty = subprocess.run(
-                    ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
-                     "-c", f"core.hooksPath={os.devnull}", "-C", record["worktree"],
-                     "status", "--porcelain", "--untracked-files=all"],
-                    capture_output=True, text=True, check=False, timeout=5, env=git_env,
-                )
+                dirty = git_probe(record["worktree"], "status", "--porcelain", "--untracked-files=all")
                 if dirty.returncode != 0:
                     raise UnknownError("cannot establish implementation worktree cleanliness")
                 if dirty.stdout:
@@ -597,18 +592,9 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 
 def verify_worktree_identity(record: dict[str, Any], require_head: bool) -> None:
     worktree = record["worktree"]
-    top = subprocess.run(
-        ["git", "-C", worktree, "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=False, timeout=5,
-    )
-    branch = subprocess.run(
-        ["git", "-C", worktree, "symbolic-ref", "--quiet", "--short", "HEAD"],
-        capture_output=True, text=True, check=False, timeout=5,
-    )
-    head = subprocess.run(
-        ["git", "-C", worktree, "rev-parse", "HEAD"],
-        capture_output=True, text=True, check=False, timeout=5,
-    )
+    top = git_probe(worktree, "rev-parse", "--show-toplevel")
+    branch = git_probe(worktree, "symbolic-ref", "--quiet", "--short", "HEAD")
+    head = git_probe(worktree, "rev-parse", "HEAD")
     if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(worktree):
         raise UnknownError("assigned worktree identity changed")
     if branch.returncode != 0 or branch.stdout.strip() != record["branch"]:
@@ -619,8 +605,8 @@ def verify_worktree_identity(record: dict[str, Any], require_head: bool) -> None
 
 def verify_review_identity(record: dict[str, Any]) -> None:
     worktree = record["worktree"]
-    top = subprocess.run(["git", "-C", worktree, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False, timeout=5)
-    head = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True, check=False, timeout=5)
+    top = git_probe(worktree, "rev-parse", "--show-toplevel")
+    head = git_probe(worktree, "rev-parse", "HEAD")
     if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(worktree):
         raise UnknownError("review worktree identity changed")
     if head.returncode != 0 or head.stdout.strip() != record["head_sha"]:
@@ -680,22 +666,10 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         worktree = record["worktree"]
         if not worktree:
             raise UnknownError("implementation task has no worktree")
-        top = subprocess.run(
-            ["git", "-C", worktree, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
-        branch = subprocess.run(
-            ["git", "-C", worktree, "symbolic-ref", "--quiet", "--short", "HEAD"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
-        head = subprocess.run(
-            ["git", "-C", worktree, "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
-        ancestor = subprocess.run(
-            ["git", "-C", worktree, "merge-base", "--is-ancestor", record["base_sha"], args.head_sha],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
+        top = git_probe(worktree, "rev-parse", "--show-toplevel")
+        branch = git_probe(worktree, "symbolic-ref", "--quiet", "--short", "HEAD")
+        head = git_probe(worktree, "rev-parse", "HEAD")
+        ancestor = git_probe(worktree, "merge-base", "--is-ancestor", record["base_sha"], args.head_sha)
         if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(worktree):
             raise UnknownError("assigned worktree identity changed")
         if branch.returncode != 0 or branch.stdout.strip() != record["branch"]:
@@ -745,10 +719,61 @@ def verify_reservations(root: Path, record: dict[str, Any]) -> None:
             raise UnknownError(f"task {record['task_id']} does not own its {group} reservation")
 
 
+def validate_admission_reservations(root: Path) -> None:
+    """Refuse new work if either side of any reservation is unmeasured.
+
+    Run under CoordinatorLock before create/claim. Readable JSON alone does
+    not establish ownership: a lock may name a missing task, or a task may
+    claim a different slot. An interrupted transition must be reconciled
+    explicitly before admission rather than guessed into a healthy state.
+    """
+    records: dict[str, dict[str, Any]] = {}
+    for path in (root / "tasks").glob("*/task.json"):
+        record = validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name)
+        if record["transition_intent"]:
+            raise UnknownError(f"task {record['task_id']} has an unfinished transition; reconcile first")
+        records[record["task_id"]] = record
+        verify_reservations(root, record)
+    for group in ("scopes", "slots", "implementation"):
+        for lock in (root / group).glob("*.lock"):
+            owner = read_json(lock / "owner.json", f"{group} reservation {lock.name}")
+            task_id = owner.get("task_id")
+            record = records.get(task_id) if isinstance(task_id, str) else None
+            if record is None:
+                raise UnknownError(f"{group} reservation {lock.name} has no task record")
+            if group == "scopes":
+                expected_slot = record["scope_key"]
+                expected_token = record["leases"]["scope_token"]
+                valid_state = record["state"] not in TERMINAL
+            elif group == "slots":
+                expected_slot = record["leases"]["global_slot"]
+                expected_token = (record.get("worker") or {}).get("token")
+                valid_state = record["state"] in ACTIVE
+            else:
+                expected_slot = record["leases"]["implementation_lane"]
+                expected_token = (record.get("worker") or {}).get("token")
+                valid_state = record["state"] == "Implementing" and record["kind"] == "implementation"
+            if not valid_state or lock.name != f"{expected_slot}.lock" or owner.get("token") != expected_token:
+                raise UnknownError(f"{group} reservation {lock.name} disagrees with task {task_id}")
+
+
 def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     target = record["transition_intent"]
     if not target:
         return record
+    if target == "Ready for human review":
+        # The earlier readiness check was performed before writing intent.
+        # The worktree may have changed during a crash: never publish ready
+        # solely by replaying the intent.
+        if record["reviewed_sha"] != record["head_sha"] or not record["reviewers"] or not record["validation"] or record["findings"]:
+            raise UnknownError("cannot recover readiness: review evidence changed")
+        if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+            verify_worktree_identity(record, require_head=True)
+            dirty = git_probe(record["worktree"], "status", "--porcelain", "--untracked-files=all")
+            if dirty.returncode != 0 or dirty.stdout:
+                raise UnknownError("cannot recover readiness: worktree is unverified or dirty")
+        if record["kind"] == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+            verify_review_identity(record)
     if target == "Implementing" and record["leases"]["implementation_lane"] is None:
         if record["kind"] != "implementation" or not record.get("worker"):
             raise UnknownError(f"task {record['task_id']} cannot complete Implementing intent")

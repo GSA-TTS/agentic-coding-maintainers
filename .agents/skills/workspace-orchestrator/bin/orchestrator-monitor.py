@@ -314,8 +314,10 @@ def main() -> int:
             try:
                 # A running monitor must never silently keep watching old
                 # repositories after the host-local config changes.
-                config = load_config(args.config)
-                status, _observation, changed = poll(root, config)
+                current_config = load_config(args.config)
+                if current_config != config:
+                    raise MonitorError("monitor configuration changed; stop, reconcile targets, and restart")
+                status, _observation, changed = poll(root, current_config)
                 if status == "CHANGED":
                     print(f"monitor: CHANGED at {now()}")
                     for item in changed:

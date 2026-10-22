@@ -111,10 +111,11 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
    ```bash
    "$SKILL_DIR/run.sh" state update-head example-task "$(git -C "$WORKTREE" rev-parse HEAD)"
    ```
-2. Orchestrator transitions to `Reviewing` and assigns QA at that SHA.
-   Record review and evidence without hand-editing task JSON:
-   ```bash
-   "$SKILL_DIR/run.sh" state record example-task reviewer qa-reviewer
+ 2. Orchestrator transitions to `Reviewing` and assigns QA at that SHA.
+    Record review and evidence without hand-editing task JSON:
+    ```bash
+    HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD)"
+    "$SKILL_DIR/run.sh" state record example-task reviewer qa-reviewer --reviewed-sha "$HEAD_SHA"
    "$SKILL_DIR/run.sh" state record example-task validation \
      'tests/orchestrator-state-test.sh PASS at <sha>'
    ```
