@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVAL="$ROOT/scripts/evaluate-workflow.py"
 FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation.XXXXXX")"
 mkdir -p "$FIXTURE/.agents/skills/workspace-orchestrator/bin" "$FIXTURE/.orchestrator/tasks"
-cp "$ROOT/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py" \
+printf 'raise RuntimeError("workspace-selected code executed")\n' > \
   "$FIXTURE/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py"
 chmod 700 "$FIXTURE/.orchestrator" "$FIXTURE/.orchestrator/tasks"
 
@@ -29,7 +29,8 @@ python3 "$ROOT/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py" 
   --head-sha "$(printf 'a%.0s' {1..40})" >/dev/null
 cp -R "$STATE/tasks/eval-case" "$FIXTURE/.orchestrator/tasks/"
 report="$(python3 "$EVAL" --workspace "$FIXTURE")"
-python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["coverage"]=="measured" and d["task_count"]==1 and d["by_state"]=={"Ready":1}; assert d["cases"][0]["id"]=="eval-case" and "time in state" in d["unmeasured"]' <<<"$report"
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["coverage"]=="parsed_task_records" and d["task_count"]==1 and d["by_state"]=={"Ready":1}; assert d["cases"][0]["id"]=="eval-case" and "time in state" in d["unmeasured"] and "reservation/lease consistency" in d["unmeasured"]' <<<"$report"
+[[ ! -e "$ROOT/.agents/skills/workspace-orchestrator/bin/__pycache__" ]]
 
 # A malformed record invalidates the entire report; it cannot be dropped from
 # a denominator. Stage the fixture for operator disposal, never use rm.
@@ -48,4 +49,21 @@ corrupt="$(python3 "$EVAL" --workspace "$FIXTURE" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 3 && "$corrupt" == *UNVERIFIED* ]]
+# A malformed type formerly raised an uncaught TypeError inside the canonical
+# validator. It must produce the same bounded UNVERIFIED response, not traceback.
+python3 - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    data = json.load(handle)
+data["state"] = []
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(data, handle)
+PY
+set +e
+wrong_type="$(python3 "$EVAL" --workspace "$FIXTURE" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 3 && "$wrong_type" == *UNVERIFIED* && "$wrong_type" != *Traceback* ]]
 printf 'evaluate-workflow tests: PASS\n'

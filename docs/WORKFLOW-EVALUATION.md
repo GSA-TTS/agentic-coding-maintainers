@@ -19,7 +19,11 @@ finding count. The input is the host-local `.orchestrator/tasks/` store and the
 canonical state validator. No raw finding, PR body, private journal, secret,
 worker identity, or free-text validation is emitted. Any malformed or unsafe
 record makes the **whole** report `UNVERIFIED` (exit 3); an empty store returns
-`coverage: no_evidence`, exit 3, never zero-work success.
+`coverage: no_evidence`, exit 3, never zero-work success. A nonempty store
+reports `coverage: parsed_task_records`—not measured coordination health.
+It does **not** reconcile reservation ownership, worker liveness, or GitHub.
+Run the canonical state reconcile command separately before drawing an
+operational conclusion.
 
 Age since last write is **not** time in state. `Ready for human review` is
 **not** verified completion or a merge. A current reviewer string is **not**

@@ -37,15 +37,17 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
         if status.st_uid != os.getuid() or status.st_mode & 0o077:
             raise Unverified("task store is not current-user private")
 
-    # Reuse the canonical state validator rather than inventing a second task
-    # schema. Loading it imports functions only; no state operation is called.
-    source = workspace / ".agents/skills/workspace-orchestrator/bin/orchestrator-state.py"
+    # The validator is code from THIS trusted installation, never the selected
+    # workspace. An import executes top-level Python, even when no function is
+    # called: deriving its path from --workspace was a host-execution bug.
+    source = Path(__file__).resolve().parent.parent / ".agents/skills/workspace-orchestrator/bin/orchestrator-state.py"
     if not source.is_file() or source.is_symlink():
         raise Unverified("canonical task validator is absent or symlinked")
     spec = importlib.util.spec_from_file_location("orchestrator_state_evaluation", source)
     if spec is None or spec.loader is None:
         raise Unverified("canonical task validator could not be loaded")
     module = importlib.util.module_from_spec(spec)
+    sys.dont_write_bytecode = True
     spec.loader.exec_module(module)
 
     results = []
@@ -57,7 +59,7 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
             raise Unverified("task record missing or symlinked")
         try:
             record = module.validate_record(module.read_json(path, "evaluation task"), directory.name)
-        except (module.InputError, module.UnknownError) as exc:
+        except Exception as exc:  # malformed field types may raise TypeError in the canonical validator
             raise Unverified("a task record could not be validated") from exc
         if record["transition_intent"] is not None:
             raise Unverified("task transition is incomplete; reconcile first")
@@ -72,13 +74,14 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
             "unresolved_finding_count": len(record["findings"]),
         })
     return {
-        "as_of": as_of.isoformat(), "coverage": "measured" if results else "no_evidence",
+        "as_of": as_of.isoformat(), "coverage": "parsed_task_records" if results else "no_evidence",
         "task_count": len(results), "by_state": dict(sorted(Counter(x["state"] for x in results).items())),
         "by_kind": dict(sorted(Counter(x["kind"] for x in results).items())),
         "cases": results,
         "unmeasured": [
-            "historical throughput", "time in state", "review turnaround",
-            "outcome quality", "continuous monitor uptime", "CI pass rate",
+            "reservation/lease consistency", "live worker ownership", "historical throughput",
+            "time in state", "review turnaround", "outcome quality",
+            "continuous monitor uptime", "CI pass rate",
         ],
         "recommendations": (
             ["Reconcile task records with current issues and PRs before claiming an outcome."]
@@ -100,7 +103,7 @@ def main() -> int:
         print(f"evaluation: UNVERIFIED — {exc}", file=sys.stderr)
         return 3
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report["coverage"] == "measured" else 3
+    return 0 if report["coverage"] == "parsed_task_records" else 3
 
 
 if __name__ == "__main__":
