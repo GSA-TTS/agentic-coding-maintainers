@@ -53,7 +53,9 @@ def load_config(path: Path) -> dict[str, Any]:
     repositories = config.get("repositories")
     if not isinstance(repositories, list) or not 1 <= len(repositories) <= 50:
         raise MonitorError("monitor config repositories must contain 1-50 entries")
-    if len(set(repositories)) != len(repositories) or any(not isinstance(r, str) or not REPO_RE.fullmatch(r) for r in repositories):
+    if any(not isinstance(r, str) or not REPO_RE.fullmatch(r) for r in repositories):
+        raise MonitorError("monitor repositories must be owner/name values")
+    if len(set(repositories)) != len(repositories):
         raise MonitorError("monitor repositories must be unique owner/name values")
     project = config.get("project")
     if project is not None:
@@ -241,7 +243,7 @@ def project_snapshot(project: dict[str, Any] | None) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def poll(root: Path, config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
+def poll(root: Path, config: dict[str, Any], config_path: Path | None = None) -> tuple[str, dict[str, Any], list[str]]:
     checkpoint = root / "checkpoint.json"
     project = project_snapshot(config["project"])
     prs = pr_snapshot(config["repositories"])
@@ -251,6 +253,10 @@ def poll(root: Path, config: dict[str, Any]) -> tuple[str, dict[str, Any], list[
         "prs": prs,
         "project_sha256": hashlib.sha256(project.encode()).hexdigest() if config["project"] else None,
     }
+    # Do not persist a successful poll of old targets after config changed
+    # while the network queries ran. The caller must reconcile and restart.
+    if config_path is not None and load_config(config_path) != config:
+        raise MonitorError("monitor configuration changed during poll; restart before reporting coverage")
     previous = None
     if checkpoint.exists():
         try:
@@ -312,7 +318,12 @@ def main() -> int:
             validate_monitor_task(root, args.task_id)
             acquire(lock)
             try:
-                status, _observation, changed = poll(root, config)
+                # A running monitor must never silently keep watching old
+                # repositories after the host-local config changes.
+                current_config = load_config(args.config)
+                if current_config != config:
+                    raise MonitorError("monitor configuration changed; stop, reconcile targets, and restart")
+                status, _observation, changed = poll(root, current_config, args.config)
                 if status == "CHANGED":
                     print(f"monitor: CHANGED at {now()}")
                     for item in changed:

@@ -25,8 +25,10 @@ local user, or a distributed scheduler.
    ```
 2. Inspect worktrees and dirty state before assigning ownership:
    ```bash
-   git status --short
-   git -C /path/to/repository worktree list
+   # Inspect only trusted maintainer source on the host. For an untrusted
+   # checkout, use the state tool's hardened Git identity probes; bare Git
+   # status/diff can run repository-configured filters or fsmonitor programs.
+   git -C /path/to/trusted-maintainer-repository worktree list
    "$SKILL_DIR/run.sh" state list
    ```
 3. Create one record per independent task. Scope is a stable structured string,
@@ -109,12 +111,15 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
    After committing, bind the actual assigned worktree head and invalidate stale
    review evidence:
    ```bash
-   "$SKILL_DIR/run.sh" state update-head example-task "$(git -C "$WORKTREE" rev-parse HEAD)"
+    # Obtain this full SHA from reviewed/verified evidence, then let the state
+    # tool verify it against the assigned worktree with hardened Git probes.
+    HEAD_SHA=<full-40-hex-reviewed-head>
+    "$SKILL_DIR/run.sh" state update-head example-task "$HEAD_SHA"
    ```
-2. Orchestrator transitions to `Reviewing` and assigns QA at that SHA.
-   Record review and evidence without hand-editing task JSON:
-   ```bash
-   "$SKILL_DIR/run.sh" state record example-task reviewer qa-reviewer
+ 2. Orchestrator transitions to `Reviewing` and assigns QA at that SHA.
+    Record review and evidence without hand-editing task JSON:
+    ```bash
+    "$SKILL_DIR/run.sh" state record example-task reviewer qa-reviewer --reviewed-sha "$HEAD_SHA"
    "$SKILL_DIR/run.sh" state record example-task validation \
      'tests/orchestrator-state-test.sh PASS at <sha>'
    ```
