@@ -2,16 +2,17 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVAL="$ROOT/scripts/evaluate-workflow.py"
-mkdir -p "$ROOT/.import"
-FIXTURE="$(mktemp -d "$ROOT/.import/maintainer-evaluation.XXXXXX")"
+FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation.XXXXXX")"
 cat > "$FIXTURE/MANIFEST.md" <<'EOF'
 # Evaluation test fixture
 
-Created by `tests/evaluate-workflow-test.sh` in this ignored `.import/`
-directory. Contains only synthetic state and a deliberately malformed task
+Created by `tests/evaluate-workflow-test.sh` outside the repository, under the
+system temporary directory. Contains only synthetic state and a deliberately malformed task
 record; it was never a real maintainer assignment. The test does not remove
 files through a workaround for the workspace's `rm` denial. Safe for the
-operator to dispose of after reviewing the test result.
+operator to dispose of after reviewing the test result. Kept OUTSIDE the repo
+because Gitleaks also scans gitignored files on CI: a synthetic scope token in
+`.import/` made the hosted secret scan red despite a clean tracked tree.
 EOF
 mkdir -p "$FIXTURE/.agents/skills/workspace-orchestrator/bin" "$FIXTURE/.orchestrator/tasks"
 printf 'raise RuntimeError("workspace-selected code executed")\n' > \
