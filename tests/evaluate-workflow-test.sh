@@ -2,18 +2,46 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVAL="$ROOT/scripts/evaluate-workflow.py"
+# A private, dated outbox OUTSIDE the checkout keeps synthetic token-shaped
+# task state out of Gitleaks' repository-wide directory scan. The operator
+# empties this outbox; we do not launder deletion through another executable.
+OUTBOX="${EVALUATION_TEST_OUTBOX:-${TMPDIR:-/tmp}/maintainer-evaluation-disposal}"
+[[ ! -L "$OUTBOX" ]] || { echo 'UNVERIFIED: disposal outbox is a symlink' >&2; exit 3; }
+mkdir -p "$OUTBOX"
+[[ -d "$OUTBOX" && ! -L "$OUTBOX" ]] || { echo 'UNVERIFIED: disposal outbox unavailable' >&2; exit 3; }
 FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/maintainer-evaluation.XXXXXX")"
+stage_fixture() {
+  result=$?
+  trap - EXIT HUP INT TERM
+  if [[ -e "$FIXTURE" ]]; then
+    date_scope="$(date -u +%Y-%m-%d)"
+    if ! staged="$(mktemp -d "$OUTBOX/$date_scope-evaluation.XXXXXX")" ||
+       ! mv "$FIXTURE" "$staged/fixture" ||
+       [[ -e "$FIXTURE" ]] ||
+       [[ ! -f "$staged/fixture/MANIFEST.md" ]]; then
+      echo 'UNVERIFIED: synthetic test fixture could not be staged for disposal' >&2
+      exit 3
+    fi
+    printf 'evaluation_fixture_staged=%s\n' "$staged" >&2
+  fi
+  exit "$result"
+}
+trap stage_fixture EXIT
+trap 'exit 3' HUP INT TERM
 cat > "$FIXTURE/MANIFEST.md" <<'EOF'
 # Evaluation test fixture
 
-Created by `tests/evaluate-workflow-test.sh` outside the repository, under the
-system temporary directory. Contains only synthetic state and a deliberately malformed task
-record; it was never a real maintainer assignment. The test does not remove
-files through a workaround for the workspace's `rm` denial. Safe for the
-operator to dispose of after reviewing the test result. Kept OUTSIDE the repo
-because Gitleaks also scans gitignored files on CI: a synthetic scope token in
-`.import/` made the hosted secret scan red despite a clean tracked tree.
+This whole `fixture/` directory was created by `tests/evaluate-workflow-test.sh`.
+It contains only synthetic task state, a malicious-validator sentinel that was
+never imported, and deliberately malformed task records. These established
+that empty/corrupt/symlinked stores are UNVERIFIED and legacy rework is unknown.
+No real maintainer task, user evidence, or secret is referenced here. Safe for
+the operator to delete. It is kept OUTSIDE the repository because Gitleaks
+scans ignored files too; synthetic random lease tokens made that scan red.
 EOF
+if [[ "${EVALUATION_TEST_ABORT_AFTER_FIXTURE:-}" == 1 ]]; then
+  exit 17 # Test the EXIT trap's failure path without creating a task record.
+fi
 mkdir -p "$FIXTURE/.agents/skills/workspace-orchestrator/bin" "$FIXTURE/.orchestrator/tasks"
 printf 'raise RuntimeError("workspace-selected code executed")\n' > \
   "$FIXTURE/.agents/skills/workspace-orchestrator/bin/orchestrator-state.py"
