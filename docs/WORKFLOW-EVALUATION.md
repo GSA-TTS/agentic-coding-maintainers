@@ -14,7 +14,8 @@ python3 -I -B scripts/evaluate-workflow.py --workspace /path/to/maintainers
 
 The JSON report carries its `as_of` timestamp, task count, state/kind counts,
 and one row per recorded task: ID, kind, current state, age since creation,
-age since last record write, current `rework_count`, and current unresolved
+age since last record write, positive recorded `rework_count` (zero is shown as
+unknown because a migrated schema-1 record may acquire a default zero), and current unresolved
 finding count. The input is the host-local `.orchestrator/tasks/` store and the
 canonical state validator. No raw finding, PR body, private journal, secret,
 worker identity, or free-text validation is emitted. Any malformed or unsafe

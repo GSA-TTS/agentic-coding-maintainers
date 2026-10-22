@@ -74,10 +74,14 @@ def private_file(path: Path) -> bytes:
         raise Unverified("event ledger path must be absolute")
     if path.name in ("", ".", ".."):
         raise Unverified("event ledger filename is invalid")
+    # The macOS system temporary path commonly traverses /var -> /private/var.
+    # Resolve the parent once before walking it, then use descriptor-relative
+    # no-follow opens for each component that actually contains the ledger.
+    resolved_parent = path.parent.resolve(strict=True)
     with contextlib.ExitStack() as stack:
-        fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(resolved_parent.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         stack.callback(os.close, fd)
-        for component in path.parent.parts[1:]:
+        for component in resolved_parent.parts[1:]:
             if component in (".", ".."):
                 raise Unverified("ledger path contains a relative component")
             next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -119,7 +123,7 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
             event = json.loads(line, object_pairs_hook=unique_fields)
         except Unverified:
             raise
-        except (ValueError, UnicodeError) as exc:
+        except (ValueError, UnicodeError, RecursionError) as exc:
             raise Unverified("event ledger has a malformed line") from exc
         if not isinstance(event, dict) or event.get("event_type") not in TYPES:
             raise Unverified("event type is invalid")
@@ -249,8 +253,13 @@ def main() -> int:
         key = private_file(args.key_file)
         if len(key) < 32 or len(key) > 128:
             raise Unverified("pseudonym key must be 32-128 random bytes")
-        report = reflect(events_from(private_file(args.ledger), as_of), as_of, key)
-    except (Unverified, OSError, ValueError, TypeError) as exc:
+        data = private_file(args.ledger)
+        report = reflect(events_from(data, as_of), as_of, key)
+        # `--as-of` alone is not an immutable snapshot: a later append with a
+        # backdated recorded_at can revise it. Bind every report to the exact
+        # bytes consumed so changed input cannot masquerade as the same run.
+        report["ledger_sha256"] = hashlib.sha256(data).hexdigest()
+    except (Unverified, OSError, ValueError, TypeError, RecursionError) as exc:
         print(f"reflection: UNVERIFIED — {exc if isinstance(exc, Unverified) else 'ledger unavailable'}", file=sys.stderr)
         return 3
     print(json.dumps(report, sort_keys=True, indent=2))

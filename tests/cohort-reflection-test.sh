@@ -96,5 +96,57 @@ except module.Unverified:
     pass
 else:
     raise AssertionError("incomplete line accepted")
+# Exercise the operator CLI, including the private-file boundary and exit 3.
+import os
+import pathlib
+import subprocess
+import tempfile
+
+fixture = pathlib.Path(tempfile.mkdtemp(prefix="cohort-cli-"))
+os.chmod(fixture, 0o700)
+ledger = fixture / "cases.jsonl"
+key_file = fixture / "report.key"
+key_file.write_bytes(key)
+os.chmod(key_file, 0o600)
+
+
+def cli(input_rows, *, ledger_path=ledger):
+    ledger.write_bytes("".join(json.dumps(r) + "\n" for r in input_rows).encode())
+    os.chmod(ledger, 0o600)
+    return subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str(ledger_path),
+                           "--key-file", str(key_file), "--as-of", "2026-10-22T00:00:00Z"],
+                          capture_output=True, text=True, check=False)
+
+
+good = cli(rows)
+assert good.returncode == 0 and not good.stderr, (good.returncode, good.stderr)
+output = json.loads(good.stdout)
+assert output["coverage"] == "recorded_eligible_cohort" and len(output["ledger_sha256"]) == 64
+assert all(raw not in output["eligible_ids"] + output["excluded_ids"] + output["unknown_eligibility_ids"]
+           for raw in ("complete", "open", "blocked", "cancelled", "rework", "excluded", "unknown"))
+no_eligible = cli([rows[13], rows[14]])
+assert no_eligible.returncode == 3 and json.loads(no_eligible.stdout)["coverage"] == "no_eligible_evidence"
+ledger.write_bytes(b"")
+assert subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str(ledger),
+                       "--key-file", str(key_file), "--as-of", "2026-10-22T00:00:00Z"],
+                      capture_output=True, text=True, check=False).returncode == 3
+cli(rows)
+os.chmod(ledger, 0o644)
+unsafe = subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str(ledger),
+                         "--key-file", str(key_file), "--as-of", "2026-10-22T00:00:00Z"],
+                        capture_output=True, text=True, check=False)
+assert unsafe.returncode == 3 and "UNVERIFIED" in unsafe.stderr and not unsafe.stdout
+os.chmod(ledger, 0o600)
+link = fixture / "linked.jsonl"
+link.symlink_to(ledger)
+assert cli(rows, ledger_path=link).returncode == 3
+huge = fixture / "huge.jsonl"
+huge.write_bytes(b"x" * (module.MAX_BYTES + 1))
+os.chmod(huge, 0o600)
+assert cli(rows, ledger_path=huge).returncode == 3
+manifest = fixture / "MANIFEST.md"
+manifest.write_text("Synthetic CLI fixtures for cohort-reflection-test.sh: ledger, key, symlink and oversized input. "
+                    "All are test data created by this run; safe for the operator to delete.\n", encoding="utf-8")
+print("cohort_cli_fixture=" + str(fixture), file=sys.stderr)
 print("cohort-reflection tests: PASS")
 PY

@@ -45,6 +45,13 @@ them with the ledger. Late-recorded
 transitions use occurrence time to determine current state, with append order
 as a tie-breaker.
 
+The report includes `ledger_sha256` over the complete input bytes. The cutoff
+alone does **not** make a historical run immutable: a later append claiming an
+earlier `recorded_at` can revise the same `--as-of` result. Compare the digest
+before comparing two reports, and retain the private ledger version if a
+historical report needs to be reproduced. This digest is an input identity,
+not proof that timestamps were recorded at the time claimed.
+
 ## Critical limits of this slice
 
 The CLI reads only a recorded event ledger. It cannot establish that all
