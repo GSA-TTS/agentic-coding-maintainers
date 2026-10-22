@@ -74,14 +74,15 @@ def private_file(path: Path) -> bytes:
         raise Unverified("event ledger path must be absolute")
     if path.name in ("", ".", ".."):
         raise Unverified("event ledger filename is invalid")
-    # The macOS system temporary path commonly traverses /var -> /private/var.
-    # Resolve the parent once before walking it, then use descriptor-relative
-    # no-follow opens for each component that actually contains the ledger.
-    resolved_parent = path.parent.resolve(strict=True)
+    # macOS has a platform /var -> /private/var link. Normalize ONLY that
+    # known prefix; any other ancestor symlink is an unsafe redirect and must
+    # be refused by the descriptor-relative O_NOFOLLOW walk.
+    if sys.platform == "darwin" and path.parts[:2] == ("/", "var"):
+        path = Path("/private/var", *path.parts[2:])
     with contextlib.ExitStack() as stack:
-        fd = os.open(resolved_parent.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         stack.callback(os.close, fd)
-        for component in resolved_parent.parts[1:]:
+        for component in path.parent.parts[1:]:
             if component in (".", ".."):
                 raise Unverified("ledger path contains a relative component")
             next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -180,7 +181,10 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
 
 
 def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
-    start = as_of - timedelta(days=28)
+    try:
+        start = as_of - timedelta(days=28)
+    except OverflowError as exc:
+        raise Unverified("snapshot cutoff is outside the supported range") from exc
     case_events: dict[str, list[dict]] = {}
     for event in events:
         # Validate the whole append-only ledger first; later recorded events
@@ -258,7 +262,7 @@ def main() -> int:
         # `--as-of` alone is not an immutable snapshot: a later append with a
         # backdated recorded_at can revise it. Bind every report to the exact
         # bytes consumed so changed input cannot masquerade as the same run.
-        report["ledger_sha256"] = hashlib.sha256(data).hexdigest()
+        report["ledger_identity_hmac"] = hmac.new(key, b"ledger-identity-v1\0" + data, hashlib.sha256).hexdigest()
     except (Unverified, OSError, ValueError, TypeError, RecursionError) as exc:
         print(f"reflection: UNVERIFIED — {exc if isinstance(exc, Unverified) else 'ledger unavailable'}", file=sys.stderr)
         return 3

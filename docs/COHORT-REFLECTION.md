@@ -45,11 +45,13 @@ them with the ledger. Late-recorded
 transitions use occurrence time to determine current state, with append order
 as a tie-breaker.
 
-The report includes `ledger_sha256` over the complete input bytes. The cutoff
+The report includes `ledger_identity_hmac`, a domain-separated keyed HMAC over
+the complete input bytes. An unkeyed digest would let a reader test guessed
+small ledgers and case IDs offline, defeating pseudonymization. The cutoff
 alone does **not** make a historical run immutable: a later append claiming an
 earlier `recorded_at` can revise the same `--as-of` result. Compare the digest
-before comparing two reports, and retain the private ledger version if a
-historical report needs to be reproduced. This digest is an input identity,
+before comparing two reports, and retain the private ledger and key versions if a
+historical report needs to be reproduced. This HMAC is an input identity,
 not proof that timestamps were recorded at the time claimed.
 
 ## Critical limits of this slice

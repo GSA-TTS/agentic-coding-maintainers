@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 -I -B - "$ROOT/scripts/cohort-reflection.py" <<'PY'
 import importlib.util
+import hashlib
+import hmac
 import json
 import sys
 from datetime import datetime, timezone
@@ -73,6 +75,10 @@ refuses([rows[0], row("complete", 19, "outcome", head_sha=sha_b, handoff_event_i
 refuses([rows[0], row("complete", 20, "transition", state="not-a-state")])
 refuses([rows[0], dict(row("complete", 21, "review", head_sha=sha_a, independent="yes"), secret="not-allowed")])
 refuses([dict(rows[0], schema_version=True)])
+refuses([rows[0], dict(row("complete", 30, "transition", state="blocked"), occurred_at="2026-10-12T00:00:00Z", recorded_at="2026-10-11T00:00:00Z")])
+refuses([rows[0], dict(row("complete", 31, "transition", state="blocked"), recorded_at="2026-10-10T00:00:00Z")])
+refuses([rows[0], rows[1], dict(row("complete", 32, "handoff", head_sha=sha_a, review_event_id="e2", checks="passing"),
+                            occurred_at="2026-10-09T00:00:00Z")])
 refuses([rows[0], rows[1], row("complete", 22, "handoff", head_sha=sha_b, review_event_id="e2", checks="passing")])
 refuses([rows[0], rows[1], rows[2], row("complete", 23, "outcome", head_sha=sha_b, handoff_event_id="e3", repository_event_id="merge3")])
 refuses([rows[0], rows[1], row("complete", 24, "outcome", head_sha=sha_a, handoff_event_id="e2", repository_event_id="merge4")])
@@ -84,6 +90,9 @@ late = [rows[0], dict(row("complete", 27, "transition", state="blocked"), occurr
              recorded_at="2026-10-16T00:00:00Z")]
 late[1]["recorded_at"] = "2026-10-15T00:00:00Z"
 assert module.reflect(read(late), as_of, key)["unfinished_for_verified_throughput"][0]["state"] == "blocked"
+# Equal occurrence time uses append order as the documented tie-breaker.
+tied = [rows[0], row("complete", 33, "transition", state="blocked"), row("complete", 34, "transition", state="open")]
+assert module.reflect(read(tied), as_of, key)["unfinished_for_verified_throughput"][0]["state"] == "open"
 # Reproducing an earlier cutoff must not be invalidated by a later append.
 after = dict(row("complete", 29, "transition", state="cancelled"),
              occurred_at="2026-10-24T00:00:00Z", recorded_at="2026-10-25T00:00:00Z")
@@ -121,11 +130,13 @@ def cli(input_rows, *, ledger_path=ledger):
 good = cli(rows)
 assert good.returncode == 0 and not good.stderr, (good.returncode, good.stderr)
 output = json.loads(good.stdout)
-assert output["coverage"] == "recorded_eligible_cohort" and len(output["ledger_sha256"]) == 64
+assert output["coverage"] == "recorded_eligible_cohort"
+assert output["ledger_identity_hmac"] == hmac.new(key, b"ledger-identity-v1\0" + ledger.read_bytes(), hashlib.sha256).hexdigest()
 assert all(raw not in output["eligible_ids"] + output["excluded_ids"] + output["unknown_eligibility_ids"]
            for raw in ("complete", "open", "blocked", "cancelled", "rework", "excluded", "unknown"))
 no_eligible = cli([rows[13], rows[14]])
 assert no_eligible.returncode == 3 and json.loads(no_eligible.stdout)["coverage"] == "no_eligible_evidence"
+assert json.loads(no_eligible.stdout)["ledger_identity_hmac"] != output["ledger_identity_hmac"]
 ledger.write_bytes(b"")
 assert subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str(ledger),
                        "--key-file", str(key_file), "--as-of", "2026-10-22T00:00:00Z"],
@@ -144,6 +155,21 @@ huge = fixture / "huge.jsonl"
 huge.write_bytes(b"x" * (module.MAX_BYTES + 1))
 os.chmod(huge, 0o600)
 assert cli(rows, ledger_path=huge).returncode == 3
+invalid_json = fixture / "invalid.jsonl"
+invalid_json.write_text('{"not-json":}\n', encoding="utf-8")
+os.chmod(invalid_json, 0o600)
+assert cli(rows, ledger_path=invalid_json).returncode == 3
+invalid_schema = fixture / "invalid-schema.jsonl"
+invalid_schema.write_text(json.dumps(dict(rows[0], schema_version=2)) + "\n", encoding="utf-8")
+os.chmod(invalid_schema, 0o600)
+assert cli(rows, ledger_path=invalid_schema).returncode == 3
+ancestor = fixture / "ancestor"
+ancestor.symlink_to(fixture)
+assert cli(rows, ledger_path=ancestor / "cases.jsonl").returncode == 3
+early = subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str(ledger),
+                        "--key-file", str(key_file), "--as-of", "0001-01-01T00:00:00Z"],
+                       capture_output=True, text=True, check=False)
+assert early.returncode == 3 and "UNVERIFIED" in early.stderr and "Traceback" not in early.stderr
 manifest = fixture / "MANIFEST.md"
 manifest.write_text("Synthetic CLI fixtures for cohort-reflection-test.sh: ledger, key, symlink and oversized input. "
                     "All are test data created by this run; safe for the operator to delete.\n", encoding="utf-8")
