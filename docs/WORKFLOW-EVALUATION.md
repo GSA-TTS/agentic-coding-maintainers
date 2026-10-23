@@ -6,6 +6,13 @@ creates no GitHub issues, PRs, reviews, or state changes, and sends no evidence
 or repository content to a model. The operator decides which recommendations to
 adopt.
 
+The initial intake sources and eligibility policy are recorded in
+[`INTAKE-INVENTORY.md`](INTAKE-INVENTORY.md). Routine dependencies are in scope;
+duplicates, suspected spam and external PRs await maintainer disposition.
+Verified-outcome criteria are deliberately a separate decision. Corrections to
+intake and rework classifications should become an explicit process-quality
+measure, rather than edits that erase the original decision.
+
 ## V1: what is measurable now
 
 ```bash
