@@ -34,6 +34,7 @@ access to the mapping changes:
 | `rework` | `review_event_id`; distinct `changed_sha`; `substantive`: yes/no/unknown |
 | `handoff` | `review_event_id`; matching `head_sha`; `checks`: passing/failing/unavailable/unknown/not_applicable |
 | `outcome` | `handoff_event_id`; matching `head_sha`; opaque `repository_event_id` |
+| `eligibility_correction` | earlier same-case `intake_event_id`; `replacement`: eligible/excluded/unknown; `reason_code`: duplicate_review/spam_review/external_pr_review/eligibility_review/clerical_error |
 
 The parser rejects missing intake, orphan/cross-case/wrong-type references,
 duplicate IDs or intakes, invalid or unexpected fields, contradictory head
@@ -51,11 +52,17 @@ Unknown-eligibility cases also appear in the private
 `needs_maintainer_disposition` queue: keyed case label, case type, whole-day age
 and a `review_due` flag at seven full days. Unlike the 28-day performance
 cohort, this queue retains older unknowns until a disposition is recorded.
-This is a **read-only report cue**, not an
-automatic exclusion or a GitHub label/comment. Consult the private ledger to
-identify the case, record a maintainer decision through the correction process
-when available (issue #30), and report the disposition delay as part of process
-quality. Until corrections exist, an unknown remains unknown in this pilot.
+This is a **read-only report cue**, not an automatic exclusion or GitHub label.
+A maintainer can append one `eligibility_correction` event referencing the
+original intake; it preserves the first classification and records a reason
+code. A corrected unknown leaves the queue, but it is not silently added to an
+older 28-day performance cohort. A queue removal is a recorded maintainer
+decision, **not proof that the decision was corroborated by an older source
+inventory**; the inventory report covers only the current 28-day window. The
+report counts corrected cases in the
+current intake cohort, not correction cycles or all historical cases. Other
+classification corrections and measured disposition delay remain work under
+issue #30.
 
 The report includes `ledger_identity_hmac`, a domain-separated keyed HMAC over
 the complete input bytes. An unkeyed digest would let a reader test guessed
@@ -86,6 +93,6 @@ productivity score. Recommendations are advisory and capped to two fixed
 next-step prompts. An operator-invoked append writer is documented in
 `COHORT-APPEND.md`. Operator-asserted inventory reconciliation is available
 through `INTAKE-INVENTORY.md`; independently evidenced collection,
-correction events, 30-day escape windows and outage-adjusted latency remain future acceptance
+other correction events, 30-day escape windows and outage-adjusted latency remain future acceptance
 work under issue #21/#22. Do not relabel this pilot as the completed
 event-ledger system.
