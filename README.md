@@ -111,7 +111,8 @@ store exits 3 (`UNVERIFIED`), never a healthy-looking zero-work report.
 
 The first **recorded-cohort** reflection parser is
 `python3 -I -B scripts/cohort-reflection.py --ledger /absolute/private/cases.jsonl
---key-file /absolute/private/report.key --as-of <UTC>`. Its [contract](docs/COHORT-REFLECTION.md) distinguishes recorded
+--key-file /absolute/private/report.key --inventory /absolute/private/requests.json
+--required-source issue-feed --as-of <UTC>`. Its [contract](docs/COHORT-REFLECTION.md) distinguishes recorded
 events from independently verified outcomes; it cannot infer intake
 completeness or verified completions from the ledger alone.
 

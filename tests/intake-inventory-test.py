@@ -40,7 +40,7 @@ def report(obj, required={"issue-feed"}):
 
 
 complete = report(inventory([source("issue-feed", requests=[item("case-one"), item("case-two")])]))
-assert complete["status"] == "source_attested_conditional"
+assert complete["status"] == "operator_asserted_source_coverage"
 assert complete["eligible_enumerated_count"] == 2 and complete["eligible_recorded_count"] == 1
 assert complete["missing_eligible_labels"] == [reader.pseudonym("case-two", key)]
 assert "case-two" not in json.dumps(complete)
@@ -54,6 +54,8 @@ assert report(inventory([source("issue-feed", requests=[item("case-one", "unknow
 # A ledger-only intake is a numerator/denominator discrepancy, not a bonus
 # recorded request. Matching IDs with different eligibility cannot be counted.
 assert report(inventory([source("issue-feed", requests=[item("case-two")])]))["status"] == "UNVERIFIED"
+conflict = report(inventory([source("issue-feed", requests=[item("case-one", "excluded"), item("case-two")])]))
+assert conflict["status"] == "UNVERIFIED" and conflict["eligible_recorded_count"] == 0
 
 
 def refuses(obj, required={"issue-feed"}):
@@ -94,6 +96,10 @@ assert json.loads(partial.stdout)["intake_inventory"]["status"] == "UNVERIFIED"
 inventory_file.write_text(json.dumps(inventory([source("issue-feed")])), encoding="utf-8")
 covered = subprocess.run(cmd, capture_output=True, text=True, check=False)
 assert covered.returncode == 0
-assert json.loads(covered.stdout)["intake_inventory"]["status"] == "source_attested_conditional"
+assert json.loads(covered.stdout)["intake_inventory"]["status"] == "operator_asserted_source_coverage"
+missing_inventory = subprocess.run([sys.executable, "-I", "-B", str(READER), "--ledger", str(ledger),
+                                   "--key-file", str(key_file), "--as-of", "2026-10-23T00:00:00Z"],
+                                  capture_output=True, text=True, check=False)
+assert missing_inventory.returncode == 3 and "UNVERIFIED" in missing_inventory.stderr and not missing_inventory.stdout
 print("intake-inventory tests: PASS")
 print("intake_inventory_fixture=" + str(fixture), file=sys.stderr)

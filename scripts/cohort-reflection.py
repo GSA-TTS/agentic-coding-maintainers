@@ -314,12 +314,12 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
                    (cid in eligible and recorded[cid] != "eligible") or
                    (cid in excluded and recorded[cid] != "excluded") or
                    (cid in unknown and recorded[cid] != "unknown")}
-    status = "source_attested_conditional" if eligible and not incomplete and not unknown and not extra and not conflicting else "UNVERIFIED"
+    status = "operator_asserted_source_coverage" if eligible and not incomplete and not unknown and not extra and not conflicting else "UNVERIFIED"
     return {
         "status": status,
         "scope": "eligible requests in declared, source-attested enumerations only; not all real-world requests",
         "eligible_enumerated_count": len(eligible),
-        "eligible_recorded_count": len(eligible & recorded.keys()),
+        "eligible_recorded_count": sum(recorded.get(cid) == "eligible" for cid in eligible),
         "missing_eligible_labels": sorted(pseudonym(cid, key) for cid in missing),
         "unknown_eligibility_labels": sorted(pseudonym(cid, key) for cid in unknown),
         "ledger_only_labels": sorted(pseudonym(cid, key) for cid in extra),
@@ -345,8 +345,8 @@ def main() -> int:
         data = private_file(args.ledger)
         events = events_from(data, as_of)
         report = reflect(events, as_of, key)
-        if args.required_source and not args.inventory:
-            raise Unverified("required sources supplied without an inventory")
+        if not args.inventory or not args.required_source:
+            raise Unverified("intake coverage requires both --inventory and at least one --required-source")
         if args.inventory:
             if len(args.required_source) != len(set(args.required_source)):
                 raise Unverified("required source list contains duplicates")
@@ -362,7 +362,7 @@ def main() -> int:
         return 3
     print(json.dumps(report, sort_keys=True, indent=2))
     return 0 if report["coverage"] == "recorded_eligible_cohort" and (
-        not args.inventory or report["intake_inventory"]["status"] == "source_attested_conditional"
+        report["intake_inventory"]["status"] == "operator_asserted_source_coverage"
     ) else 3
 
 
