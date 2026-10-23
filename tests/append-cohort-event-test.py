@@ -30,7 +30,16 @@ FIXTURE = pathlib.Path(tempfile.mkdtemp(prefix=datetime.datetime.now(datetime.ti
     encoding="utf-8",
 )
 LEDGER = FIXTURE / "cases.jsonl"
-LEDGER.touch(mode=0o600)
+
+
+def initialize():
+    return subprocess.run([sys.executable, "-I", "-B", str(WRITER), "--ledger", str(LEDGER), "--init"],
+                          input=b"", capture_output=True, check=False)
+
+
+assert initialize().returncode == 0
+assert LEDGER.exists() and LEDGER.stat().st_mode & 0o777 == 0o600
+assert initialize().returncode == 3 and LEDGER.read_bytes() == b""
 
 
 def submit(event, *, path=LEDGER):
@@ -96,11 +105,13 @@ locker.wait(timeout=5)
 
 second = submit(event(2, "transition", state="blocked"))
 assert second.returncode == 0
+assert LEDGER.read_bytes().startswith(before)
 assert len(LEDGER.read_bytes().splitlines()) == 2
 assert b'"recorded_at"' in LEDGER.read_bytes()
 assert hashlib.sha256(LEDGER.read_bytes()).digest() != hashlib.sha256(before).digest()
 
 # Two cooperating CLI processes must serialize their validate/append steps.
+before_parallel = LEDGER.read_bytes()
 with ThreadPoolExecutor(max_workers=2) as pool:
     futures = [pool.submit(submit, event(n, "transition", state="open")) for n in (3, 4)]
     results = [future.result() for future in futures]
@@ -108,6 +119,17 @@ assert all(result.returncode == 0 for result in results), results
 assert sorted(json.loads(line)["event_id"] for line in LEDGER.read_bytes().splitlines()) == [
     "evt-1", "evt-2", "evt-3", "evt-4",
 ]
+assert LEDGER.read_bytes().startswith(before_parallel)
+
+# Same-ID concurrent submits are a stronger admission test: exactly one
+# writer may append; the other must see it under the lock and refuse.
+before_race = LEDGER.read_bytes()
+with ThreadPoolExecutor(max_workers=2) as pool:
+    futures = [pool.submit(submit, event(5, "transition", state="blocked")) for _ in range(2)]
+    race = [future.result() for future in futures]
+assert sorted(result.returncode for result in race) == [0, 3], race
+assert LEDGER.read_bytes().startswith(before_race)
+assert [json.loads(line)["event_id"] for line in LEDGER.read_bytes().splitlines()].count("evt-5") == 1
 
 # Complete-but-invalid and incomplete ledgers fail closed without repair.
 with LEDGER.open("ab") as handle:

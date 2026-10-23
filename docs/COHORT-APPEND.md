@@ -4,12 +4,11 @@ The operator can record **one sanitized event** at a time without modifying
 existing ledger bytes:
 
 ```bash
-# First create the private directory and an empty ledger, OUTSIDE git.
+# First create the private directory, OUTSIDE git. The writer validates it.
 umask 077
 mkdir -p /absolute/private/cohort
-# Exclusive creation: fails rather than truncating a ledger on a repeat run.
-python3 -I -B -c 'import os; p="/absolute/private/cohort/cases.jsonl";
-fd=os.open(p, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600); os.close(fd)'
+python3 -I -B scripts/append-cohort-event.py \
+  --ledger /absolute/private/cohort/cases.jsonl --init </dev/null
 
 python3 -I -B scripts/append-cohort-event.py \
   --ledger /absolute/private/cohort/cases.jsonl <<'JSON'
@@ -17,7 +16,8 @@ python3 -I -B scripts/append-cohort-event.py \
 JSON
 ```
 
-Initialization must run **once**; it refuses an existing ledger. A repeated
+Initialization must run **once**; `--init` uses an exclusive descriptor-relative
+no-follow create and refuses an existing ledger. A repeated
 shell redirection such as `: > cases.jsonl` destroys existing evidence before
 the writer can validate or lock it—never initialize that way.
 

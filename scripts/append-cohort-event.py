@@ -120,11 +120,28 @@ def append(path: pathlib.Path, proposed: dict, reader) -> None:
                 raise OSError("ledger differs from validated append; inspect before retry")
 
 
+def initialize(path: pathlib.Path) -> None:
+    """Exclusive-create an empty private ledger; never truncate an existing one."""
+    with contextlib.ExitStack() as stack:
+        directory = parent_fd(path)
+        stack.callback(os.close, directory)
+        fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        with os.fdopen(fd, "wb", buffering=0) as ledger:
+            os.fsync(ledger.fileno())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", required=True, type=pathlib.Path)
+    parser.add_argument("--init", action="store_true", help="exclusively create an empty private ledger")
     args = parser.parse_args()
     try:
+        if args.init:
+            if sys.stdin.buffer.read(1):
+                raise ValueError("initialization takes no event on stdin")
+            initialize(args.ledger)
+            print("cohort append: initialized private ledger")
+            return 0
         raw = sys.stdin.buffer.read(MAX_INPUT + 1)
         if not raw or len(raw) > MAX_INPUT:
             raise ValueError("one event on stdin is required (max 8192 bytes)")
