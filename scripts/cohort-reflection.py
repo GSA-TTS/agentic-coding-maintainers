@@ -20,6 +20,8 @@ from pathlib import Path
 
 MAX_BYTES = 2_000_000
 MAX_EVENTS = 2000
+MAX_SOURCES = 20
+MAX_REQUESTS = 2000
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 TYPES = {"intake", "transition", "review", "rework", "handoff", "outcome"}
@@ -246,10 +248,93 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     }
 
 
+def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: bytes, required: set[str]) -> dict:
+    """Conditional, source-attested intake coverage; never all-real-world coverage."""
+    try:
+        inventory = json.loads(data, object_pairs_hook=unique_fields)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise Unverified("request inventory is malformed") from exc
+    if not isinstance(inventory, dict) or set(inventory) != {"schema_version", "as_of", "window_start", "sources"}:
+        raise Unverified("request inventory fields are invalid")
+    if type(inventory["schema_version"]) is not int or inventory["schema_version"] != 1:
+        raise Unverified("request inventory schema is unsupported")
+    start = as_of - timedelta(days=28)
+    if timestamp(inventory["as_of"]) != as_of or timestamp(inventory["window_start"]) != start:
+        raise Unverified("request inventory window does not match report cutoff")
+    sources = inventory["sources"]
+    if not isinstance(sources, list) or len(sources) > MAX_SOURCES:
+        raise Unverified("request inventory source count is invalid")
+    observed: set[str] = set()
+    eligible: set[str] = set()
+    excluded: set[str] = set()
+    unknown: set[str] = set()
+    source_names: set[str] = set()
+    incomplete: set[str] = set()
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {"source_id", "enumerated_at", "coverage", "requests"}:
+            raise Unverified("request inventory source fields are invalid")
+        name = source["source_id"]
+        if not isinstance(name, str) or not ID.fullmatch(name) or name in source_names:
+            raise Unverified("request inventory source identifier is invalid or duplicated")
+        source_names.add(name)
+        enumerated = timestamp(source["enumerated_at"])
+        if enumerated < as_of or enumerated > datetime.now(timezone.utc):
+            raise Unverified("request inventory enumeration time is inconsistent")
+        if not isinstance(source["coverage"], str) or source["coverage"] not in {"complete", "partial"}:
+            raise Unverified("request inventory source coverage is invalid")
+        if source["coverage"] == "partial":
+            incomplete.add(name)
+        requests = source["requests"]
+        if not isinstance(requests, list) or len(observed) + len(requests) > MAX_REQUESTS:
+            raise Unverified("request inventory exceeds request limit")
+        for request in requests:
+            if not isinstance(request, dict) or set(request) != {"request_id", "received_at", "eligibility"}:
+                raise Unverified("request inventory entry fields are invalid")
+            request_id = request["request_id"]
+            if not isinstance(request_id, str) or not ID.fullmatch(request_id) or request_id in observed:
+                raise Unverified("request inventory identifier is invalid or duplicated")
+            observed.add(request_id)
+            received = timestamp(request["received_at"])
+            if not start <= received < as_of or not isinstance(request["eligibility"], str) or request["eligibility"] not in ELIGIBILITY:
+                raise Unverified("request inventory entry is outside window or has invalid eligibility")
+            if request["eligibility"] == "eligible":
+                eligible.add(request_id)
+            elif request["eligibility"] == "excluded":
+                excluded.add(request_id)
+            elif request["eligibility"] == "unknown":
+                unknown.add(request_id)
+    if not required or not source_names <= required:
+        raise Unverified("required source set is missing or inventory has unapproved sources")
+    incomplete |= required - source_names
+    recorded = {event["case_id"]: event["eligibility"] for event in events if event["event_type"] == "intake" and
+                timestamp(event["recorded_at"]) <= as_of and start <= timestamp(event["occurred_at"]) < as_of}
+    missing = eligible - recorded.keys()
+    extra = recorded.keys() - observed
+    conflicting = {cid for cid in observed & recorded.keys() if
+                   (cid in eligible and recorded[cid] != "eligible") or
+                   (cid in excluded and recorded[cid] != "excluded") or
+                   (cid in unknown and recorded[cid] != "unknown")}
+    status = "source_attested_conditional" if eligible and not incomplete and not unknown and not extra and not conflicting else "UNVERIFIED"
+    return {
+        "status": status,
+        "scope": "eligible requests in declared, source-attested enumerations only; not all real-world requests",
+        "eligible_enumerated_count": len(eligible),
+        "eligible_recorded_count": len(eligible & recorded.keys()),
+        "missing_eligible_labels": sorted(pseudonym(cid, key) for cid in missing),
+        "unknown_eligibility_labels": sorted(pseudonym(cid, key) for cid in unknown),
+        "ledger_only_labels": sorted(pseudonym(cid, key) for cid in extra),
+        "conflicting_eligibility_labels": sorted(pseudonym(cid, key) for cid in conflicting),
+        "incomplete_source_labels": sorted(pseudonym(cid, key) for cid in incomplete),
+        "inventory_identity_hmac": hmac.new(key, b"inventory-identity-v1\0" + data, hashlib.sha256).hexdigest(),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--key-file", type=Path, required=True, help="absolute private file containing a random pseudonym key")
+    parser.add_argument("--inventory", type=Path, help="private source-attested request inventory")
+    parser.add_argument("--required-source", action="append", default=[], help="predeclared source ID; repeat for each expected source")
     parser.add_argument("--as-of", required=True, help="fixed UTC snapshot, e.g. 2026-10-22T00:00:00Z")
     args = parser.parse_args()
     try:
@@ -258,7 +343,16 @@ def main() -> int:
         if len(key) < 32 or len(key) > 128:
             raise Unverified("pseudonym key must be 32-128 random bytes")
         data = private_file(args.ledger)
-        report = reflect(events_from(data, as_of), as_of, key)
+        events = events_from(data, as_of)
+        report = reflect(events, as_of, key)
+        if args.required_source and not args.inventory:
+            raise Unverified("required sources supplied without an inventory")
+        if args.inventory:
+            if len(args.required_source) != len(set(args.required_source)):
+                raise Unverified("required source list contains duplicates")
+            report["intake_inventory"] = reconcile_inventory(
+                private_file(args.inventory), events, as_of, key, set(args.required_source),
+            )
         # `--as-of` alone is not an immutable snapshot: a later append with a
         # backdated recorded_at can revise it. Bind every report to the exact
         # bytes consumed so changed input cannot masquerade as the same run.
@@ -267,7 +361,9 @@ def main() -> int:
         print(f"reflection: UNVERIFIED — {exc if isinstance(exc, Unverified) else 'ledger unavailable'}", file=sys.stderr)
         return 3
     print(json.dumps(report, sort_keys=True, indent=2))
-    return 0 if report["coverage"] == "recorded_eligible_cohort" else 3
+    return 0 if report["coverage"] == "recorded_eligible_cohort" and (
+        not args.inventory or report["intake_inventory"]["status"] == "source_attested_conditional"
+    ) else 3
 
 
 if __name__ == "__main__":

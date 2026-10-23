@@ -115,6 +115,11 @@ The first **recorded-cohort** reflection parser is
 events from independently verified outcomes; it cannot infer intake
 completeness or verified completions from the ledger alone.
 
+For conditional intake coverage, supply a separately captured private request
+inventory and predeclare each expected source using `--required-source`. See
+[`docs/INTAKE-INVENTORY.md`](docs/INTAKE-INVENTORY.md); even a complete source
+flag is an attestation, not proof that every real-world request was captured.
+
 To record one sanitized local event, initialize a private ledger outside git
 and use `python3 -I -B scripts/append-cohort-event.py --ledger
 /absolute/private/cases.jsonl` with a JSON event on stdin. See
