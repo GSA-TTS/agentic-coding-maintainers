@@ -26,7 +26,8 @@ expect_rc() {
 "$CMD" create review-b --scope 'repo:x:pr:2:head:bbbb' --kind review \
   --repo x/y --worktree "$WORK_REVIEW" --base-sha "$REVIEW_SHA" --head-sha "$REVIEW_SHA" >/dev/null
 
-state="$($CMD show impl-a | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
+shown="$($CMD show impl-a)"
+state="$(python3 -I -B -c 'import json,sys; print(json.load(sys.stdin)["state"])' <<<"$shown")"
 [[ "$state" == Ready ]] || fail "new task is not Ready"
 expect_rc 2 "$CMD" transition impl-a Claimed
 grep -q '"state": "Ready"' "$STATE/tasks/impl-a/task.json" || fail "direct Claimed transition changed Ready task"
@@ -41,7 +42,11 @@ for k in ("tracker_type","tracker_number","head_sha","reviewed_sha","transition_
     d.pop(k,None)
 open(p,"w").write(json.dumps(d,sort_keys=True,indent=2)+"\n")
 PY
-"$CMD" show review-b | grep -q '"schema_version": 2'
+# Capture the complete producer output before matching. `grep -q` closes a
+# pipe on its first match, which can SIGPIPE the Python CLI under pipefail and
+# turn an otherwise successful assertion into a flaky BrokenPipeError.
+shown="$($CMD show review-b)"
+grep -q '"schema_version": 2' <<<"$shown"
 "$CMD" record review-b validation 'migration preserved task' >/dev/null
 grep -q '"schema_version": 2' "$STATE/tasks/review-b/task.json"
 # Legacy headless review records cannot be declared ready until rebound.

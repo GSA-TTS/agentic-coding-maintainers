@@ -12,6 +12,7 @@ test:
 	bash tests/import-sync-test.sh
 	bash tests/opencode-compat-test.sh
 	bash tests/forbidden-paths-test.sh
+	bash tests/strict-version-test.sh
 	bash tests/evaluate-workflow-test.sh
 	bash tests/cohort-reflection-test.sh
 	python3 -I -B tests/append-cohort-event-test.py
