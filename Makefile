@@ -14,6 +14,7 @@ test:
 	bash tests/forbidden-paths-test.sh
 	bash tests/evaluate-workflow-test.sh
 	bash tests/cohort-reflection-test.sh
+	python3 -I -B tests/append-cohort-event-test.py
 	bash tests/operating-surface-test.sh
 
 check: test

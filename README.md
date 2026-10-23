@@ -115,6 +115,12 @@ The first **recorded-cohort** reflection parser is
 events from independently verified outcomes; it cannot infer intake
 completeness or verified completions from the ledger alone.
 
+To record one sanitized local event, initialize a private ledger outside git
+and use `python3 -I -B scripts/append-cohort-event.py --ledger
+/absolute/private/cases.jsonl` with a JSON event on stdin. See
+[`docs/COHORT-APPEND.md`](docs/COHORT-APPEND.md) for the exact initialization,
+locking, failure and evidence limits.
+
 ```bash
 make test
 make check
