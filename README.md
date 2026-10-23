@@ -111,9 +111,15 @@ store exits 3 (`UNVERIFIED`), never a healthy-looking zero-work report.
 
 The first **recorded-cohort** reflection parser is
 `python3 -I -B scripts/cohort-reflection.py --ledger /absolute/private/cases.jsonl
---key-file /absolute/private/report.key --as-of <UTC>`. Its [contract](docs/COHORT-REFLECTION.md) distinguishes recorded
+--key-file /absolute/private/report.key --inventory /absolute/private/requests.json
+--required-source issue-feed --as-of <UTC>`. Its [contract](docs/COHORT-REFLECTION.md) distinguishes recorded
 events from independently verified outcomes; it cannot infer intake
 completeness or verified completions from the ledger alone.
+
+For conditional intake coverage, supply a separately captured private request
+inventory and predeclare each expected source using `--required-source`. See
+[`docs/INTAKE-INVENTORY.md`](docs/INTAKE-INVENTORY.md); even a complete source
+flag is an attestation, not proof that every real-world request was captured.
 
 To record one sanitized local event, initialize a private ledger outside git
 and use `python3 -I -B scripts/append-cohort-event.py --ledger

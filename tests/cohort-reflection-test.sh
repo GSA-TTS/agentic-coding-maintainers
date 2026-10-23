@@ -126,17 +126,33 @@ ledger = fixture / "cases.jsonl"
 key_file = fixture / "report.key"
 key_file.write_bytes(key)
 os.chmod(key_file, 0o600)
+inventory_file = fixture / "inventory.json"
 
 
 def cli(input_rows, *, ledger_path=ledger):
     ledger.write_bytes("".join(json.dumps(r) + "\n" for r in input_rows).encode())
     os.chmod(ledger, 0o600)
+    inventory_file.write_text(json.dumps({
+        "schema_version": 1,
+        "as_of": "2026-10-22T00:00:00Z",
+        "window_start": "2026-09-24T00:00:00Z",
+        "sources": [{
+            "source_id": "synthetic-feed",
+            "enumerated_at": "2026-10-22T00:00:00Z",
+            "coverage": "complete",
+            "requests": [{"request_id": row["case_id"], "received_at": row["occurred_at"],
+                          "eligibility": row["eligibility"]}
+                         for row in input_rows if row["event_type"] == "intake"],
+        }],
+    }), encoding="utf-8")
+    os.chmod(inventory_file, 0o600)
     return subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str(ledger_path),
-                           "--key-file", str(key_file), "--as-of", "2026-10-22T00:00:00Z"],
+                           "--key-file", str(key_file), "--inventory", str(inventory_file),
+                           "--required-source", "synthetic-feed", "--as-of", "2026-10-22T00:00:00Z"],
                           capture_output=True, text=True, check=False)
 
 
-good = cli(rows)
+good = cli(rows[:13])  # eligible cohort only; unknown eligibility is tested separately
 assert good.returncode == 0 and not good.stderr, (good.returncode, good.stderr)
 output = json.loads(good.stdout)
 assert output["coverage"] == "recorded_eligible_cohort"

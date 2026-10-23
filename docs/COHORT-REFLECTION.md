@@ -8,7 +8,9 @@ fixed UTC cutoff:
 ```bash
 python3 -I -B scripts/cohort-reflection.py \
   --ledger /absolute/private/path/cases.jsonl \
-  --key-file /absolute/private/path/report.key --as-of 2026-10-22T00:00:00Z
+  --key-file /absolute/private/path/report.key \
+  --inventory /absolute/private/path/requests.json \
+  --required-source issue-feed --as-of 2026-10-22T00:00:00Z
 ```
 
 The ledger is host-local, current-user-owned and private (`0700` directory,
@@ -56,9 +58,11 @@ not proof that timestamps were recorded at the time claimed.
 
 ## Critical limits of this slice
 
-The CLI reads only a recorded event ledger. It cannot establish that all
-eligible requests were admitted, so `intake_completeness` is **UNMEASURED**
-without a separate timestamped request inventory. A recorded independent
+The CLI requires a separate timestamped request inventory and a predeclared
+source set for a successful intake-coverage exit. Its source `complete` flag
+is an **operator assertion**, not independently verified enumeration; the
+status is therefore `operator_asserted_source_coverage`, not proof that all
+eligible requests were admitted. See `INTAKE-INVENTORY.md`. A recorded independent
 review, passing check or repository-event ID is a **claim**, not live GitHub
 attestation. Therefore **all** documented outcomes remain
 `documented_outcome_ids_unverified`, `verified_completion_ids` is empty, and
