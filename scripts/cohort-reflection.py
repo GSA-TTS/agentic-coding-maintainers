@@ -266,6 +266,7 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
         raise Unverified("request inventory source count is invalid")
     observed: set[str] = set()
     eligible: set[str] = set()
+    received_at: dict[str, datetime] = {}
     excluded: set[str] = set()
     unknown: set[str] = set()
     source_names: set[str] = set()
@@ -295,6 +296,7 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
                 raise Unverified("request inventory identifier is invalid or duplicated")
             observed.add(request_id)
             received = timestamp(request["received_at"])
+            received_at[request_id] = received
             if not start <= received < as_of or not isinstance(request["eligibility"], str) or request["eligibility"] not in ELIGIBILITY:
                 raise Unverified("request inventory entry is outside window or has invalid eligibility")
             if request["eligibility"] == "eligible":
@@ -306,20 +308,22 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
     if not required or not source_names <= required:
         raise Unverified("required source set is missing or inventory has unapproved sources")
     incomplete |= required - source_names
-    recorded = {event["case_id"]: event["eligibility"] for event in events if event["event_type"] == "intake" and
+    recorded = {event["case_id"]: event for event in events if event["event_type"] == "intake" and
                 timestamp(event["recorded_at"]) <= as_of and start <= timestamp(event["occurred_at"]) < as_of}
     missing = eligible - recorded.keys()
     extra = recorded.keys() - observed
     conflicting = {cid for cid in observed & recorded.keys() if
-                   (cid in eligible and recorded[cid] != "eligible") or
-                   (cid in excluded and recorded[cid] != "excluded") or
-                   (cid in unknown and recorded[cid] != "unknown")}
-    status = "operator_asserted_source_coverage" if eligible and not incomplete and not unknown and not extra and not conflicting else "UNVERIFIED"
+                   timestamp(recorded[cid]["occurred_at"]) < received_at[cid] or
+                   (cid in eligible and recorded[cid]["eligibility"] != "eligible") or
+                   (cid in excluded and recorded[cid]["eligibility"] != "excluded") or
+                   (cid in unknown and recorded[cid]["eligibility"] != "unknown")}
+    matched = {cid for cid in eligible if cid in recorded and cid not in conflicting}
+    status = "operator_asserted_source_coverage" if eligible and not missing and not incomplete and not unknown and not extra and not conflicting else "UNVERIFIED"
     return {
         "status": status,
-        "scope": "eligible requests in declared, source-attested enumerations only; not all real-world requests",
+        "scope": "eligible requests in declared, operator-provided enumerations only; not all real-world requests",
         "eligible_enumerated_count": len(eligible),
-        "eligible_recorded_count": sum(recorded.get(cid) == "eligible" for cid in eligible),
+        "eligible_recorded_count": len(matched),
         "missing_eligible_labels": sorted(pseudonym(cid, key) for cid in missing),
         "unknown_eligibility_labels": sorted(pseudonym(cid, key) for cid in unknown),
         "ledger_only_labels": sorted(pseudonym(cid, key) for cid in extra),
@@ -352,6 +356,11 @@ def main() -> int:
                 raise Unverified("required source list contains duplicates")
             report["intake_inventory"] = reconcile_inventory(
                 private_file(args.inventory), events, as_of, key, set(args.required_source),
+            )
+            report["intake_completeness"] = (
+                "CONDITIONAL: operator-asserted enumerations of declared sources only"
+                if report["intake_inventory"]["status"] == "operator_asserted_source_coverage"
+                else "UNVERIFIED: inventory missing requests, coverage, or consistent eligibility"
             )
         # `--as-of` alone is not an immutable snapshot: a later append with a
         # backdated recorded_at can revise it. Bind every report to the exact

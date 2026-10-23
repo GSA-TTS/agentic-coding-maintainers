@@ -48,9 +48,10 @@ with zero eligible requests is also not an eligible-cohort measurement.
 The report prints the eligible enumerated and matching recorded counts,
 missing/unknown/ledger-only/conflicting **keyed pseudonyms**, incomplete source
 labels, and a domain-separated keyed HMAC identifying the exact inventory
-bytes. It never prints raw request IDs or titles. `source_attested_conditional`
-means only: **of requests independently enumerated in these declared sources
-and this window, the reported number were recorded as eligible intakes**. The
+bytes. It never prints raw request IDs or titles. `operator_asserted_source_coverage`
+means only: **of requests supplied in declared operator-asserted enumerations
+for this window, all eligible requests have matching eligible intakes**. Missing
+eligible requests return `UNVERIFIED`, even if every source claims complete. The
 `coverage: "complete"` flag is an upstream/operator assertion, not proof that
 all pages or all real-world requests were observed. Review the collection
 method separately; do not call this global intake completeness or verified

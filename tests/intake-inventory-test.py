@@ -39,10 +39,12 @@ def report(obj, required={"issue-feed"}):
     return reader.reconcile_inventory(json.dumps(obj).encode(), events, as_of, key, required)
 
 
-complete = report(inventory([source("issue-feed", requests=[item("case-one"), item("case-two")])]))
+complete = report(inventory([source("issue-feed", requests=[item("case-one")])]))
 assert complete["status"] == "operator_asserted_source_coverage"
-assert complete["eligible_enumerated_count"] == 2 and complete["eligible_recorded_count"] == 1
-assert complete["missing_eligible_labels"] == [reader.pseudonym("case-two", key)]
+assert complete["eligible_enumerated_count"] == 1 and complete["eligible_recorded_count"] == 1
+missing = report(inventory([source("issue-feed", requests=[item("case-one"), item("case-two")])]))
+assert missing["status"] == "UNVERIFIED" and missing["eligible_recorded_count"] == 1
+assert missing["missing_eligible_labels"] == [reader.pseudonym("case-two", key)]
 assert "case-two" not in json.dumps(complete)
 assert "all real-world" in complete["scope"]
 assert report(inventory([source("issue-feed", "partial")]))["status"] == "UNVERIFIED"
@@ -50,6 +52,10 @@ assert report(inventory([source("issue-feed")]), {"issue-feed", "review-feed"})[
 assert report(inventory([source("issue-feed", requests=[item("case-one"), item("unknown", "unknown")])]))["status"] == "UNVERIFIED"
 assert report(inventory([source("issue-feed", requests=[item("excluded", "excluded")])]))["status"] == "UNVERIFIED"
 assert report(inventory([source("issue-feed", requests=[item("case-one", "unknown")])]))["status"] == "UNVERIFIED"
+late_request = inventory([source("issue-feed", requests=[item("case-one")])])
+late_request["sources"][0]["requests"][0]["received_at"] = "2026-10-06T00:00:00Z"
+assert report(late_request)["status"] == "UNVERIFIED"
+assert report(late_request)["eligible_recorded_count"] == 0
 
 # A ledger-only intake is a numerator/denominator discrepancy, not a bonus
 # recorded request. Matching IDs with different eligibility cannot be counted.
@@ -97,6 +103,10 @@ inventory_file.write_text(json.dumps(inventory([source("issue-feed")])), encodin
 covered = subprocess.run(cmd, capture_output=True, text=True, check=False)
 assert covered.returncode == 0
 assert json.loads(covered.stdout)["intake_inventory"]["status"] == "operator_asserted_source_coverage"
+assert "CONDITIONAL" in json.loads(covered.stdout)["intake_completeness"]
+inventory_file.write_text(json.dumps(inventory([source("issue-feed", requests=[item("case-one"), item("case-two")])])), encoding="utf-8")
+missing_cli = subprocess.run(cmd, capture_output=True, text=True, check=False)
+assert missing_cli.returncode == 3 and json.loads(missing_cli.stdout)["intake_inventory"]["status"] == "UNVERIFIED"
 missing_inventory = subprocess.run([sys.executable, "-I", "-B", str(READER), "--ledger", str(ledger),
                                    "--key-file", str(key_file), "--as-of", "2026-10-23T00:00:00Z"],
                                   capture_output=True, text=True, check=False)

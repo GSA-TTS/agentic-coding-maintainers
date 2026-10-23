@@ -37,9 +37,11 @@ those from a mutable task snapshot or a single monitor checkpoint.
 
 The read-only parser (`COHORT-REFLECTION.md`) and private operator-invoked
 append writer (`COHORT-APPEND.md`) now provide a **partial** versioned case
-ledger. Before adding a dashboard or automated issue filing, add intake
-inventory reconciliation and repository-outcome attestations to its sanitized
-transition/intake/outcome events.
+ledger. Optional, **operator-asserted** reconciliation against a separately
+captured request inventory is documented in `INTAKE-INVENTORY.md`. Its source
+completeness flag is not an independently verified collection record. Before
+adding a dashboard or automated issue filing, implement collection provenance
+and current-head repository-outcome attestations.
 Freeze the intake cohort and report numerator/denominator IDs, exclusions,
 unknown coverage and snapshot time. Cases still open, blocked, cancelled or
 abandoned remain in the denominator. Link a verified outcome to current-head
