@@ -6,7 +6,7 @@ cd "$ROOT"
 
 require_version() {
   local tool="$1" actual="$2" expected
-  expected="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+  expected="$(python3 -I -B -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
     tools/precommit-versions.json "$tool")"
   [[ "$actual" == "$expected" ]] || {
     printf 'ERROR: %s version %s; expected %s\n' "$tool" "$actual" "$expected" >&2
