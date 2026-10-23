@@ -45,10 +45,15 @@ python3 -I -B scripts/cohort-reflection.py \
   --key-file /absolute/private/cohort/report.key \
   --inventory /absolute/private/cohort/requests.json \
   --required-source issue-feed --required-source review-feed \
+  --required-source project-feed --required-source direct-feed \
   --as-of 2026-10-23T00:00:00Z
 ```
 
-The source list is specified **outside** the inventory; an inventory cannot
+This four-source command reflects the initial maintainer policy. Until all
+four feeds are actually enumerated and documented, the output must remain
+`UNVERIFIED`; do not create empty `complete` feeds to make the command pass.
+Each additional source requires another declared ID. The source list is
+specified **outside** the inventory; an inventory cannot
 claim completeness merely by omitting a source. Specify every expected source
 before assessing it. The inventory is a JSON object with exactly:
 
