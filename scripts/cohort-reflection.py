@@ -209,13 +209,23 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     # names only keyed case labels, the case type, age and a review-due signal.
     # No model, issue text or automatic eligibility decision is involved.
     disposition_age_days = 7
-    disposition_queue = sorted(
-        ({"case_label": pseudonym(cid, key), "case_type": cohort[cid][0]["case_type"],
-          "age_days": round((as_of - timestamp(cohort[cid][0]["occurred_at"])).total_seconds() / 86400, 2),
-          "review_due": (as_of - timestamp(cohort[cid][0]["occurred_at"])) >= timedelta(days=disposition_age_days)}
-         for cid in unknown),
-        key=lambda row: (-row["age_days"], row["case_label"]),
-    )
+    # The operational queue includes all still-unknown recorded intakes,
+    # including cases older than the 28-day PERFORMANCE cohort. Otherwise the
+    # oldest unresolved case disappears merely because time passed.
+    queued = []
+    for cid, rows in case_events.items():
+        if rows[0]["eligibility"] != "unknown":
+            continue
+        elapsed = as_of - timestamp(rows[0]["occurred_at"])
+        if elapsed.total_seconds() < 0:
+            raise Unverified("unknown case intake is after the report cutoff")
+        queued.append((elapsed.total_seconds(), {
+            "case_label": pseudonym(cid, key), "case_type": rows[0]["case_type"],
+            # Whole days avoid displaying 7.00 while the seven-day flag is false.
+            "age_whole_days": elapsed.days,
+            "review_due": elapsed >= timedelta(days=disposition_age_days),
+        }))
+    disposition_queue = [row for _, row in sorted(queued, key=lambda pair: (-pair[0], pair[1]["case_label"]))]
     unfinished: list[tuple[str, str, float]] = []
     documented_outcomes = []
     reworked = []
@@ -237,7 +247,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         if any(row["event_type"] == "rework" and row["substantive"] == "yes" and
                kinds[row["review_event_id"]]["independent"] == "yes" for row in rows):
             reworked.append(case_id)
-    label = {case_id: pseudonym(case_id, key) for case_id in cohort}
+    label = {case_id: pseudonym(case_id, key) for case_id in case_events}
     if len(set(label.values())) != len(label):
         raise Unverified("report case labels collide")
     return {

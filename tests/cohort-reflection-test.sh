@@ -57,7 +57,7 @@ assert report["unknown_eligibility_ids"] == [module.pseudonym("unknown", key)]
 queue = report["needs_maintainer_disposition"]
 assert len(queue) == 1 and queue[0]["case_label"] == module.pseudonym("unknown", key)
 assert queue[0]["case_type"] == "other" and queue[0]["review_due"] is True
-assert queue[0]["age_days"] == 12.0
+assert queue[0]["age_whole_days"] == 12
 assert "unknown" not in [row["case_label"] for row in queue]
 assert "no automatic exclusion" in report["disposition_policy"]
 assert '"complete"' not in json.dumps(report)
@@ -112,6 +112,22 @@ recent = dict(row("recent-unknown", 35, "intake", case_type="review", eligibilit
 recent_report = module.reflect(read([recent]), as_of, key)
 assert recent_report["needs_maintainer_disposition"][0]["review_due"] is False
 assert recent_report["excluded_ids"] == []
+older = dict(row("older-unknown", 36, "intake", case_type="review", eligibility="unknown"),
+             occurred_at="2026-08-01T00:00:00Z", recorded_at="2026-08-01T01:00:00Z")
+older_report = module.reflect(read([older]), as_of, key)
+assert older_report["coverage"] == "no_eligible_evidence" and older_report["unknown_eligibility_ids"] == []
+assert older_report["needs_maintainer_disposition"][0]["case_label"] == module.pseudonym("older-unknown", key)
+assert older_report["needs_maintainer_disposition"][0]["review_due"] is True
+# Just below 7 days must not display seven whole days or report due; at exactly
+# 7 days both values move together. The queue sorts by unrounded duration.
+pre_due = dict(row("pre-due", 37, "intake", case_type="review", eligibility="unknown"),
+               occurred_at="2026-10-15T00:00:01Z", recorded_at="2026-10-15T01:00:00Z")
+at_due = dict(row("at-due", 38, "intake", case_type="review", eligibility="unknown"),
+              occurred_at="2026-10-15T00:00:00Z", recorded_at="2026-10-15T01:00:00Z")
+boundary_queue = module.reflect(read([pre_due, at_due]), as_of, key)["needs_maintainer_disposition"]
+assert boundary_queue[0]["case_label"] == module.pseudonym("at-due", key)
+assert boundary_queue[0]["age_whole_days"] == 7 and boundary_queue[0]["review_due"] is True
+assert boundary_queue[1]["age_whole_days"] == 6 and boundary_queue[1]["review_due"] is False
 try:
     module.events_from(b'{"truncated":true}', as_of)
 except module.Unverified:
