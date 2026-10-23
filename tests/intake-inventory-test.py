@@ -81,6 +81,16 @@ refuses(inventory([source("issue-feed")]), set())
 refuses(dict(inventory([source("issue-feed")]), window_start="2026-09-24T00:00:00Z"))
 refuses(inventory([source("issue-feed", requests=[item("case-one"), item("case-one")])]))
 
+# Wrong-typed event enums must raise the reader's explicit degraded state,
+# not leak a TypeError from Python set membership.
+for bad in (dict(events[0], event_type=[]), dict(events[0], case_type=[]), dict(events[0], eligibility=[])):
+    try:
+        reader.events_from((json.dumps(bad) + "\n").encode(), as_of)
+    except reader.Unverified:
+        pass
+    else:
+        raise AssertionError("wrong-typed event enum was accepted")
+
 # The operator CLI must also return 3 when a required feed is incomplete.
 fixture = pathlib.Path(tempfile.mkdtemp(prefix="intake-inventory-"))
 fixture.chmod(0o700)

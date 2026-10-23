@@ -128,7 +128,7 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
             raise
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise Unverified("event ledger has a malformed line") from exc
-        if not isinstance(event, dict) or event.get("event_type") not in TYPES:
+        if not isinstance(event, dict) or not isinstance(event.get("event_type"), str) or event["event_type"] not in TYPES:
             raise Unverified("event type is invalid")
         kind = event["event_type"]
         if set(event) != SHARED | FIELDS[kind] or type(event.get("schema_version")) is not int or event["schema_version"] != 1:
@@ -146,18 +146,20 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
             raise Unverified("append order disagrees with recorded time")
         prior_recorded = recorded
         if kind == "intake":
-            if event["case_id"] in intake or event["case_type"] not in CASE_TYPES or event["eligibility"] not in ELIGIBILITY:
+            if (event["case_id"] in intake or not isinstance(event["case_type"], str) or
+                    event["case_type"] not in CASE_TYPES or not isinstance(event["eligibility"], str) or
+                    event["eligibility"] not in ELIGIBILITY):
                 raise Unverified("duplicate or invalid intake")
             intake[event["case_id"]] = occurred
         elif event["case_id"] not in intake:
             raise Unverified("event refers to a case without intake")
         elif occurred < intake[event["case_id"]]:
             raise Unverified("event predates case intake")
-        elif kind == "transition" and event["state"] not in STATES:
+        elif kind == "transition" and (not isinstance(event["state"], str) or event["state"] not in STATES):
             raise Unverified("transition state is invalid")
         elif kind in {"review", "handoff", "outcome"} and (not isinstance(event["head_sha"], str) or not SHA.fullmatch(event["head_sha"])):
             raise Unverified("head SHA is invalid")
-        elif kind == "review" and event["independent"] not in {"yes", "no", "unknown"}:
+        elif kind == "review" and (not isinstance(event["independent"], str) or event["independent"] not in {"yes", "no", "unknown"}):
             raise Unverified("review independence is invalid")
         elif kind in {"handoff", "rework", "outcome"}:
             ref_field = "handoff_event_id" if kind == "outcome" else "review_event_id"
@@ -167,9 +169,10 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
                 raise Unverified("event reference is missing, cross-case or wrong type")
             if occurred < timestamp(referenced["occurred_at"]):
                 raise Unverified("event precedes the evidence it references")
-            if kind == "handoff" and (event["checks"] not in CHECKS or event["head_sha"] != referenced["head_sha"]):
+            if kind == "handoff" and (not isinstance(event["checks"], str) or event["checks"] not in CHECKS or
+                                       event["head_sha"] != referenced["head_sha"]):
                 raise Unverified("handoff checks or reviewed head invalid")
-            if kind == "rework" and (event["substantive"] not in {"yes", "no", "unknown"} or
+            if kind == "rework" and (not isinstance(event["substantive"], str) or event["substantive"] not in {"yes", "no", "unknown"} or
                                      not isinstance(event["changed_sha"], str) or not SHA.fullmatch(event["changed_sha"]) or
                                      event["changed_sha"] == referenced["head_sha"]):
                 raise Unverified("rework disposition or changed head invalid")
