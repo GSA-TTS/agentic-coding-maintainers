@@ -55,12 +55,16 @@ cohort, this queue retains older unknowns until a disposition is recorded.
 This is a **read-only report cue**, not an automatic exclusion or GitHub label.
 A maintainer can append one `eligibility_correction` event referencing the
 original intake; it preserves the first classification and records a reason
-code. A corrected unknown leaves the queue, but it is not silently added to an
-older 28-day performance cohort. A queue removal is a recorded maintainer
+code. A corrected unknown leaves the queue, but the 28-day **intake cohort
+retains the original eligibility**, even for recent corrections. The report
+shows both original counts and effective eligibility labels; its correction
+count uses the fixed first-intake cohort as denominator. A queue removal is a recorded maintainer
 decision, **not proof that the decision was corroborated by an older source
 inventory**; the inventory report covers only the current 28-day window. The
 report counts corrected cases in the
-current intake cohort, not correction cycles or all historical cases. Other
+current intake cohort, not correction cycles or all historical cases. Inventory
+classifications have no source-decision timestamp, so any corrected case makes
+inventory coverage UNVERIFIED until source-time evidence is designed. Other
 classification corrections and measured disposition delay remain work under
 issue #30.
 

@@ -121,5 +121,18 @@ missing_inventory = subprocess.run([sys.executable, "-I", "-B", str(READER), "--
                                    "--key-file", str(key_file), "--as-of", "2026-10-23T00:00:00Z"],
                                   capture_output=True, text=True, check=False)
 assert missing_inventory.returncode == 3 and "UNVERIFIED" in missing_inventory.stderr and not missing_inventory.stdout
+# A correction makes source eligibility timing unmeasured even when the
+# inventory and ledger CURRENT labels happen to agree. Do not credit it to the
+# recorded-eligible numerator without dated source-decision evidence.
+corrected = dict(schema_version=1, event_id="correction-2", case_id="case-one",
+                 event_type="eligibility_correction", intake_event_id="intake-1",
+                 replacement="excluded", reason_code="eligibility_review",
+                 occurred_at="2026-10-06T00:00:00Z", recorded_at="2026-10-06T01:00:00Z")
+corrected_inventory = inventory([source("issue-feed", requests=[item("case-one", "excluded")])])
+uncorroborated = reader.reconcile_inventory(json.dumps(corrected_inventory).encode(), events + [corrected], as_of,
+                                             key, {"issue-feed"})
+assert uncorroborated["status"] == "UNVERIFIED"
+assert uncorroborated["uncorroborated_correction_labels"] == [reader.pseudonym("case-one", key)]
+assert uncorroborated["eligible_recorded_count"] == 0
 print("intake-inventory tests: PASS")
 print("intake_inventory_fixture=" + str(fixture), file=sys.stderr)

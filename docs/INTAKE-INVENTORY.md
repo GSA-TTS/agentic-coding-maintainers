@@ -18,6 +18,10 @@ until a maintainer makes a reasoned disposition. An eligibility change uses an
 append-only `eligibility_correction` event referencing its intake and a bounded
 reason code. This pilot remains a human-disposition workflow, not an eligibility
 decision engine; corrections for source/duplicate mappings are not yet built.
+The inventory carries no timestamp for when its eligibility decision was made,
+so **any corrected case makes conditional intake coverage UNVERIFIED** even if
+the current labels match. A correction does not rewrite the original intake
+cohort or establish historical source eligibility.
 
 The meaning and evidence requirements of a **verified outcome** remain an
 open policy decision. Neither `ready_for_human_review`, a ledger `outcome`

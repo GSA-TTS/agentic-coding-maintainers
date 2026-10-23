@@ -144,8 +144,12 @@ fresh_fix = dict(row("new-unknown", 41, "eligibility_correction",
                      intake_event_id="e40", replacement="eligible", reason_code="eligibility_review"),
                  occurred_at="2026-10-11T00:00:00Z", recorded_at="2026-10-11T01:00:00Z")
 fixed_report = module.reflect(read([fresh_unknown, fresh_fix]), as_of, key)
-assert fixed_report["eligible_ids"] == [module.pseudonym("new-unknown", key)]
-assert fixed_report["unknown_eligibility_ids"] == [] and fixed_report["needs_maintainer_disposition"] == []
+assert fixed_report["eligible_ids"] == []  # original intake cohort does not change
+assert fixed_report["unknown_eligibility_ids"] == [module.pseudonym("new-unknown", key)]
+assert fixed_report["needs_maintainer_disposition"] == []
+assert fixed_report["intake_cohort_count"] == 1
+assert fixed_report["original_eligibility_counts"] == {"eligible": 0, "excluded": 0, "unknown": 1}
+assert fixed_report["effective_eligibility_labels"]["eligible"] == [module.pseudonym("new-unknown", key)]
 assert fixed_report["eligibility_correction_count"] == 1
 assert fixed_report["corrected_case_labels"] == [module.pseudonym("new-unknown", key)]
 assert module.reflect(read([fresh_unknown, fresh_fix]), datetime(2026, 10, 10, 12, tzinfo=timezone.utc), key)["unknown_eligibility_ids"] == [module.pseudonym("new-unknown", key)]

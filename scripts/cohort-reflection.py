@@ -218,9 +218,12 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     effective = {cid: next((row["replacement"] for row in reversed(rows)
                             if row["event_type"] == "eligibility_correction"), rows[0]["eligibility"])
                  for cid, rows in case_events.items()}
-    eligible = sorted(cid for cid in cohort if effective[cid] == "eligible")
-    excluded = sorted(cid for cid in cohort if effective[cid] == "excluded")
-    unknown = sorted(cid for cid in cohort if effective[cid] == "unknown")
+    # Keep the historical intake cohort frozen at the ORIGINAL classification.
+    # A later correction changes the operational queue, not the denominator
+    # that an earlier intake decision was measured against.
+    eligible = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "eligible")
+    excluded = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "excluded")
+    unknown = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "unknown")
     # This is a PRIVATE report bucket, not a GitHub notification. It deliberately
     # names only keyed case labels, the case type, age and a review-due signal.
     # No model, issue text or automatic eligibility decision is involved.
@@ -274,8 +277,14 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "eligible_ids": [label[cid] for cid in eligible], "excluded_ids": [label[cid] for cid in excluded],
         "unknown_eligibility_ids": [label[cid] for cid in unknown],
         "eligibility_correction_count": sum(any(row["event_type"] == "eligibility_correction" for row in cohort[cid]) for cid in cohort),
+        "intake_cohort_count": len(cohort),
+        "original_eligibility_counts": {"eligible": len(eligible), "excluded": len(excluded), "unknown": len(unknown)},
         "corrected_case_labels": sorted(label[cid] for cid in cohort if any(
             row["event_type"] == "eligibility_correction" for row in cohort[cid])),
+        "effective_eligibility_labels": {
+            status: sorted(label[cid] for cid in cohort if effective[cid] == status)
+            for status in ("eligible", "excluded", "unknown")
+        },
         "needs_maintainer_disposition": disposition_queue,
         "disposition_policy": "manual review; review_due after 7 days; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
@@ -369,7 +378,14 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
                    (cid in unknown and next((row["replacement"] for row in reversed(recorded[cid])
                                              if row["event_type"] == "eligibility_correction"), recorded[cid][0]["eligibility"]) != "unknown")}
     matched = {cid for cid in eligible if cid in recorded and cid not in conflicting}
-    status = "operator_asserted_source_coverage" if eligible and not missing and not incomplete and not unknown and not extra and not conflicting else "UNVERIFIED"
+    # The inventory has no eligibility-decision timestamp. It cannot tell
+    # whether its classification applied BEFORE or AFTER a correction, even
+    # when the label happens to match. Refuse a positive coverage status until
+    # an independently evidenced source-decision-time contract exists.
+    corrected = {cid for cid, rows in recorded.items() if any(
+        row["event_type"] == "eligibility_correction" for row in rows)}
+    matched -= corrected
+    status = "operator_asserted_source_coverage" if eligible and not missing and not incomplete and not unknown and not extra and not conflicting and not corrected else "UNVERIFIED"
     return {
         "status": status,
         "scope": "eligible requests in declared, operator-provided enumerations only; not all real-world requests",
@@ -379,6 +395,7 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
         "unknown_eligibility_labels": sorted(pseudonym(cid, key) for cid in unknown),
         "ledger_only_labels": sorted(pseudonym(cid, key) for cid in extra),
         "conflicting_eligibility_labels": sorted(pseudonym(cid, key) for cid in conflicting),
+        "uncorroborated_correction_labels": sorted(pseudonym(cid, key) for cid in corrected),
         "incomplete_source_labels": sorted(pseudonym(cid, key) for cid in incomplete),
         "inventory_identity_hmac": hmac.new(key, b"inventory-identity-v1\0" + data, hashlib.sha256).hexdigest(),
     }
