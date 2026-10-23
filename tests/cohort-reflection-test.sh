@@ -54,6 +54,12 @@ assert report["verified_completion_ids"] == []
 assert report["post_review_substantive_rework_ids"] == [module.pseudonym("rework", key)]  # cycles don't inflate cases
 assert report["excluded_ids"] == [module.pseudonym("excluded", key)]
 assert report["unknown_eligibility_ids"] == [module.pseudonym("unknown", key)]
+queue = report["needs_maintainer_disposition"]
+assert len(queue) == 1 and queue[0]["case_label"] == module.pseudonym("unknown", key)
+assert queue[0]["case_type"] == "other" and queue[0]["review_due"] is True
+assert queue[0]["age_days"] == 12.0
+assert "unknown" not in [row["case_label"] for row in queue]
+assert "no automatic exclusion" in report["disposition_policy"]
 assert '"complete"' not in json.dumps(report)
 assert "UNMEASURED" in report["intake_completeness"]
 
@@ -99,6 +105,13 @@ after = dict(row("complete", 29, "transition", state="cancelled"),
 assert module.reflect(read(rows + [after]), as_of, key) == report
 only_excluded = module.reflect(read([rows[13]]), as_of, key)
 assert only_excluded["coverage"] == "no_eligible_evidence"
+assert only_excluded["needs_maintainer_disposition"] == []
+# A recent unknown is visible but not yet overdue. It never becomes excluded.
+recent = dict(row("recent-unknown", 35, "intake", case_type="review", eligibility="unknown"),
+              occurred_at="2026-10-20T00:00:00Z", recorded_at="2026-10-20T01:00:00Z")
+recent_report = module.reflect(read([recent]), as_of, key)
+assert recent_report["needs_maintainer_disposition"][0]["review_due"] is False
+assert recent_report["excluded_ids"] == []
 try:
     module.events_from(b'{"truncated":true}', as_of)
 except module.Unverified:

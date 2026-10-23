@@ -47,6 +47,14 @@ them with the ledger. Late-recorded
 transitions use occurrence time to determine current state, with append order
 as a tie-breaker.
 
+Unknown-eligibility cases also appear in the private
+`needs_maintainer_disposition` queue: keyed case label, case type, age and a
+`review_due` flag after seven days. This is a **read-only report cue**, not an
+automatic exclusion or a GitHub label/comment. Consult the private ledger to
+identify the case, record a maintainer decision through the correction process
+when available (issue #30), and report the disposition delay as part of process
+quality. Until corrections exist, an unknown remains unknown in this pilot.
+
 The report includes `ledger_identity_hmac`, a domain-separated keyed HMAC over
 the complete input bytes. An unkeyed digest would let a reader test guessed
 small ledgers and case IDs offline, defeating pseudonymization. The cutoff

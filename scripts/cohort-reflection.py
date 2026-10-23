@@ -205,6 +205,17 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     eligible = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "eligible")
     excluded = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "excluded")
     unknown = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "unknown")
+    # This is a PRIVATE report bucket, not a GitHub notification. It deliberately
+    # names only keyed case labels, the case type, age and a review-due signal.
+    # No model, issue text or automatic eligibility decision is involved.
+    disposition_age_days = 7
+    disposition_queue = sorted(
+        ({"case_label": pseudonym(cid, key), "case_type": cohort[cid][0]["case_type"],
+          "age_days": round((as_of - timestamp(cohort[cid][0]["occurred_at"])).total_seconds() / 86400, 2),
+          "review_due": (as_of - timestamp(cohort[cid][0]["occurred_at"])) >= timedelta(days=disposition_age_days)}
+         for cid in unknown),
+        key=lambda row: (-row["age_days"], row["case_label"]),
+    )
     unfinished: list[tuple[str, str, float]] = []
     documented_outcomes = []
     reworked = []
@@ -236,6 +247,8 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "intake_completeness": "UNMEASURED: independent request inventory absent",
         "eligible_ids": [label[cid] for cid in eligible], "excluded_ids": [label[cid] for cid in excluded],
         "unknown_eligibility_ids": [label[cid] for cid in unknown],
+        "needs_maintainer_disposition": disposition_queue,
+        "disposition_policy": "manual review; review_due after 7 days; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
         "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: no live GitHub/head/check attestation",
         "unfinished_for_verified_throughput": sorted(
