@@ -7,7 +7,9 @@ existing ledger bytes:
 # First create the private directory and an empty ledger, OUTSIDE git.
 umask 077
 mkdir -p /absolute/private/cohort
-: > /absolute/private/cohort/cases.jsonl
+# Exclusive creation: fails rather than truncating a ledger on a repeat run.
+python3 -I -B -c 'import os; p="/absolute/private/cohort/cases.jsonl";
+fd=os.open(p, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600); os.close(fd)'
 
 python3 -I -B scripts/append-cohort-event.py \
   --ledger /absolute/private/cohort/cases.jsonl <<'JSON'
@@ -15,15 +17,23 @@ python3 -I -B scripts/append-cohort-event.py \
 JSON
 ```
 
+Initialization must run **once**; it refuses an existing ledger. A repeated
+shell redirection such as `: > cases.jsonl` destroys existing evidence before
+the writer can validate or lock it—never initialize that way.
+
 The writer sets `recorded_at` using the host UTC clock. The input must *not*
 contain it. It takes an exclusive advisory lock, validates the complete prior
 ledger and the candidate against the same schema as the read-only reflection
 CLI, then writes exactly one canonical JSONL line and fsyncs. It refuses an
 absent directory, a missing/symlinked ledger, unsafe permissions, duplicates,
-or an incomplete/corrupt prior ledger (`UNVERIFIED`, exit 3). It does not
-repair an interrupted write silently: inspect it and the private evidence
-before any manual recovery. All cooperating writers must use this CLI and its
-lock; other processes able to write the same file are outside the guarantee.
+or an incomplete/corrupt prior ledger (`UNVERIFIED`, exit 3). It uses
+`O_APPEND` to avoid overwriting bytes added by an uncooperative writer and
+bounds lock waiting. This is **not a crash-atomic transaction**: an interrupted
+write or fsync error can leave either a truncated line or a full line despite
+exit 3. On any failure after a possible write, inspect the event ID in the
+private ledger *before retrying*. Do not automatically truncate or repair the
+ledger. All cooperating writers must use this CLI and its advisory lock; a
+concurrent noncooperating writer is outside its consistency guarantee.
 
 **The event fields are claims, not GitHub attestation.** A recorded review,
 passing check, or repository-event ID does not by itself establish a verified

@@ -16,8 +16,10 @@ import json
 import os
 import pathlib
 import stat
+import time
 
 MAX_INPUT = 8192
+LOCK_WAIT_SECONDS = 5.0
 
 
 def load_reader():
@@ -60,10 +62,18 @@ def append(path: pathlib.Path, proposed: dict, reader) -> None:
         stack.callback(os.close, directory)
         # A ledger is initialized explicitly by the operator. Refusing a
         # missing ledger avoids a half-created empty file if validation fails.
-        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+        flags = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
         fd = os.open(path.name, flags, dir_fd=directory)
         with os.fdopen(fd, "r+b", buffering=0) as ledger:
-            fcntl.flock(ledger, fcntl.LOCK_EX)
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(ledger, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("ledger is locked; no append attempted") from exc
+                    time.sleep(0.05)
             if os.stat(path.name, dir_fd=directory, follow_symlinks=False).st_ino != os.fstat(ledger.fileno()).st_ino:
                 raise ValueError("ledger pathname changed during append")
             info = os.fstat(ledger.fileno())
@@ -88,12 +98,26 @@ def append(path: pathlib.Path, proposed: dict, reader) -> None:
             reader.events_from(current + line, now)
             if os.stat(path.name, dir_fd=directory, follow_symlinks=False).st_ino != info.st_ino:
                 raise ValueError("ledger pathname changed before append")
-            ledger.seek(0, os.SEEK_END)
+            # O_APPEND places the write at the current EOF even if a writer
+            # ignoring flock extended the file after our validation. That
+            # noncooperating writer can still invalidate the full ledger;
+            # the postcheck below refuses to report a verified append.
             if ledger.write(line) != len(line):
                 # A partial append is intentionally NOT silently repaired;
                 # the reader will fail closed on an incomplete final line.
                 raise OSError("event append was incomplete; inspect the ledger")
             os.fsync(ledger.fileno())
+            final = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+            if final.st_ino != info.st_ino or final.st_dev != info.st_dev:
+                raise OSError("ledger path replaced after append; inspect before retry")
+            ledger.seek(0)
+            try:
+                verified = ledger.read(reader.MAX_BYTES + 1)
+                reader.events_from(verified, datetime.datetime.now(datetime.timezone.utc))
+            except Exception as exc:
+                raise OSError("ledger changed during append; inspect before retry") from exc
+            if verified != current + line:
+                raise OSError("ledger differs from validated append; inspect before retry")
 
 
 def main() -> int:
@@ -110,7 +134,7 @@ def main() -> int:
     except Exception as exc:  # includes the trusted sibling's Unverified type
         # Never echo operator-provided event text, filesystem errors containing
         # private paths, or exception bodies that could include sensitive IDs.
-        print(f"cohort append: UNVERIFIED — {type(exc).__name__}; ledger unchanged or requires inspection", file=sys.stderr)
+        print(f"cohort append: UNVERIFIED — {type(exc).__name__}; event may have been written; inspect event_id before retry", file=sys.stderr)
         return 3
     print("cohort append: recorded (not independently verified)")
     return 0

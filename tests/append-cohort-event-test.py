@@ -1,5 +1,7 @@
 """Offline, synthetic acceptance tests for the private append-only case ledger."""
 
+import datetime
+import hashlib
 import json
 import os
 import pathlib
@@ -43,6 +45,9 @@ assert first.returncode == 0 and b"not independently verified" in first.stdout
 assert LEDGER.stat().st_mode & 0o777 == 0o600
 before = LEDGER.read_bytes()
 assert before.endswith(b"\n") and json.loads(before)["recorded_at"].endswith("Z")
+saved = json.loads(before)
+assert saved == dict(intake, recorded_at=saved["recorded_at"])
+assert datetime.datetime.fromisoformat(saved["recorded_at"].replace("Z", "+00:00")).tzinfo is not None
 
 
 def rejects(candidate, *, path=LEDGER):
@@ -59,11 +64,36 @@ rejects(event(2, "transition", state="blocked", secret="unallowed-field"))
 rejects(event(2, "handoff", head_sha="a" * 40, review_event_id="absent", checks="passing"))
 rejects(b'{"schema_version":1,"schema_version":1}')
 rejects(event(2, "transition", state="blocked"), path=FIXTURE / "missing-parent" / "events.jsonl")
+rejects(event(2, "transition", state="blocked"), path=FIXTURE / "not-initialized.jsonl")
+
+# Explicit O_EXCL initialization is safe to repeat: existing bytes survive.
+original = LEDGER.read_bytes()
+try:
+    os.open(LEDGER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+except FileExistsError:
+    pass
+else:
+    raise AssertionError("exclusive initialization overwrote a ledger")
+assert LEDGER.read_bytes() == original
+
+# An exclusive lock held by another cooperating writer produces UNVERIFIED
+# after a bounded wait; no append may sneak past it.
+locker = subprocess.Popen([sys.executable, "-I", "-B", "-c",
+                           "import fcntl,sys,time; f=open(sys.argv[1],'rb'); "
+                           "fcntl.flock(f,fcntl.LOCK_EX); print('locked',flush=True); time.sleep(8)", str(LEDGER)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+assert locker.stdout and locker.stdout.readline().strip() == "locked"
+locked = submit(event(2, "transition", state="blocked"))
+assert locked.returncode == 3 and b"UNVERIFIED" in locked.stderr
+assert LEDGER.read_bytes() == original
+locker.terminate()
+locker.wait(timeout=5)
 
 second = submit(event(2, "transition", state="blocked"))
 assert second.returncode == 0
 assert len(LEDGER.read_bytes().splitlines()) == 2
 assert b'"recorded_at"' in LEDGER.read_bytes()
+assert hashlib.sha256(LEDGER.read_bytes()).digest() != hashlib.sha256(before).digest()
 
 # Complete-but-invalid and incomplete ledgers fail closed without repair.
 with LEDGER.open("ab") as handle:

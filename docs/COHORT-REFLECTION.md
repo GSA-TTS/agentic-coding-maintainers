@@ -69,7 +69,8 @@ head, required checks, independent approval and repository outcome together.
 
 Use the recorded-case IDs behind each bucket when reflecting, not a composite
 productivity score. Recommendations are advisory and capped to two fixed
-next-step prompts. An append-only writer, intake-inventory reconciliation,
-correction events, 30-day escape windows and outage-adjusted latency remain
-future acceptance work under issue #21/#22. Do not relabel this first parser
-as the completed event-ledger system.
+next-step prompts. An operator-invoked append writer is documented in
+`COHORT-APPEND.md`. Intake-inventory reconciliation, correction events,
+30-day escape windows and outage-adjusted latency remain future acceptance
+work under issue #21/#22. Do not relabel this pilot as the completed
+event-ledger system.
