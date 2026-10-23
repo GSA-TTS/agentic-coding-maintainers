@@ -8,14 +8,19 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WRITER = ROOT / "scripts/append-cohort-event.py"
-OUTBOX = pathlib.Path(tempfile.gettempdir()) / "maintainer-evaluation-disposal"
+OUTBOX = pathlib.Path(tempfile.gettempdir()).resolve() / "maintainer-evaluation-disposal"
+if OUTBOX.parent.is_relative_to(ROOT):
+    raise SystemExit("UNVERIFIED: temp root must be outside the repository")
+if not OUTBOX.parent.is_dir() or (OUTBOX.parent.stat().st_mode & 0o002 and not OUTBOX.parent.stat().st_mode & 0o1000):
+    raise SystemExit("UNVERIFIED: system temp parent is unsafe")
 OUTBOX.mkdir(mode=0o700, exist_ok=True)
 if OUTBOX.is_symlink() or OUTBOX.stat().st_uid != os.getuid() or OUTBOX.stat().st_mode & 0o077:
     raise SystemExit("UNVERIFIED: synthetic test outbox is not private")
-FIXTURE = pathlib.Path(tempfile.mkdtemp(prefix="append-cohort-test-", dir=OUTBOX))
+FIXTURE = pathlib.Path(tempfile.mkdtemp(prefix=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d-append-cohort-test-"), dir=OUTBOX))
 (FIXTURE / "MANIFEST.md").write_text(
     "# Append-cohort test fixtures\n\n"
     "This directory was created by tests/append-cohort-event-test.py. It holds only synthetic "
@@ -94,6 +99,15 @@ assert second.returncode == 0
 assert len(LEDGER.read_bytes().splitlines()) == 2
 assert b'"recorded_at"' in LEDGER.read_bytes()
 assert hashlib.sha256(LEDGER.read_bytes()).digest() != hashlib.sha256(before).digest()
+
+# Two cooperating CLI processes must serialize their validate/append steps.
+with ThreadPoolExecutor(max_workers=2) as pool:
+    futures = [pool.submit(submit, event(n, "transition", state="open")) for n in (3, 4)]
+    results = [future.result() for future in futures]
+assert all(result.returncode == 0 for result in results), results
+assert sorted(json.loads(line)["event_id"] for line in LEDGER.read_bytes().splitlines()) == [
+    "evt-1", "evt-2", "evt-3", "evt-4",
+]
 
 # Complete-but-invalid and incomplete ledgers fail closed without repair.
 with LEDGER.open("ab") as handle:

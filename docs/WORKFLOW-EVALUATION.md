@@ -33,10 +33,13 @@ explicitly lists unmeasured historical throughput, time in state, review
 turnaround, outcome quality, monitor uptime and CI pass rate. Never compute
 those from a mutable task snapshot or a single monitor checkpoint.
 
-## Next: a bounded case-ledger pilot
+## Next: finish the bounded case-ledger pilot
 
-Before adding a dashboard or automated issue filing, design a versioned,
-sanitized **case ledger** with append-only transition/intake/outcome events.
+The read-only parser (`COHORT-REFLECTION.md`) and private operator-invoked
+append writer (`COHORT-APPEND.md`) now provide a **partial** versioned case
+ledger. Before adding a dashboard or automated issue filing, add intake
+inventory reconciliation and repository-outcome attestations to its sanitized
+transition/intake/outcome events.
 Freeze the intake cohort and report numerator/denominator IDs, exclusions,
 unknown coverage and snapshot time. Cases still open, blocked, cancelled or
 abandoned remain in the denominator. Link a verified outcome to current-head
