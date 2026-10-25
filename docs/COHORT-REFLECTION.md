@@ -103,8 +103,10 @@ attestation. Therefore **all** documented outcomes remain
 `documented_outcome_ids_unverified`, `verified_completion_ids` is empty, and
 every eligible case remains in `unfinished_for_verified_throughput`. This is
 intentional: no count of verified throughput is manufactured from operator
-input. A later, separately reviewed attestation step must bind current PR
-head, required checks, independent approval and repository outcome together.
+input. A later, separately reviewed attestation step must bind the applicable
+**delivery event** to repository evidence. Review/check compliance is measured
+separately: see [`VERIFIED-OUTCOMES.md`](VERIFIED-OUTCOMES.md). For old merges,
+present-day GitHub state is a labelled historical proxy, not at-merge proof.
 
 Use the recorded-case IDs behind each bucket when reflecting, not a composite
 productivity score. Recommendations are advisory and capped to two fixed

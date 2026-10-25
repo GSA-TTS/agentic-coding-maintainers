@@ -12,7 +12,7 @@
 
 For every delivery outcome, report **separate fields**: `delivery_evidence` (observed/unverified), `policy_compliance` (observed/failed/unknown/historical_proxy), `finding_disposition` (resolved/pending/unknown), and `follow_up_coverage` (pending/covered/unverified). A single green badge or composite score must never combine them. The categories and precise source evidence remain to be implemented; these names state the reporting contract, not present CLI output.
 
-## Decision to make
+## Adopted delivery criteria; evidence mapping still to specify
 
 For each case type, decide which **owning-repository evidence at a fixed evaluation time** establishes delivery. Evidence must identify the intake case, exact repository object, timestamp and head SHA where applicable. Record provenance and a private, sanitized evidence reference; never copy a PR body, vulnerability detail, token or employee identity into a cohort report. Capture what was observed at that time; a later query may reveal a revert, dismissed review, or moved head and must not silently rewrite the old observation.
 
@@ -40,7 +40,8 @@ The existing schema has no distinct `dependency` case type and its `outcome` req
 | Fixture | Required classification; do not conflate delivery with compliance |
 |---|---|
 | SHA A has approval and passing checks; SHA B is merged | Delivered if B's merge event is verified; `UNVERIFIED_STALE_HEAD` for B's review/check compliance |
-| A required check is absent, SKIPPED, action_required, or timed out | Delivery is determined by repository event; check coverage is `UNVERIFIED_CHECK_COVERAGE` |
+| A required check is absent, SKIPPED, action_required, or timed out | Delivery is determined by repository event; check coverage is `UNVERIFIED_CHECK_COVERAGE` unless a required check's failure is measured |
+| A required check explicitly failed at the delivered head | Delivery still follows the repository event; **policy compliance FAILED**. A known red check is not missing evidence. |
 | Administrator merged with unmet required independent review | Delivered if merge event is verified; `MERGED_WITH_BYPASS`, not compliant |
 | Author approval is the sole recorded approval | `UNVERIFIED_INDEPENDENT_REVIEW` |
 | Ruleset absent: GitHub says mergeable, no checks or review recorded | Delivery requires repository event. Policy compliance is `UNVERIFIED_POLICY_EVIDENCE` without applicable at-merge policy evidence; current settings are only `HISTORICAL_PROXY`. |
