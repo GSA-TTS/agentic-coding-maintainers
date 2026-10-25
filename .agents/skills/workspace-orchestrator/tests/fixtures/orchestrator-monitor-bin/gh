@@ -24,6 +24,18 @@ if [[ "$*" == *"pr list"* ]]; then
   [[ "$repo" == *playbook ]] && number=3
   head="$(printf '%040d' "$number")"
   [[ "$mode" == changed ]] && head="$(printf 'f%.0s' {1..40})"
+  if [[ "$mode" == missing-draft ]]; then
+    printf '[{"number":%d,"title":"Title","headRefOid":"%s","statusCheckRollup":[],"state":"OPEN"}]\n' "$number" "$head"
+    exit 0
+  fi
+  if [[ "$mode" == null-draft ]]; then
+    printf '[{"number":%d,"title":"Title","isDraft":null,"headRefOid":"%s","statusCheckRollup":[],"state":"OPEN"}]\n' "$number" "$head"
+    exit 0
+  fi
+  if [[ "$mode" == string-draft ]]; then
+    printf '[{"number":%d,"title":"Title","isDraft":"false","headRefOid":"%s","statusCheckRollup":[],"state":"OPEN"}]\n' "$number" "$head"
+    exit 0
+  fi
   printf '[{"number":%d,"title":"Title\\u001b[31mFORGED","author":{"login":"x"},"isDraft":false,"state":"OPEN","headRefOid":"%s","updatedAt":"2026-10-16T00:00:00Z","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}]}]\n' "$number" "$head"
   exit 0
 fi

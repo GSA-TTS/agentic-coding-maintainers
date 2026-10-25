@@ -204,6 +204,8 @@ def pr_snapshot(repositories: list[str]) -> list[dict[str, Any]]:
         for pr in prs:
             if not isinstance(pr, dict) or type(pr.get("number")) is not int or not isinstance(pr.get("headRefOid"), str):
                 raise MonitorError(f"{repo} PR response has an invalid shape")
+            if type(pr.get("isDraft")) is not bool:
+                raise MonitorError(f"{repo}#{pr['number']} draft state is unavailable")
             checks = pr.get("statusCheckRollup")
             if not isinstance(checks, list):
                 raise MonitorError(f"{repo}#{pr.get('number')} checks are unavailable")
@@ -214,7 +216,7 @@ def pr_snapshot(repositories: list[str]) -> list[dict[str, Any]]:
                 conclusions.append(check.get("conclusion") or check.get("state") or "ABSENT")
             result.append({
                 "repo": repo, "number": pr["number"], "head": pr["headRefOid"],
-                "title": safe_text(pr.get("title", "")), "draft": bool(pr.get("isDraft")),
+                "title": safe_text(pr.get("title", "")), "draft": pr["isDraft"],
                 "state": pr.get("state"), "review": pr.get("reviewDecision") or "NONE",
                 "merge": pr.get("mergeStateStatus") or "UNKNOWN",
                 "checks": sorted(conclusions), "updated_at": pr.get("updatedAt"),

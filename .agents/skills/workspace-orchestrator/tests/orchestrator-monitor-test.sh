@@ -59,6 +59,12 @@ fi
 grep -q 'UNVERIFIED' "$STATE/monitor/last-failure.json"
 
 # Malformed successful output is still UNVERIFIED.
+for mode in missing-draft null-draft string-draft; do
+  set +e
+  err="$(run_monitor "$mode" 2>&1 >/dev/null)"; rc=$?
+  set -e
+  [[ "$rc" -eq 3 && "$err" == *UNVERIFIED* && "$err" == *draft* ]]
+done
 set +e
 run_monitor malformed >/dev/null 2>&1; rc=$?
 set -e
