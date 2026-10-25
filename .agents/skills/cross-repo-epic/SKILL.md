@@ -13,6 +13,14 @@ Use this workflow when the user names an epic, asks what to work on across the
 configured repositories, changes portfolio priority, or asks whether a
 multi-repo epic is complete.
 
+An issue with formal direct sub-issues is a **high-probability epic candidate**
+even if it has no `epic` label and no `Epic:`/`[EPIC]` title marker. The
+portfolio view surfaces it as `EPIC CANDIDATE` with the observed child count;
+the owning-issue command paginates and validates its full direct child list.
+Neither signal substitutes for maintainer confirmation of the issue's role.
+If sub-issue metadata is absent or contradictory, report `UNVERIFIED` rather
+than silently treating the issue as an ordinary non-epic.
+
 ## Configuration (required)
 
 Which repositories and which Project v2 board this skill reads come from a

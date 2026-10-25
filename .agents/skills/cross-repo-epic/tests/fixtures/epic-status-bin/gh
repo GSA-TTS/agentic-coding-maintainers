@@ -33,6 +33,10 @@ case "$mode" in
     printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: empty","state":"OPEN","url":"https://example/patterns/357","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD","number":120,"owner":{"__typename":"Organization","login":"GSA-TTS"}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}\n'
     exit 0
     ;;
+  non-epic)
+    printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Ordinary issue","state":"OPEN","url":"x","labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD","number":120,"owner":{"__typename":"Organization","login":"GSA-TTS"}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}\n'
+    exit 0
+    ;;
   control-title) title='Epic: catalog work\n\u001b[31mFORGED\ud800'; labels='[{"name":"epic"}]' ;;
   wrong-project)
     printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: wrong project","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"OTHER","number":120,"owner":{"__typename":"Organization","login":"other-org"}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}}\n'
@@ -98,7 +102,7 @@ case "$mode" in
     printf '{"data":{"repository":{"issue":{"__typename":"Issue","number":357,"title":"Epic: bad","state":"OPEN","url":"x","labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]},"subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"projectItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"id":"PVT_kwDOBbooB84BlPkD"},"fieldValues":{"totalCount":0,"pageInfo":{},"nodes":[]}}]}}}}}\n'
     exit 0
     ;;
-  non-epic) title='Ordinary issue'; labels='[]'; label_count=0 ;;
+  subissue-candidate) title='Ordinary parent issue'; labels='[]'; label_count=0 ;;
   *) title='Epic: catalog work'; labels='[{"name":"epic"}]'; label_count=1 ;;
 esac
 label_count="${label_count:-1}"

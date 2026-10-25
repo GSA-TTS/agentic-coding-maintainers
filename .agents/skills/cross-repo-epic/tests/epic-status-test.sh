@@ -24,6 +24,18 @@ grep -q 'PR reviews/checks/mergeability: NOT CHECKED' <<<"$output"
 empty_output="$(PATH="$fixture_bin:/usr/bin:/bin" EPIC_STUB_MODE=no-children "$ROOT/bin/epic-status.sh" patterns#357)"
 grep -q '0 total; 0 open; 0 closed' <<<"$empty_output"
 
+# An unlabeled, unmarked issue with complete direct sub-issue data is a strong
+# epic CANDIDATE. Do not claim the board field or its type verifies it as an epic.
+candidate="$(PATH="$fixture_bin:/usr/bin:/bin" EPIC_STUB_MODE=subissue-candidate "$ROOT/bin/epic-status.sh" patterns#357)"
+grep -q 'EPIC CANDIDATE (sub-issues): 2 direct child(ren)' <<<"$candidate"
+grep -q 'EPIC CANDIDATE (label/title)' <<<"$output"
+grep -q 'Coverage: COMPLETE' <<<"$candidate"
+set +e
+PATH="$fixture_bin:/usr/bin:/bin" EPIC_STUB_MODE=non-epic "$ROOT/bin/epic-status.sh" patterns#357 >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 2 ]]
+
 control_output="$(PATH="$fixture_bin:/usr/bin:/bin" EPIC_STUB_MODE=control-title "$ROOT/bin/epic-status.sh" patterns#357)"
 if printf '%s' "$control_output" | LC_ALL=C grep -q $'\033'; then
   printf 'raw ANSI escape leaked into epic output\n' >&2

@@ -9,7 +9,7 @@ fixture_bin="$ROOT/tests/fixtures/portfolio-bin"
 export CROSS_REPO_EPIC_CONFIG="$ROOT/tests/fixtures/portfolio-config.json"
 
 output="$(cd / && PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE=success bash "$ROOT/run.sh" portfolio-status)"
-grep -q 'Coverage: 3 epic issue(s) across 3 repo(s)' <<<"$output"
+grep -q 'Coverage: 3 epic candidate(s) across 3 repo(s)' <<<"$output"
 output="$(PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE=success "$ROOT/bin/portfolio-status.sh")"
 grep -Eq '^Evidence timestamp: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$output"
 grep -q 'In Progress  patterns#357' <<<"$output"
@@ -29,8 +29,29 @@ grep -q 'Cancelled    playbook#999.*BOARD/LIVE MISMATCH' <<<"$output"
 grep -q 'Todo         quickstart#235' <<<"$output"
 grep -q 'quickstart#235.*BOARD/LIVE MISMATCH' <<<"$output"
 grep -q 'type=Test; area=SBX/Environment' <<<"$output"
-grep -q 'Coverage: 3 epic issue(s) across 3 repo(s)' <<<"$output"
+grep -q 'Coverage: 3 epic candidate(s) across 3 repo(s)' <<<"$output"
 grep -q 'Parent/Sub-issues progress: unavailable' <<<"$output"
+
+# A complete first:1 presence probe identifies an unlabeled ordinary parent
+# as a CANDIDATE, not a verified epic. Missing or contradictory presence data
+# must never silently mean "not an epic".
+candidate="$(PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE=subissue-candidate "$ROOT/bin/portfolio-status.sh")"
+grep -q 'patterns#77' <<<"$candidate"
+grep -q 'EPIC CANDIDATE (sub-issues): 2 child(ren)' <<<"$candidate"
+grep -q 'Coverage: 1 epic candidate(s)' <<<"$candidate"
+one_child="$(PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE=one-child-candidate "$ROOT/bin/portfolio-status.sh")"
+grep -q 'EPIC CANDIDATE (sub-issues): 1 child(ren)' <<<"$one_child"
+for mode in no-subissues missing-subissues contradictory-subissues null-child-probe bad-subissue-page missing-subissue-cursor incomplete-board; do
+  set +e
+  diagnostic="$(PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE="$mode" "$ROOT/bin/portfolio-status.sh" 2>&1)"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 3 && "$diagnostic" == *UNVERIFIED* ]] || {
+    printf 'portfolio mode %s reported rc=%s, expected UNVERIFIED\n' "$mode" "$rc" >&2
+    exit 1
+  }
+done
+grep -q 'EPIC CANDIDATE (label/title)' <<<"$output"
 if grep -q 'other/repo' <<<"$output"; then
   printf 'unexpected repository leaked into portfolio output\n' >&2
   exit 1
@@ -123,8 +144,8 @@ if grep -qE 'GSA-TTS|patterns#|quickstart#|playbook#' <<<"$generic_output"; then
   exit 1
 fi
 
-grep -q 'Coverage: 2 epic issue(s) across 2 repo(s)' <<<"$generic_output"
-grep -q 'Coverage note: no epic issue on the board for web' <<<"$generic_output"
+grep -q 'Coverage: 2 epic candidate(s) across 2 repo(s)' <<<"$generic_output"
+grep -q 'Coverage note: no epic candidate on the board for web' <<<"$generic_output"
 
 # Resolve-step failure modes. Each must be UNVERIFIED (exit 3), never an empty
 # board rendered as a clean run.

@@ -256,6 +256,8 @@ for page_number in range(1, MAX_PAGES + 1):
         child_number = child.get("number")
         if type(child_number) is not int or not (1 <= child_number <= MAX_ISSUE_NUMBER) or child.get("state") not in {"OPEN", "CLOSED"}:
             fail("subIssues contains malformed issue identity/state")
+        if not isinstance(child.get("title"), str):
+            fail("subIssues contains malformed child title")
         child_repo = repository["nameWithOwner"]
         if child_repo not in ALLOWED:
             fail(f"sub-issue repository is outside the allowed portfolio: {safe_text(child_repo)}")
@@ -280,9 +282,9 @@ else:
 assert issue is not None
 label_names = {node["name"] for node in issue["labels"]["nodes"]}
 title = safe_text(issue.get("title"))
-is_epic = "epic" in label_names or title.lower().startswith(("epic:", "[epic]"))
+is_epic = "epic" in label_names or title.lower().startswith(("epic:", "[epic]")) or expected_children > 0
 if not is_epic:
-    fail("requested issue is not identified as an epic by label or title", 2)
+    fail("requested issue is not an epic candidate by label, title or sub-issues", 2)
 
 project_fields = {}
 project_matches = 0
@@ -329,6 +331,10 @@ closed_children = [child for child in children if child.get("state") == "CLOSED"
 
 timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 print(f"Evidence timestamp: {timestamp}")
+if expected_children > 0 and "epic" not in label_names and not title.lower().startswith(("epic:", "[epic]")):
+    print(f"EPIC CANDIDATE (sub-issues): {expected_children} direct child(ren); confirm role with the owning issue")
+else:
+    print("EPIC CANDIDATE (label/title): confirm role with the owning issue")
 print(f"Epic: {full_repo}#{number} — {title}")
 print(f"URL: https://github.com/{full_repo}/issues/{number}")
 print(f"Live state: {live_state}")
