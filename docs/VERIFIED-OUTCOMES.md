@@ -40,7 +40,8 @@ The existing schema has no distinct `dependency` case type and its `outcome` req
 | Fixture | Required classification; do not conflate delivery with compliance |
 |---|---|
 | SHA A has approval and passing checks; SHA B is merged | Delivered if B's merge event is verified; `UNVERIFIED_STALE_HEAD` for B's review/check compliance |
-| A required check is absent, SKIPPED, action_required, or timed out | Delivery is determined by repository event; check coverage is `UNVERIFIED_CHECK_COVERAGE` unless a required check's failure is measured |
+| An applicable required check is observed SKIPPED, action_required or failing | Delivery is determined by repository event; the requirement is **observed unmet**, so policy compliance FAILED. Preserve the exact check state. |
+| A check is absent, timed out, or its applicability/result cannot be established | Delivery is determined by repository event; check/policy evidence is `UNVERIFIED_CHECK_COVERAGE`, not an observed pass or failure. |
 | A required check explicitly failed at the delivered head | Delivery still follows the repository event; **policy compliance FAILED**. A known red check is not missing evidence. |
 | Administrator merged with unmet required independent review | Delivered if merge event is verified; `MERGED_WITH_BYPASS`, not compliant |
 | Author approval is the sole recorded approval | `UNVERIFIED_INDEPENDENT_REVIEW` |
@@ -57,9 +58,8 @@ The existing schema has no distinct `dependency` case type and its `outcome` req
 
 - Map the now-decided delivery criteria into a versioned event schema. Specify authoritative repository event and timestamp per category, and what identifies an authorized private security-assessment delivery. The current PR-shaped ledger cannot express them all.
 - Define and capture policy/review/check applicability separately from delivery. Decide the retention window, private storage location, how to record independent reviewer identity under organization rules, and how changes in branch protection are evaluated **as of** the merge event.
-- Define the permitted evidence retention and private storage location, follow-up maturity window, and how changes in branch protection are evaluated **as of** the relevant event.
 - Establish **contemporaneous** capture and retention of policy/ruleset, review, checks and repository object state at outcome time. A later query to current GitHub settings cannot reconstruct what was required at an earlier merge. Older cases without that evidence remain UNVERIFIED; distinguish a current-state recheck from historical attestation.
 - Map each accepted case type to versioned event/evidence fields before attesting it. The current ledger does not represent dependency as a separate type and models outcomes as handoff-linked PR-shaped heads. Do not force a review or security advisory into that shape just to produce a numerator.
-- Only then build a separate, read-only GitHub attestor. It must have bounded pagination, explicit errors/coverage, synthetic positive and negative fixtures above, and no remote-write path. Compare the attestor’s output with source objects before adding any verified completion count to the existing reflection CLI.
+- Only then build separate read-only attestation paths: GitHub repository evidence for merges, publication and submitted reviews, and **authorized private evidence verification** for security-assessment delivery. A private assessment must not be forced into a public GitHub artifact. Both paths need bounded input, explicit errors/coverage, synthetic positive and negative fixtures above, and no remote-write capability. Compare evidence with source objects before adding any verified delivery count to the existing reflection CLI.
 
 **Until those implementation gates are met:** issue #31 may be closed for the operator policy decision, but `verified_completion_ids` remains empty; a green CI badge, current-state historical proxy, or manually entered `outcome` is not an attested delivery verdict.

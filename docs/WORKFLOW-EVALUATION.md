@@ -74,8 +74,10 @@ For a four-week rolling intake cohort, consider these **paired** measures:
 2. Attested delivery **and** still-open/blocked cases, by case type and intake
    cohort. Show separately whether applicable checks/review were compliant,
    failed, missing, or historical proxies. The attestor is not implemented yet.
-3. Age from frozen intake to verified handoff, with unfinished ages beside
-   completed-case latency; no completed-only average.
+3. Age from frozen intake to the category-specific attested **delivery event**,
+   with unfinished ages beside completed-case latency. If handoff latency is
+   useful, report it separately; a handoff is not delivery. Never show only a
+   completed-case average.
 4. Cases needing substantive rework after independent review / cases receiving
    such a review. Show the three-cycle escalation count separately.
 5. Evidence coverage = attempted handoffs with applicable checks, reviewed
