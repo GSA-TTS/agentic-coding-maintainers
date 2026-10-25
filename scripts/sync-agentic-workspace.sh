@@ -32,16 +32,18 @@ source_dirty=false
 source_status="$(git_safe status --porcelain --untracked-files=all -- "$SOURCE")" || { echo "canonical status is unavailable" >&2; exit 3; }
 [[ -z "$source_status" ]] || source_dirty=true
 if [[ "$SKILL" == workspace-orchestrator ]]; then
-  tmp_manifest="$(mktemp)"
-  (cd "$SOURCE" && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$tmp_manifest"
-  diff -u "$SOURCE/CANONICAL-SHA256SUMS" "$tmp_manifest" >/dev/null || { rm -f "$tmp_manifest"; echo "canonical skill manifest mismatch" >&2; exit 3; }
-  rm -f "$tmp_manifest"
+  diff -u "$SOURCE/CANONICAL-SHA256SUMS" <(
+    cd "$SOURCE" && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
+  ) >/dev/null || { echo "canonical skill manifest mismatch" >&2; exit 3; }
 fi
 
 [[ -f "$WORKSPACE/AGENTS.md" ]] || { echo "destination is not an agentic workspace" >&2; exit 3; }
 for path in "$WORKSPACE/.agents" "$WORKSPACE/.agents/skills" "${DEST%/}"; do
   [[ ! -L "$path" ]] || { echo "destination path must not contain a symlink: $path" >&2; exit 3; }
 done
+[[ ! -L "$WORKSPACE/deleteme" ]] || { echo "destination disposal path is a symlink" >&2; exit 3; }
+mkdir -p "$WORKSPACE/deleteme"
+[[ -d "$WORKSPACE/deleteme" && ! -L "$WORKSPACE/deleteme" ]] || { echo "destination disposal path is unsafe" >&2; exit 3; }
 mkdir -p "$WORKSPACE/.agents/skills"
 parent="$WORKSPACE/.agents/skills"
 lock="$parent/.${SKILL}.sync-lock"
@@ -52,21 +54,62 @@ fi
 stage=""
 backup="$parent/.${SKILL}.previous.$$"
 marker="$parent/.${SKILL}.sync-in-progress"
-marker_token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+marker_token="$(python3 -I -B -c 'import secrets; print(secrets.token_hex(16))')"
 installed=false
 marker_created=false
-restore() {
-  if [[ "$installed" != true && -e "$backup" && ! -e "${DEST%/}" ]]; then
-    mv "$backup" "${DEST%/}"
+backup_owned=false
+outbox=""
+finalize_sync() {
+  local result=$? outcome rollback_state=NOT_NEEDED
+  trap - EXIT HUP INT TERM
+  if [[ "$backup_owned" == true && "$installed" != true && -d "$backup" ]]; then
+    if [[ -e "${DEST%/}" ]]; then
+      echo "UNVERIFIED: rollback destination occupied; preserve $backup and inspect manually" >&2
+      rollback_state=BLOCKED
+      result=3
+    elif mv "$backup" "${DEST%/}"; then
+      backup_owned=false
+      rollback_state=RESTORED
+    else
+      echo "UNVERIFIED: rollback failed; inspect $backup" >&2
+      rollback_state=FAILED
+      result=3
+    fi
   fi
-  if [[ "$marker_created" == true && -f "$marker/owner" && "$(cat "$marker/owner")" == "$marker_token" ]]; then
-    rm -f "$marker/owner"
-    rmdir "$marker"
+  if [[ -n "$outbox" ]]; then
+    if [[ -n "$stage" && -d "$stage" ]]; then mv "$stage" "$outbox/stage" || { echo "UNVERIFIED: stage disposal failed" >&2; exit 3; }; fi
+    if [[ "$backup_owned" == true && "$installed" == true && -d "$backup" ]]; then mv "$backup" "$outbox/previous" || { echo "UNVERIFIED: backup disposal failed" >&2; exit 3; }; fi
+    if [[ "$marker_created" == true && -f "$marker/owner" && "$(cat "$marker/owner")" == "$marker_token" ]]; then
+      mv "$marker" "$outbox/marker" || { echo "UNVERIFIED: marker disposal failed" >&2; exit 3; }
+    fi
+    if [[ -d "$lock" ]]; then mv "$lock" "$outbox/lock" || { echo "UNVERIFIED: lock disposal failed" >&2; exit 3; }; fi
+    outcome=REFUSED
+    [[ "$installed" == true ]] && outcome=INSTALLED
+    cat > "$outbox/MANIFEST.md" <<EOF
+# Skill sync disposal manifest
+
+Created by scripts/sync-agentic-workspace.sh from canonical commit $source_commit.
+Outcome: $outcome; exit: $result; rollback: $rollback_state; skill: $SKILL.
+
+Only items this invocation created or replaced may appear: previous/ is the
+prior consumer skill tree (if installed), stage/ is an unfinished copied tree,
+and marker/ and lock/ are transaction metadata owned by this invocation.
+On REFUSED, check the rollback status and destination before disposing of the
+outbox. When rollback is BLOCKED/FAILED, the owned prior skill remains at
+$backup OUTSIDE this outbox and is NOT safe to delete. On INSTALLED the
+previous/ tree is superseded and safe for the operator to delete after review.
+EOF
+    printf 'DISPOSAL_OUTBOX=%s\n' "$outbox"
+  elif [[ -d "$lock" ]]; then
+    echo "UNVERIFIED: disposal unavailable; inspect owned lock $lock" >&2
+    exit 3
   fi
-  rmdir "$lock" 2>/dev/null || true
+  exit "$result"
 }
-trap restore EXIT HUP INT TERM
+trap finalize_sync EXIT
+trap 'exit 3' HUP INT TERM
 [[ ! -e "$backup" ]] || { echo "sync backup already exists: $backup" >&2; exit 3; }
+outbox="$(mktemp -d "$WORKSPACE/deleteme/$(date -u +%Y-%m-%d)-${SKILL}-sync.XXXXXX")" || exit 3
 if ! mkdir "$marker" 2>/dev/null; then
   echo "prior sync marker exists: $marker" >&2
   exit 3
@@ -93,21 +136,14 @@ if find "$stage" ! -type f ! -type d -print -quit | grep -q .; then
   echo "staged skill contains an unsupported entry type" >&2
   exit 3
 fi
-if [[ -e "${DEST%/}" ]]; then mv "${DEST%/}" "$backup"; fi
+if [[ -e "${DEST%/}" ]]; then
+  mv "${DEST%/}" "$backup"
+  backup_owned=true
+fi
 if ! mv "$stage" "${DEST%/}"; then
-  [[ ! -e "$backup" ]] || mv "$backup" "${DEST%/}"
   exit 3
 fi
 installed=true
-if [[ -e "$backup" ]]; then
-  find "$backup" -depth -type f -delete
-  find "$backup" -depth -type d -exec rmdir {} +
-fi
-rm -f "$marker/owner"
-rmdir "$marker"
-rmdir "$lock"
-trap - EXIT HUP INT TERM
-
 printf 'Synced skill to %s\n' "$DEST"
 printf 'SOURCE_COMMIT=%s\n' "$source_commit"
 printf 'SOURCE_DIRTY=%s\n' "$source_dirty"
