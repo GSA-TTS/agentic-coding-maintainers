@@ -235,13 +235,16 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     for cid, rows in case_events.items():
         if effective[cid] != "unknown":
             continue
-        elapsed = as_of - timestamp(rows[0]["occurred_at"])
+        # This is time since this workspace RECORDED the intake. occurred_at
+        # is supplied by the caller and can be backdated; it cannot establish
+        # how long a request existed before recording.
+        elapsed = as_of - timestamp(rows[0]["recorded_at"])
         if elapsed.total_seconds() < 0:
-            raise Unverified("unknown case intake is after the report cutoff")
+            raise Unverified("unknown case recording is after the report cutoff")
         queued.append((elapsed.total_seconds(), {
             "case_label": pseudonym(cid, key), "case_type": rows[0]["case_type"],
             # Whole days avoid displaying 7.00 while the seven-day flag is false.
-            "age_whole_days": elapsed.days,
+            "days_since_recording": elapsed.days,
             "review_due": elapsed >= timedelta(days=disposition_age_days),
         }))
     disposition_queue = [row for _, row in sorted(queued, key=lambda pair: (-pair[0], pair[1]["case_label"]))]
@@ -318,7 +321,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
             for status in ("eligible", "excluded", "unknown")
         },
         "needs_maintainer_disposition": disposition_queue,
-        "disposition_policy": "manual review; review_due after 7 days; no automatic exclusion or remote alert",
+        "disposition_policy": "manual review; review_due after 7 days since recording; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
         "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: no live GitHub/head/check attestation",
         "unfinished_for_verified_throughput": sorted(

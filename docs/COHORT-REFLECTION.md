@@ -49,8 +49,11 @@ transitions use occurrence time to determine current state, with append order
 as a tie-breaker.
 
 Unknown-eligibility cases also appear in the private
-`needs_maintainer_disposition` queue: keyed case label, case type, whole-day age
-and a `review_due` flag at seven full days. Unlike the 28-day performance
+`needs_maintainer_disposition` queue: keyed case label, case type, whole days
+**since writer-recorded intake**, and a `review_due` flag at seven full days.
+Caller-supplied `occurred_at` may be backdated and cannot establish how long a
+request existed before recording; historical request age is UNVERIFIED without
+independent source timing. Unlike the 28-day performance
 cohort, this queue retains older unknowns until a disposition is recorded.
 This is a **read-only report cue**, not an automatic exclusion or GitHub label.
 A maintainer can append one `eligibility_correction` event referencing the
@@ -65,8 +68,9 @@ report counts corrected cases in the
 current intake cohort, not correction cycles or all historical cases. Inventory
 classifications have no source-decision timestamp, so any corrected case makes
 inventory coverage UNVERIFIED until source-time evidence is designed. Other
-classification corrections and measured disposition delay remain work under
-issue #30.
+classification corrections and cross-cohort disposition delay remain work under
+issue #30. The fixed intake cohort does report writer-recorded disposition
+delay for corrected unknowns, not verified source-to-decision time.
 
 `correction_quality` reports recorded classifications, not a productivity
 score: a fixed `denominator_first_intakes`, corrected-case counts and keyed
