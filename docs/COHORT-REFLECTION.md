@@ -68,6 +68,16 @@ inventory coverage UNVERIFIED until source-time evidence is designed. Other
 classification corrections and measured disposition delay remain work under
 issue #30.
 
+`correction_quality` reports recorded classifications, not a productivity
+score: a fixed `denominator_first_intakes`, corrected-case counts and keyed
+labels grouped by **original** eligibility, original-unknown count, pending
+unknown labels, and resolved-unknown disposition delays. Delays use the
+writer-set `recorded_at` of intake and correction, not backdatable
+`occurred_at`. A correction appended after `--as-of` does not alter the
+historical report; correcting more cases can increase the count without
+implying that the process got worse. These figures are from recorded events
+only, not a complete independent intake inventory or verified outcomes.
+
 The report includes `ledger_identity_hmac`, a domain-separated keyed HMAC over
 the complete input bytes. An unkeyed digest would let a reader test guessed
 small ledgers and case IDs offline, defeating pseudonymization. The cutoff

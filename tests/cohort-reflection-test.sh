@@ -152,6 +152,16 @@ assert fixed_report["original_eligibility_counts"] == {"eligible": 0, "excluded"
 assert fixed_report["effective_eligibility_labels"]["eligible"] == [module.pseudonym("new-unknown", key)]
 assert fixed_report["eligibility_correction_count"] == 1
 assert fixed_report["corrected_case_labels"] == [module.pseudonym("new-unknown", key)]
+quality = fixed_report["correction_quality"]
+assert quality["denominator_first_intakes"] == 1 and quality["corrected_case_count"] == 1
+assert quality["original_unknown_count"] == 1 and quality["unknown_resolved_count"] == 1
+assert quality["unknown_pending_case_labels"] == []
+assert quality["corrected_case_labels_by_original_eligibility"]["unknown"] == [module.pseudonym("new-unknown", key)]
+assert quality["unknown_recorded_disposition_delays"] == [
+    {"case_label": module.pseudonym("new-unknown", key), "recorded_delay_hours": 24.0}]
+prior_report = module.reflect(read([fresh_unknown, fresh_fix]), datetime(2026, 10, 10, 12, tzinfo=timezone.utc), key)
+assert prior_report["correction_quality"]["corrected_case_count"] == 0
+assert prior_report["correction_quality"]["unknown_pending_case_labels"] == [module.pseudonym("new-unknown", key)]
 assert module.reflect(read([fresh_unknown, fresh_fix]), datetime(2026, 10, 10, 12, tzinfo=timezone.utc), key)["unknown_eligibility_ids"] == [module.pseudonym("new-unknown", key)]
 refuses([fresh_unknown, dict(fresh_fix, intake_event_id="missing")])
 refuses([fresh_unknown, dict(fresh_fix, replacement="unknown")])
