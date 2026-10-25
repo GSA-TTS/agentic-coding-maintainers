@@ -57,6 +57,13 @@ scripts/sync-agentic-workspace.sh /path/to/agentic cross-repo-epic
 scripts/sync-agentic-workspace.sh /path/to/agentic workspace-orchestrator
 ```
 
+Each successful sync prints `DISPOSAL_OUTBOX=`. The replaced skill tree and
+this invocation's lock/marker live in a dated manifest-backed `deleteme/`
+directory in the consumer workspace. The operator reviews and deletes that
+outbox later; the sync script does not delete backups or work around the
+review workspace's removal policy. A refused sync preserves pre-existing
+uncertain markers for recovery.
+
 The script stages then replaces only the selected canonical skill directory,
 with a transaction marker and trap that restores the previous copy if interrupted
 before installation completes. The brief two-rename replacement is not a

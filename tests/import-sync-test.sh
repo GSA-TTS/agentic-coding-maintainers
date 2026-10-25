@@ -64,6 +64,12 @@ expected_dirty=false
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all -- .agents/skills/workspace-orchestrator)" ]] || expected_dirty=true
 sync_out="$("$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator)"
 grep -q "SOURCE_DIRTY=$expected_dirty" <<<"$sync_out"
+outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
+[[ -n "$outbox" && -f "$outbox/MANIFEST.md" && -f "$outbox/previous/SKILL.md" ]]
+[[ ! -e "$consumer/.agents/skills/.workspace-orchestrator.sync-lock" ]]
+[[ ! -e "$consumer/.agents/skills/.workspace-orchestrator.sync-in-progress" ]]
+[[ -d "$outbox/marker" && -d "$outbox/lock" ]]
+grep -q 'old consumer skill' "$outbox/MANIFEST.md"
 
 set +e
 ln -s /tmp "$consumer/.agents/skills/cross-repo-epic"
@@ -86,6 +92,7 @@ set -e
 [[ -f "$target/KEEP" ]]
 [[ -f "$consumer/.agents/skills/workspace-orchestrator/ORIGINAL" ]]
 [[ -z "$(find "$consumer/.agents/skills" -maxdepth 1 \( -name '.workspace-orchestrator.previous.*' -o -name '.workspace-orchestrator.sync.*' -o -name '.workspace-orchestrator.sync-in-progress' -o -name '.workspace-orchestrator.sync-lock' \) -print)" ]]
+find "$consumer/deleteme" -name MANIFEST.md -type f -print | grep -q .
 
 # A pre-existing uncertain marker is not deleted by a later refused invocation.
 mkdir "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress"
@@ -96,6 +103,18 @@ rc=$?
 set -e
 [[ "$rc" -eq 3 ]]
 grep -q prior-evidence "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress/owner"
+
+# A PID-named pre-existing backup belongs to a prior recovery attempt. The
+# refused invocation must not stage or consume it as if this run created it.
+collision="$consumer/.agents/skills/.workspace-orchestrator.previous.$$"
+mkdir "$collision"
+printf 'prior recovery evidence\n' > "$collision/KEEP"
+set +e
+"$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 3 && -f "$collision/KEEP" ]]
+[[ -f "$consumer/.agents/skills/workspace-orchestrator/SKILL.md" ]]
 
 # Unmanifested symlinks in the canonical source are never copied.
 target2="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-canonical-target.XXXXXX")"
