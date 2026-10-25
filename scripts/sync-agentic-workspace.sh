@@ -54,16 +54,15 @@ fi
 stage=""
 backup="$parent/.${SKILL}.previous.$$"
 marker="$parent/.${SKILL}.sync-in-progress"
-marker_token="$(python3 -I -B -c 'import secrets; print(secrets.token_hex(16))')"
 installed=false
 marker_created=false
 backup_owned=false
 outbox=""
 finalize_sync() {
-  local result=$? outcome rollback_state=NOT_NEEDED
+  local result=$? outcome rollback_state=NOT_NEEDED disposal_state=COMPLETE
   trap - EXIT HUP INT TERM
   if [[ "$backup_owned" == true && "$installed" != true && -d "$backup" ]]; then
-    if [[ -e "${DEST%/}" ]]; then
+    if [[ -e "${DEST%/}" || -L "${DEST%/}" ]]; then
       echo "UNVERIFIED: rollback destination occupied; preserve $backup and inspect manually" >&2
       rollback_state=BLOCKED
       result=3
@@ -77,28 +76,43 @@ finalize_sync() {
     fi
   fi
   if [[ -n "$outbox" ]]; then
-    if [[ -n "$stage" && -d "$stage" ]]; then mv "$stage" "$outbox/stage" || { echo "UNVERIFIED: stage disposal failed" >&2; exit 3; }; fi
-    if [[ "$backup_owned" == true && "$installed" == true && -d "$backup" ]]; then mv "$backup" "$outbox/previous" || { echo "UNVERIFIED: backup disposal failed" >&2; exit 3; }; fi
-    if [[ "$marker_created" == true && -f "$marker/owner" && "$(cat "$marker/owner")" == "$marker_token" ]]; then
-      mv "$marker" "$outbox/marker" || { echo "UNVERIFIED: marker disposal failed" >&2; exit 3; }
+    if [[ -n "$stage" && -d "$stage" ]]; then
+      mv "$stage" "$outbox/stage" || disposal_state=FAILED_STAGE
     fi
-    if [[ -d "$lock" ]]; then mv "$lock" "$outbox/lock" || { echo "UNVERIFIED: lock disposal failed" >&2; exit 3; }; fi
+    if [[ "$backup_owned" == true && "$installed" == true && -d "$backup" ]]; then
+      mv "$backup" "$outbox/previous" || disposal_state=FAILED_BACKUP
+    fi
+    if [[ "$marker_created" == true ]]; then
+      if [[ -f "$marker/owner" && "$(cat "$marker/owner")" == "$marker_token" ]]; then
+        mv "$marker" "$outbox/marker" || disposal_state=FAILED_MARKER
+      else
+        disposal_state=UNCERTAIN_MARKER
+      fi
+    fi
+    if [[ -d "$lock" ]]; then
+      mv "$lock" "$outbox/lock" || disposal_state=FAILED_LOCK
+    fi
+    if [[ "$disposal_state" != COMPLETE ]]; then result=3; fi
     outcome=REFUSED
     [[ "$installed" == true ]] && outcome=INSTALLED
-    cat > "$outbox/MANIFEST.md" <<EOF
+    if ! cat > "$outbox/MANIFEST.md" <<EOF
 # Skill sync disposal manifest
 
 Created by scripts/sync-agentic-workspace.sh from canonical commit $source_commit.
-Outcome: $outcome; exit: $result; rollback: $rollback_state; skill: $SKILL.
+Outcome: $outcome; exit: $result; rollback: $rollback_state; disposal: $disposal_state; skill: $SKILL.
 
-Only items this invocation created or replaced may appear: previous/ is the
-prior consumer skill tree (if installed), stage/ is an unfinished copied tree,
-and marker/ and lock/ are transaction metadata owned by this invocation.
-On REFUSED, check the rollback status and destination before disposing of the
-outbox. When rollback is BLOCKED/FAILED, the owned prior skill remains at
-$backup OUTSIDE this outbox and is NOT safe to delete. On INSTALLED the
-previous/ tree is superseded and safe for the operator to delete after review.
+This outbox contains only artifacts this invocation created or replaced.
+If present, previous/ was the old consumer skill (safe to delete ONLY if the
+new one is installed); stage/ is an unfinished candidate; marker/ and lock/
+are this run's transaction metadata. Inspect the destination and these paths
+before deleting anything, especially if exit is nonzero.
+Recovery paths outside this outbox (may be present):
+  backup: $backup
+  destination: ${DEST%/}
+  marker: $marker
+  lock: $lock
 EOF
+    then echo "UNVERIFIED: could not record disposal manifest at $outbox" >&2; exit 3; fi
     printf 'DISPOSAL_OUTBOX=%s\n' "$outbox"
   elif [[ -d "$lock" ]]; then
     echo "UNVERIFIED: disposal unavailable; inspect owned lock $lock" >&2
@@ -108,8 +122,9 @@ EOF
 }
 trap finalize_sync EXIT
 trap 'exit 3' HUP INT TERM
-[[ ! -e "$backup" ]] || { echo "sync backup already exists: $backup" >&2; exit 3; }
+[[ ! -e "$backup" && ! -L "$backup" ]] || { echo "sync backup already exists: $backup" >&2; exit 3; }
 outbox="$(mktemp -d "$WORKSPACE/deleteme/$(date -u +%Y-%m-%d)-${SKILL}-sync.XXXXXX")" || exit 3
+marker_token="$(python3 -I -B -c 'import secrets; print(secrets.token_hex(16))')" || exit 3
 if ! mkdir "$marker" 2>/dev/null; then
   echo "prior sync marker exists: $marker" >&2
   exit 3

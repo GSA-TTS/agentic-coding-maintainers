@@ -69,7 +69,7 @@ outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
 [[ ! -e "$consumer/.agents/skills/.workspace-orchestrator.sync-lock" ]]
 [[ ! -e "$consumer/.agents/skills/.workspace-orchestrator.sync-in-progress" ]]
 [[ -d "$outbox/marker" && -d "$outbox/lock" ]]
-grep -q 'prior consumer skill tree' "$outbox/MANIFEST.md"
+grep -q 'old consumer skill' "$outbox/MANIFEST.md"
 
 set +e
 ln -s /tmp "$consumer/.agents/skills/cross-repo-epic"
