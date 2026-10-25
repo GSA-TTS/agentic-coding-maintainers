@@ -39,7 +39,9 @@ candidate="$(PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE=subissue-cand
 grep -q 'patterns#77' <<<"$candidate"
 grep -q 'EPIC CANDIDATE (sub-issues): 2 child(ren)' <<<"$candidate"
 grep -q 'Coverage: 1 epic candidate(s)' <<<"$candidate"
-for mode in no-subissues missing-subissues contradictory-subissues null-child-probe bad-subissue-page missing-subissue-cursor; do
+one_child="$(PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE=one-child-candidate "$ROOT/bin/portfolio-status.sh")"
+grep -q 'EPIC CANDIDATE (sub-issues): 1 child(ren)' <<<"$one_child"
+for mode in no-subissues missing-subissues contradictory-subissues null-child-probe bad-subissue-page missing-subissue-cursor incomplete-board; do
   set +e
   diagnostic="$(PATH="$fixture_bin:/usr/bin:/bin" PORTFOLIO_STUB_MODE="$mode" "$ROOT/bin/portfolio-status.sh" 2>&1)"
   rc=$?

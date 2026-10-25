@@ -50,91 +50,99 @@ case "$mode" in
     exit 0
     ;;
   malformed-shape)
-    printf '{"data":{"node":{"items":{"pageInfo":{},"nodes":"bad"}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":0,"pageInfo":{},"nodes":"bad"}}}}\n'
     exit 0
     ;;
   errors)
-    printf '{"errors":[{"message":"partial"}],"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}\n'
+    printf '{"errors":[{"message":"partial"}],"data":{"node":{"items":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}\n'
     exit 0
     ;;
   bad-errors)
-    printf '{"errors":{},"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}\n'
+    printf '{"errors":{},"data":{"node":{"items":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}\n'
     exit 0
     ;;
   truncated)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: truncated","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":21,"pageInfo":{"hasNextPage":true},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: truncated","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":21,"pageInfo":{"hasNextPage":true},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   malformed-field)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: malformed","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":"bad"}]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: malformed","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":"bad"}]}}]}}}}\n'
     exit 0
     ;;
   draft-item)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":null,"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: valid","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"content":null,"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: valid","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
     exit 0
     ;;
   bad-state)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"UNKNOWN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"UNKNOWN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
     exit 0
     ;;
   bad-number)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":true,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":true,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
     exit 0
     ;;
   bad-title)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":[],"state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":[],"state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   bad-page-info)
-    printf '{"data":{"node":{"items":{"pageInfo":{},"nodes":[]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":0,"pageInfo":{},"nodes":[]}}}}\n'
     exit 0
     ;;
   bad-total)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":true,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":true,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   malformed-label-name)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":[]}]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":[]}]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   malformed-field-name)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":[]}}]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":[]}}]}}]}}}}\n'
     exit 0
     ;;
   malformed-field-value)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":[],"field":{"name":"Status"}}]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":1,"title":"Epic: bad","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":[],"field":{"name":"Status"}}]}}]}}}}\n'
     exit 0
     ;;
   subissue-candidate)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":2,"pageInfo":{"hasNextPage":true,"endCursor":"child-next"},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":2,"pageInfo":{"hasNextPage":true,"endCursor":"child-next"},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}}]}}]}}}}\n'
+    exit 0
+    ;;
+  one-child-candidate)
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    exit 0
+    ;;
+  incomplete-board)
+    printf '{"data":{"node":{"items":{"totalCount":2,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   null-child-probe)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[null]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[null]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   bad-subissue-page)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":true,"endCursor":"wrong"},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":1,"pageInfo":{"hasNextPage":true,"endCursor":"wrong"},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   missing-subissue-cursor)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":2,"pageInfo":{"hasNextPage":true},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":2,"pageInfo":{"hasNextPage":true},"nodes":[{"number":88}]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   no-subissues)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":77,"title":"Ordinary issue","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":77,"title":"Ordinary issue","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   missing-subissues)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","number":77,"title":"Ordinary issue","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","number":77,"title":"Ordinary issue","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   contradictory-subissues)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":2,"pageInfo":{"hasNextPage":true},"nodes":[]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"content":{"__typename":"Issue","subIssues":{"totalCount":2,"pageInfo":{"hasNextPage":true},"nodes":[]},"number":77,"title":"Ordinary parent","state":"OPEN","url":"x","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}},"fieldValues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}\n'
     exit 0
     ;;
   empty)
-    printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}\n'
+    printf '{"data":{"node":{"items":{"totalCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}\n'
     exit 0
     ;;
 esac
@@ -146,7 +154,7 @@ case " $* " in
     else
       page_info='{"hasNextPage":false,"endCursor":null}'
     fi
-    printf '{"data":{"node":{"items":{"pageInfo":%s,"nodes":[
+    printf '{"data":{"node":{"items":{"totalCount":4,"pageInfo":%s,"nodes":[
   {"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":999,"title":"Epic: policy consistency","state":"OPEN","url":"https://example/playbook/999","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-playbook"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"documentation"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Cancelled","field":{"name":"Status"}}]}},
   {"content":{"__typename":"PullRequest","number":230,"title":"Epic implementation PR","state":"OPEN","url":"https://example/patterns/230","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Done","field":{"name":"Status"}}]}}
 ]}}}}
@@ -154,7 +162,7 @@ case " $* " in
     ;;
   *)
     cat <<'JSON'
-{"data":{"node":{"items":{"pageInfo":{"hasNextPage":true,"endCursor":"page-2"},"nodes":[
+{"data":{"node":{"items":{"totalCount":4,"pageInfo":{"hasNextPage":true,"endCursor":"page-2"},"nodes":[
   {"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":357,"title":"Catalog epic\n\u001b[31mFORGED\ud800\u202e\ue000\u0378","state":"OPEN","url":"https://attacker.invalid/forged","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-patterns"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":4,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"In Progress","field":{"name":"Status"}},{"name":"Test","field":{"name":"Work Type"}},{"name":"SBX/Environment","field":{"name":"Area"}},{"name":"Blocked","field":{"name":"Flag"}}]}},
   {"content":{"__typename":"Issue","subIssues":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"number":235,"title":"Propagation epic","state":"CLOSED","url":"https://example/quickstart/235","repository":{"nameWithOwner":"GSA-TTS/agentic-coding-quickstart"},"labels":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"epic"}]}},"fieldValues":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Todo","field":{"name":"Status"}},{"name":"Feature","field":{"name":"Work Type"}}]}}
 ]}}}}

@@ -26,6 +26,7 @@ MAX_ISSUE_NUMBER = 2_147_483_647
 QUERY = r"""query($id:ID!,$after:String){
   node(id:$id){... on ProjectV2{
     items(first:100,after:$after){
+      totalCount
       pageInfo{hasNextPage endCursor}
       nodes{
         content{
@@ -148,6 +149,8 @@ def query_page(project_id: str, after: str | None, deadline: float) -> dict:
             raise TypeError("project item node is not an object")
         if type(items["pageInfo"].get("hasNextPage")) is not bool:
             raise TypeError("pageInfo.hasNextPage is not boolean")
+        if type(items.get("totalCount")) is not int or items["totalCount"] < 0:
+            raise TypeError("items.totalCount is invalid")
         return items
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         print(f"portfolio: UNVERIFIED — malformed project-board response: {exc}", file=sys.stderr)
@@ -172,11 +175,23 @@ PROJECT_ID = resolve_project_id(CONFIG["project"], deadline)
 items = []
 cursor = None
 seen_cursors: set[str] = set()
+expected_items: int | None = None
 for _page_number in range(1, MAX_PAGES + 1):
     page = query_page(PROJECT_ID, cursor, deadline)
+    if expected_items is None:
+        expected_items = page["totalCount"]
+    elif page["totalCount"] != expected_items:
+        print("portfolio: UNVERIFIED — board item total changed during pagination", file=sys.stderr)
+        raise SystemExit(3)
     items.extend(page.get("nodes") or [])
+    if len(items) > expected_items:
+        print("portfolio: UNVERIFIED — board returned more items than reported", file=sys.stderr)
+        raise SystemExit(3)
     info = page.get("pageInfo") or {}
     if not info.get("hasNextPage"):
+        if len(items) != expected_items:
+            print("portfolio: UNVERIFIED — board item list is incomplete", file=sys.stderr)
+            raise SystemExit(3)
         break
     cursor = info.get("endCursor")
     if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
@@ -220,6 +235,8 @@ for item in items:
         number = content.get("number")
         if not isinstance(repo, str) or type(number) is not int or not (1 <= number <= MAX_ISSUE_NUMBER):
             raise ValueError("project item repository/number has unexpected type")
+        if repo not in ALLOWED:
+            continue  # Unconfigured items are not evidence for this portfolio.
         if content.get("state") not in {"OPEN", "CLOSED"}:
             raise ValueError("project item live state is invalid")
         raw_title = content.get("title")

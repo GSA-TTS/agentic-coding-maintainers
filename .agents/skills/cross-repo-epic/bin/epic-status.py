@@ -256,6 +256,8 @@ for page_number in range(1, MAX_PAGES + 1):
         child_number = child.get("number")
         if type(child_number) is not int or not (1 <= child_number <= MAX_ISSUE_NUMBER) or child.get("state") not in {"OPEN", "CLOSED"}:
             fail("subIssues contains malformed issue identity/state")
+        if not isinstance(child.get("title"), str):
+            fail("subIssues contains malformed child title")
         child_repo = repository["nameWithOwner"]
         if child_repo not in ALLOWED:
             fail(f"sub-issue repository is outside the allowed portfolio: {safe_text(child_repo)}")
