@@ -235,13 +235,16 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     for cid, rows in case_events.items():
         if effective[cid] != "unknown":
             continue
-        elapsed = as_of - timestamp(rows[0]["occurred_at"])
+        # This is time since this workspace RECORDED the intake. occurred_at
+        # is supplied by the caller and can be backdated; it cannot establish
+        # how long a request existed before recording.
+        elapsed = as_of - timestamp(rows[0]["recorded_at"])
         if elapsed.total_seconds() < 0:
-            raise Unverified("unknown case intake is after the report cutoff")
+            raise Unverified("unknown case recording is after the report cutoff")
         queued.append((elapsed.total_seconds(), {
             "case_label": pseudonym(cid, key), "case_type": rows[0]["case_type"],
             # Whole days avoid displaying 7.00 while the seven-day flag is false.
-            "age_whole_days": elapsed.days,
+            "days_since_recording": elapsed.days,
             "review_due": elapsed >= timedelta(days=disposition_age_days),
         }))
     disposition_queue = [row for _, row in sorted(queued, key=lambda pair: (-pair[0], pair[1]["case_label"]))]
@@ -269,6 +272,27 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     label = {case_id: pseudonym(case_id, key) for case_id in case_events}
     if len(set(label.values())) != len(label):
         raise Unverified("report case labels collide")
+    original_counts = {state: sum(rows[0]["eligibility"] == state for rows in cohort.values())
+                       for state in ("eligible", "excluded", "unknown")}
+    corrections = {
+        cid: next((event for event in rows if event["event_type"] == "eligibility_correction"), None)
+        for cid, rows in cohort.items()
+    }
+    corrected_by_original = {
+        state: sorted(label[cid] for cid, row in corrections.items()
+                      if row is not None and cohort[cid][0]["eligibility"] == state)
+        for state in original_counts
+    }
+    # Use writer-set recorded_at for both ends. occurred_at may be backdated;
+    # it is not evidence of when a maintainer actually made a disposition.
+    resolved_unknown = sorted((
+        {"case_label": label[cid], "recorded_delay_hours": round(
+            (timestamp(row["recorded_at"]) - timestamp(cohort[cid][0]["recorded_at"])).total_seconds() / 3600, 2)}
+        for cid, row in corrections.items() if row is not None and
+        cohort[cid][0]["eligibility"] == "unknown" and row["replacement"] != "unknown"
+    ), key=lambda entry: entry["case_label"])
+    pending_unknown = sorted(label[cid] for cid, rows in cohort.items()
+                             if rows[0]["eligibility"] == "unknown" and effective[cid] == "unknown")
     return {
         "as_of": as_of.isoformat(), "window_days": 28,
         "coverage": "recorded_eligible_cohort" if eligible else "no_eligible_evidence",
@@ -276,9 +300,20 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "intake_completeness": "UNMEASURED: independent request inventory absent",
         "eligible_ids": [label[cid] for cid in eligible], "excluded_ids": [label[cid] for cid in excluded],
         "unknown_eligibility_ids": [label[cid] for cid in unknown],
-        "eligibility_correction_count": sum(any(row["event_type"] == "eligibility_correction" for row in cohort[cid]) for cid in cohort),
+        "eligibility_correction_count": sum(row is not None for row in corrections.values()),
         "intake_cohort_count": len(cohort),
-        "original_eligibility_counts": {"eligible": len(eligible), "excluded": len(excluded), "unknown": len(unknown)},
+        "original_eligibility_counts": original_counts,
+        "correction_quality": {
+            "coverage": "recorded_events_only" if cohort else "no_evidence",
+            "denominator_first_intakes": len(cohort),
+            "corrected_case_count": sum(row is not None for row in corrections.values()),
+            "corrected_case_labels_by_original_eligibility": corrected_by_original,
+            "original_unknown_count": original_counts["unknown"],
+            "unknown_resolved_count": len(resolved_unknown),
+            "unknown_recorded_disposition_delays": resolved_unknown,
+            "unknown_pending_case_labels": pending_unknown,
+            "scope": "recorded decisions within first-intake cohort; not independently verified outcomes",
+        },
         "corrected_case_labels": sorted(label[cid] for cid in cohort if any(
             row["event_type"] == "eligibility_correction" for row in cohort[cid])),
         "effective_eligibility_labels": {
@@ -286,7 +321,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
             for status in ("eligible", "excluded", "unknown")
         },
         "needs_maintainer_disposition": disposition_queue,
-        "disposition_policy": "manual review; review_due after 7 days; no automatic exclusion or remote alert",
+        "disposition_policy": "manual review; review_due after 7 days since recording; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
         "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: no live GitHub/head/check attestation",
         "unfinished_for_verified_throughput": sorted(

@@ -57,7 +57,7 @@ assert report["unknown_eligibility_ids"] == [module.pseudonym("unknown", key)]
 queue = report["needs_maintainer_disposition"]
 assert len(queue) == 1 and queue[0]["case_label"] == module.pseudonym("unknown", key)
 assert queue[0]["case_type"] == "other" and queue[0]["review_due"] is True
-assert queue[0]["age_whole_days"] == 12
+assert queue[0]["days_since_recording"] == 11
 assert "unknown" not in [row["case_label"] for row in queue]
 assert "no automatic exclusion" in report["disposition_policy"]
 assert '"complete"' not in json.dumps(report)
@@ -125,9 +125,16 @@ pre_due = dict(row("pre-due", 37, "intake", case_type="review", eligibility="unk
 at_due = dict(row("at-due", 38, "intake", case_type="review", eligibility="unknown"),
               occurred_at="2026-10-15T00:00:00Z", recorded_at="2026-10-15T01:00:00Z")
 boundary_queue = module.reflect(read([pre_due, at_due]), as_of, key)["needs_maintainer_disposition"]
-assert boundary_queue[0]["case_label"] == module.pseudonym("at-due", key)
-assert boundary_queue[0]["age_whole_days"] == 7 and boundary_queue[0]["review_due"] is True
-assert boundary_queue[1]["age_whole_days"] == 6 and boundary_queue[1]["review_due"] is False
+assert {entry["case_label"] for entry in boundary_queue} == {module.pseudonym("at-due", key), module.pseudonym("pre-due", key)}
+assert boundary_queue[0]["days_since_recording"] == 6 and boundary_queue[0]["review_due"] is False
+assert boundary_queue[1]["days_since_recording"] == 6 and boundary_queue[1]["review_due"] is False
+# Backdating occurred_at alone cannot accelerate the operational review cue.
+backdated = dict(row("backdated", 43, "intake", case_type="review", eligibility="unknown"),
+                 occurred_at="2026-08-01T00:00:00Z", recorded_at="2026-10-20T00:00:00Z")
+assert module.reflect(read([backdated]), as_of, key)["needs_maintainer_disposition"][0]["review_due"] is False
+# Exactly seven full days since writer-set recorded_at IS due.
+at_recorded_boundary = dict(at_due, recorded_at="2026-10-15T00:00:00Z")
+assert module.reflect(read([at_recorded_boundary]), as_of, key)["needs_maintainer_disposition"][0]["review_due"] is True
 # A maintainer decision is a new event, never a rewrite of intake. It removes
 # the old unknown from the operational queue, even outside the 28-day cohort.
 corrected = dict(row("older-unknown", 39, "eligibility_correction",
@@ -152,6 +159,22 @@ assert fixed_report["original_eligibility_counts"] == {"eligible": 0, "excluded"
 assert fixed_report["effective_eligibility_labels"]["eligible"] == [module.pseudonym("new-unknown", key)]
 assert fixed_report["eligibility_correction_count"] == 1
 assert fixed_report["corrected_case_labels"] == [module.pseudonym("new-unknown", key)]
+quality = fixed_report["correction_quality"]
+assert quality["denominator_first_intakes"] == 1 and quality["corrected_case_count"] == 1
+assert quality["original_unknown_count"] == 1 and quality["unknown_resolved_count"] == 1
+assert quality["unknown_pending_case_labels"] == []
+assert quality["corrected_case_labels_by_original_eligibility"]["unknown"] == [module.pseudonym("new-unknown", key)]
+assert quality["unknown_recorded_disposition_delays"] == [
+    {"case_label": module.pseudonym("new-unknown", key), "recorded_delay_hours": 24.0}]
+# Distinguish claimed occurrence gap from writer-recorded gap. Both were 24h in
+# the first fixture, so a regression to occurred_at would otherwise pass.
+different_gap = dict(fresh_fix, occurred_at="2026-10-10T02:00:00Z", recorded_at="2026-10-11T03:00:00Z")
+assert module.reflect(read([fresh_unknown, different_gap]), as_of, key)["correction_quality"]["unknown_recorded_disposition_delays"][0]["recorded_delay_hours"] == 26.0
+prior_report = module.reflect(read([fresh_unknown, fresh_fix]), datetime(2026, 10, 10, 12, tzinfo=timezone.utc), key)
+assert prior_report["correction_quality"]["corrected_case_count"] == 0
+assert prior_report["correction_quality"]["unknown_pending_case_labels"] == [module.pseudonym("new-unknown", key)]
+# A correction appended after an older snapshot does not revise its status.
+assert module.reflect(read([fresh_unknown, fresh_fix]), datetime(2026, 10, 10, 12, tzinfo=timezone.utc), key)["needs_maintainer_disposition"][0]["case_label"] == module.pseudonym("new-unknown", key)
 assert module.reflect(read([fresh_unknown, fresh_fix]), datetime(2026, 10, 10, 12, tzinfo=timezone.utc), key)["unknown_eligibility_ids"] == [module.pseudonym("new-unknown", key)]
 refuses([fresh_unknown, dict(fresh_fix, intake_event_id="missing")])
 refuses([fresh_unknown, dict(fresh_fix, replacement="unknown")])

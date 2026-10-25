@@ -11,9 +11,10 @@ The initial intake sources and eligibility policy are recorded in
 duplicates, suspected spam and external PRs await maintainer disposition.
 Verified-outcome criteria are deliberately a separate decision. An eligibility
 correction now preserves the original intake decision as an append-only event;
-source, duplicate-map and rework corrections, plus disposition-delay measures,
-remain follow-up work under issue #30. Corrections are a process-quality signal,
-not a productivity target.
+source, duplicate-map and rework corrections remain follow-up work under issue
+#30. The reader now reports recorded unknown-disposition delay for cases in the
+fixed intake cohort; cross-cohort delays remain unmeasured. Corrections are a
+process-quality signal, not a productivity target.
 
 ## V1: what is measurable now
 
