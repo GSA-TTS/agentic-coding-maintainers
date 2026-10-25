@@ -30,7 +30,7 @@ QUERY = r"""query($id:ID!,$after:String){
       nodes{
         content{
           __typename
-          ... on Issue{number title state url repository{nameWithOwner} labels(first:20){totalCount pageInfo{hasNextPage endCursor} nodes{name}}}
+           ... on Issue{number title state url repository{nameWithOwner} labels(first:20){totalCount pageInfo{hasNextPage endCursor} nodes{name}} subIssues(first:1){totalCount pageInfo{hasNextPage endCursor} nodes{number}}}
           ... on PullRequest{number title state url repository{nameWithOwner} labels(first:20){totalCount pageInfo{hasNextPage endCursor} nodes{name}}}
         }
         fieldValues(first:20){totalCount pageInfo{hasNextPage endCursor} nodes{
@@ -231,10 +231,34 @@ for item in items:
             raise ValueError("label name is not a string")
         labels = {node["name"] for node in label_nodes}
         field_nodes = complete_connection(item.get("fieldValues"), "fieldValues")
+        sub_issues = content.get("subIssues")
+        if not isinstance(sub_issues, dict) or type(sub_issues.get("totalCount")) is not int or sub_issues["totalCount"] < 0:
+            raise ValueError("subIssues count is unavailable or malformed")
+        sub_info = sub_issues.get("pageInfo")
+        sub_nodes = sub_issues.get("nodes")
+        if not isinstance(sub_info, dict) or type(sub_info.get("hasNextPage")) is not bool or not isinstance(sub_nodes, list):
+            raise ValueError("subIssues pageInfo/nodes are malformed")
+        # first:1 is only a presence probe. Count consistency for a single
+        # probe item is enough to refuse contradictory or truncated evidence;
+        # epic-status fetches and validates the full child list separately.
+        if len(sub_nodes) != min(sub_issues["totalCount"], 1):
+            raise ValueError("subIssues presence probe contradicts totalCount")
+        expected_more = sub_issues["totalCount"] > 1
+        if sub_info["hasNextPage"] != expected_more:
+            raise ValueError("subIssues pagination contradicts totalCount")
+        child_cursor = sub_info.get("endCursor")
+        if expected_more and (not isinstance(child_cursor, str) or not child_cursor):
+            raise ValueError("subIssues pagination cursor is unavailable")
+        if sub_issues["totalCount"] and (
+            not isinstance(sub_nodes[0], dict) or
+            type(sub_nodes[0].get("number")) is not int or
+            not 1 <= sub_nodes[0]["number"] <= MAX_ISSUE_NUMBER
+        ):
+            raise ValueError("subIssues presence probe has no valid issue identity")
     except (AttributeError, TypeError, ValueError) as exc:
         print(f"portfolio: UNVERIFIED — malformed project item: {exc}", file=sys.stderr)
         raise SystemExit(3)
-    is_epic = "epic" in labels or title.lower().startswith(("epic:", "[epic]"))
+    is_epic = "epic" in labels or title.lower().startswith(("epic:", "[epic]")) or sub_issues["totalCount"] > 0
     if repo not in ALLOWED or not is_epic:
         continue
     fields = {}
@@ -264,6 +288,9 @@ for item in items:
             safe_text(fields.get("Flag") or ""),
             title,
             f"https://github.com/{repo}/issues/{number}",
+            sub_issues["totalCount"],
+            "sub-issues" if sub_issues["totalCount"] > 0 and "epic" not in labels and
+                not title.lower().startswith(("epic:", "[epic]")) else "label/title",
         )
     )
 
@@ -271,8 +298,8 @@ if not rows:
     configured = ", ".join(sorted(ALLOWED))
     print(
         "portfolio: UNVERIFIED — the board returned zero epic issues for the "
-        f"configured repositories ({configured}). An epic needs an `epic` label "
-        "or an `Epic:`/`[EPIC]` title prefix; this is not evidence of no work.",
+        f"configured repositories ({configured}). A candidate needs an `epic` label, "
+        "an `Epic:`/`[EPIC]` title prefix, or a sub-issue; this is not evidence of no work.",
         file=sys.stderr,
     )
     raise SystemExit(3)
@@ -287,7 +314,7 @@ print(
     f"Project v2 {board['owner']}/#{board['number']} epic coordination view "
     "(verify live PR/check state before decisions):"
 )
-for repo, number, status, live_state, work_type, area, flag, title, url in rows:
+for repo, number, status, live_state, work_type, area, flag, title, url, children_count, signal in rows:
     mismatch = (live_state == "CLOSED" and status not in {"Done", "Cancelled"}) or (
         live_state == "OPEN" and status in {"Done", "Cancelled"}
     )
@@ -295,6 +322,10 @@ for repo, number, status, live_state, work_type, area, flag, title, url in rows:
     mismatch_note = " [BOARD/LIVE MISMATCH]" if mismatch else ""
     print(f"  {status:<12} {repo}#{number}{suffix} — {title}{mismatch_note}")
     print(f"               {url}; live={live_state}")
+    if signal == "sub-issues":
+        print(f"               EPIC CANDIDATE (sub-issues): {children_count} child(ren); confirm with the owning issue")
+    else:
+        print("               EPIC CANDIDATE (label/title): confirm role with the owning issue")
     details = []
     if work_type:
         details.append(f"type={work_type}")
@@ -305,8 +336,8 @@ for repo, number, status, live_state, work_type, area, flag, title, url in rows:
 
 covered = {row[0] for row in rows}
 expected = set(ALIASES)
-print(f"Coverage: {len(rows)} epic issue(s) across {len(covered)} repo(s)")
+print(f"Coverage: {len(rows)} epic candidate(s) across {len(covered)} repo(s)")
 missing = sorted(expected - covered)
 if missing:
-    print(f"Coverage note: no epic issue on the board for {', '.join(missing)}")
+    print(f"Coverage note: no epic candidate on the board for {', '.join(missing)}")
 print("Parent/Sub-issues progress: unavailable from the Project v2 API; inspect active epic issues directly.")
