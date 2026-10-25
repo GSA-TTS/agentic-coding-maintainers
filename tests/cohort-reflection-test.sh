@@ -128,6 +128,38 @@ boundary_queue = module.reflect(read([pre_due, at_due]), as_of, key)["needs_main
 assert boundary_queue[0]["case_label"] == module.pseudonym("at-due", key)
 assert boundary_queue[0]["age_whole_days"] == 7 and boundary_queue[0]["review_due"] is True
 assert boundary_queue[1]["age_whole_days"] == 6 and boundary_queue[1]["review_due"] is False
+# A maintainer decision is a new event, never a rewrite of intake. It removes
+# the old unknown from the operational queue, even outside the 28-day cohort.
+corrected = dict(row("older-unknown", 39, "eligibility_correction",
+                     intake_event_id="e36", replacement="eligible", reason_code="eligibility_review"),
+                 occurred_at="2026-10-18T00:00:00Z", recorded_at="2026-10-18T01:00:00Z")
+with_correction = module.reflect(read([older, corrected]), as_of, key)
+assert with_correction["needs_maintainer_disposition"] == []
+assert older["eligibility"] == "unknown"
+assert with_correction["coverage"] == "no_eligible_evidence"  # no retroactive addition to the cohort
+assert with_correction["eligibility_correction_count"] == 0  # count is scoped to the intake cohort
+fresh_unknown = dict(row("new-unknown", 40, "intake", case_type="review", eligibility="unknown"),
+                     occurred_at="2026-10-10T00:00:00Z", recorded_at="2026-10-10T01:00:00Z")
+fresh_fix = dict(row("new-unknown", 41, "eligibility_correction",
+                     intake_event_id="e40", replacement="eligible", reason_code="eligibility_review"),
+                 occurred_at="2026-10-11T00:00:00Z", recorded_at="2026-10-11T01:00:00Z")
+fixed_report = module.reflect(read([fresh_unknown, fresh_fix]), as_of, key)
+assert fixed_report["eligible_ids"] == []  # original intake cohort does not change
+assert fixed_report["unknown_eligibility_ids"] == [module.pseudonym("new-unknown", key)]
+assert fixed_report["needs_maintainer_disposition"] == []
+assert fixed_report["intake_cohort_count"] == 1
+assert fixed_report["original_eligibility_counts"] == {"eligible": 0, "excluded": 0, "unknown": 1}
+assert fixed_report["effective_eligibility_labels"]["eligible"] == [module.pseudonym("new-unknown", key)]
+assert fixed_report["eligibility_correction_count"] == 1
+assert fixed_report["corrected_case_labels"] == [module.pseudonym("new-unknown", key)]
+assert module.reflect(read([fresh_unknown, fresh_fix]), datetime(2026, 10, 10, 12, tzinfo=timezone.utc), key)["unknown_eligibility_ids"] == [module.pseudonym("new-unknown", key)]
+refuses([fresh_unknown, dict(fresh_fix, intake_event_id="missing")])
+refuses([fresh_unknown, dict(fresh_fix, replacement="unknown")])
+refuses([fresh_unknown, dict(fresh_fix, reason_code="free text")])
+refuses([fresh_unknown, fresh_fix, dict(fresh_fix, event_id="e42", replacement="excluded")])
+# A recorded correction must not claim to have been made before the intake was
+# actually recorded, even if the intake's backdated occurred_at came first.
+refuses([fresh_unknown, dict(fresh_fix, occurred_at="2026-10-10T00:30:00Z")])
 try:
     module.events_from(b'{"truncated":true}', as_of)
 except module.Unverified:

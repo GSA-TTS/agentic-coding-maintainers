@@ -9,9 +9,11 @@ adopt.
 The initial intake sources and eligibility policy are recorded in
 [`INTAKE-INVENTORY.md`](INTAKE-INVENTORY.md). Routine dependencies are in scope;
 duplicates, suspected spam and external PRs await maintainer disposition.
-Verified-outcome criteria are deliberately a separate decision. Corrections to
-intake and rework classifications should become an explicit process-quality
-measure, rather than edits that erase the original decision.
+Verified-outcome criteria are deliberately a separate decision. An eligibility
+correction now preserves the original intake decision as an append-only event;
+source, duplicate-map and rework corrections, plus disposition-delay measures,
+remain follow-up work under issue #30. Corrections are a process-quality signal,
+not a productivity target.
 
 ## V1: what is measurable now
 

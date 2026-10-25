@@ -24,9 +24,10 @@ MAX_SOURCES = 20
 MAX_REQUESTS = 2000
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
-TYPES = {"intake", "transition", "review", "rework", "handoff", "outcome"}
+TYPES = {"intake", "transition", "review", "rework", "handoff", "outcome", "eligibility_correction"}
 STATES = {"open", "blocked", "cancelled", "abandoned", "ready_for_human_review"}
 ELIGIBILITY = {"eligible", "excluded", "unknown"}
+CORRECTION_REASONS = {"duplicate_review", "spam_review", "external_pr_review", "eligibility_review", "clerical_error"}
 CASE_TYPES = {"implementation", "review", "security", "documentation", "other"}
 CHECKS = {"passing", "failing", "unavailable", "unknown", "not_applicable"}
 SHARED = {"schema_version", "event_id", "case_id", "event_type", "occurred_at", "recorded_at"}
@@ -37,6 +38,7 @@ FIELDS = {
     "rework": {"review_event_id", "changed_sha", "substantive"},
     "handoff": {"head_sha", "review_event_id", "checks"},
     "outcome": {"head_sha", "handoff_event_id", "repository_event_id"},
+    "eligibility_correction": {"intake_event_id", "replacement", "reason_code"},
 }
 
 
@@ -121,6 +123,7 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
     seen: dict[str, dict] = {}
     intake: dict[str, datetime] = {}
     prior_recorded: datetime | None = None
+    corrected: set[str] = set()
     for line in lines:
         try:
             event = json.loads(line, object_pairs_hook=unique_fields)
@@ -161,6 +164,16 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
             raise Unverified("head SHA is invalid")
         elif kind == "review" and (not isinstance(event["independent"], str) or event["independent"] not in {"yes", "no", "unknown"}):
             raise Unverified("review independence is invalid")
+        elif kind == "eligibility_correction":
+            reference = event["intake_event_id"]
+            target = seen.get(reference) if isinstance(reference, str) else None
+            if (target is None or target["event_type"] != "intake" or target["case_id"] != event["case_id"] or
+                    event["case_id"] in corrected or occurred < timestamp(target["recorded_at"]) or
+                    not isinstance(event["replacement"], str) or event["replacement"] not in ELIGIBILITY or
+                    event["replacement"] == target["eligibility"] or
+                    not isinstance(event["reason_code"], str) or event["reason_code"] not in CORRECTION_REASONS):
+                raise Unverified("eligibility correction is invalid, duplicate or cross-case")
+            corrected.add(event["case_id"])
         elif kind in {"handoff", "rework", "outcome"}:
             ref_field = "handoff_event_id" if kind == "outcome" else "review_event_id"
             referenced = seen.get(event[ref_field])
@@ -202,6 +215,12 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         case_id: rows for case_id, rows in case_events.items()
         if start <= timestamp(rows[0]["occurred_at"]) < as_of
     }
+    effective = {cid: next((row["replacement"] for row in reversed(rows)
+                            if row["event_type"] == "eligibility_correction"), rows[0]["eligibility"])
+                 for cid, rows in case_events.items()}
+    # Keep the historical intake cohort frozen at the ORIGINAL classification.
+    # A later correction changes the operational queue, not the denominator
+    # that an earlier intake decision was measured against.
     eligible = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "eligible")
     excluded = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "excluded")
     unknown = sorted(cid for cid, rows in cohort.items() if rows[0]["eligibility"] == "unknown")
@@ -214,7 +233,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     # oldest unresolved case disappears merely because time passed.
     queued = []
     for cid, rows in case_events.items():
-        if rows[0]["eligibility"] != "unknown":
+        if effective[cid] != "unknown":
             continue
         elapsed = as_of - timestamp(rows[0]["occurred_at"])
         if elapsed.total_seconds() < 0:
@@ -257,6 +276,15 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "intake_completeness": "UNMEASURED: independent request inventory absent",
         "eligible_ids": [label[cid] for cid in eligible], "excluded_ids": [label[cid] for cid in excluded],
         "unknown_eligibility_ids": [label[cid] for cid in unknown],
+        "eligibility_correction_count": sum(any(row["event_type"] == "eligibility_correction" for row in cohort[cid]) for cid in cohort),
+        "intake_cohort_count": len(cohort),
+        "original_eligibility_counts": {"eligible": len(eligible), "excluded": len(excluded), "unknown": len(unknown)},
+        "corrected_case_labels": sorted(label[cid] for cid in cohort if any(
+            row["event_type"] == "eligibility_correction" for row in cohort[cid])),
+        "effective_eligibility_labels": {
+            status: sorted(label[cid] for cid in cohort if effective[cid] == status)
+            for status in ("eligible", "excluded", "unknown")
+        },
         "needs_maintainer_disposition": disposition_queue,
         "disposition_policy": "manual review; review_due after 7 days; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
@@ -334,17 +362,30 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
     if not required or not source_names <= required:
         raise Unverified("required source set is missing or inventory has unapproved sources")
     incomplete |= required - source_names
-    recorded = {event["case_id"]: event for event in events if event["event_type"] == "intake" and
-                timestamp(event["recorded_at"]) <= as_of and start <= timestamp(event["occurred_at"]) < as_of}
+    cases: dict[str, list[dict]] = {}
+    for event in events:
+        if timestamp(event["recorded_at"]) <= as_of:
+            cases.setdefault(event["case_id"], []).append(event)
+    recorded = {cid: rows for cid, rows in cases.items() if start <= timestamp(rows[0]["occurred_at"]) < as_of}
     missing = eligible - recorded.keys()
     extra = recorded.keys() - observed
     conflicting = {cid for cid in observed & recorded.keys() if
-                   timestamp(recorded[cid]["occurred_at"]) < received_at[cid] or
-                   (cid in eligible and recorded[cid]["eligibility"] != "eligible") or
-                   (cid in excluded and recorded[cid]["eligibility"] != "excluded") or
-                   (cid in unknown and recorded[cid]["eligibility"] != "unknown")}
+                   timestamp(recorded[cid][0]["occurred_at"]) < received_at[cid] or
+                   (cid in eligible and next((row["replacement"] for row in reversed(recorded[cid])
+                                              if row["event_type"] == "eligibility_correction"), recorded[cid][0]["eligibility"]) != "eligible") or
+                   (cid in excluded and next((row["replacement"] for row in reversed(recorded[cid])
+                                              if row["event_type"] == "eligibility_correction"), recorded[cid][0]["eligibility"]) != "excluded") or
+                   (cid in unknown and next((row["replacement"] for row in reversed(recorded[cid])
+                                             if row["event_type"] == "eligibility_correction"), recorded[cid][0]["eligibility"]) != "unknown")}
     matched = {cid for cid in eligible if cid in recorded and cid not in conflicting}
-    status = "operator_asserted_source_coverage" if eligible and not missing and not incomplete and not unknown and not extra and not conflicting else "UNVERIFIED"
+    # The inventory has no eligibility-decision timestamp. It cannot tell
+    # whether its classification applied BEFORE or AFTER a correction, even
+    # when the label happens to match. Refuse a positive coverage status until
+    # an independently evidenced source-decision-time contract exists.
+    corrected = {cid for cid, rows in recorded.items() if any(
+        row["event_type"] == "eligibility_correction" for row in rows)}
+    matched -= corrected
+    status = "operator_asserted_source_coverage" if eligible and not missing and not incomplete and not unknown and not extra and not conflicting and not corrected else "UNVERIFIED"
     return {
         "status": status,
         "scope": "eligible requests in declared, operator-provided enumerations only; not all real-world requests",
@@ -354,6 +395,7 @@ def reconcile_inventory(data: bytes, events: list[dict], as_of: datetime, key: b
         "unknown_eligibility_labels": sorted(pseudonym(cid, key) for cid in unknown),
         "ledger_only_labels": sorted(pseudonym(cid, key) for cid in extra),
         "conflicting_eligibility_labels": sorted(pseudonym(cid, key) for cid in conflicting),
+        "uncorroborated_correction_labels": sorted(pseudonym(cid, key) for cid in corrected),
         "incomplete_source_labels": sorted(pseudonym(cid, key) for cid in incomplete),
         "inventory_identity_hmac": hmac.new(key, b"inventory-identity-v1\0" + data, hashlib.sha256).hexdigest(),
     }

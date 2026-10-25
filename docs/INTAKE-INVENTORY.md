@@ -14,9 +14,14 @@ reviewed one-to-one identity mapping rather than matching titles or dates.
 **Routine dependency work is eligible.** Duplicate, suspected spam and
 external-PR requests require maintainer review; do not automatically exclude
 them or silently omit them from the inventory. Record `eligibility: "unknown"`
-until a maintainer makes a reasoned disposition. A requested exclusion also
-requires a reasoned, append-only correction record (not implemented yet), so
-this pilot must not be treated as an eligibility decision engine.
+until a maintainer makes a reasoned disposition. An eligibility change uses an
+append-only `eligibility_correction` event referencing its intake and a bounded
+reason code. This pilot remains a human-disposition workflow, not an eligibility
+decision engine; corrections for source/duplicate mappings are not yet built.
+The inventory carries no timestamp for when its eligibility decision was made,
+so **any corrected case makes conditional intake coverage UNVERIFIED** even if
+the current labels match. A correction does not rewrite the original intake
+cohort or establish historical source eligibility.
 
 The meaning and evidence requirements of a **verified outcome** remain an
 open policy decision. Neither `ready_for_human_review`, a ledger `outcome`
@@ -32,8 +37,10 @@ corrected, by intake cohort and by original decision. Preserve the first
 classification and correction time so a high correction rate prompts a
 workflow review, not blame or pressure to suppress corrections. Report cases
 awaiting disposition beside corrected cases; otherwise avoiding a decision
-would falsely improve the rate. The current event schema has no correction
-event, so none of these numbers is measurable yet.
+would falsely improve the rate. This slice counts corrected cases in the
+current intake cohort and preserves initial eligibility; correction delay,
+source/duplicate/rework corrections and full classification-quality measures
+are not yet implemented.
 
 The case ledger cannot reveal requests never recorded as cases. To measure a
 bounded intake denominator, capture a **separate**, private request inventory
