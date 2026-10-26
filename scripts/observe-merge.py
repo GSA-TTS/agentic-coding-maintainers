@@ -150,6 +150,8 @@ def observe(mapping, get=github_get):
         raise Unverified("GitHub PR identity disagrees with mapping")
     if not isinstance(pr.get("head"), dict) or pr["head"].get("sha") != head:
         raise Unverified("GitHub PR head disagrees with mapping")
+    if pr.get("state") not in {"open", "closed"} or not isinstance(pr.get("state"), str):
+        raise Unverified("GitHub PR state is unavailable or malformed")
     merged = pr.get("merged")
     if type(merged) is not bool:
         raise Unverified("GitHub merge state is not measured")
@@ -157,6 +159,8 @@ def observe(mapping, get=github_get):
         if pr.get("merged_at") is not None:
             raise Unverified("unmerged PR has contradictory merge time")
         return "NOT_MERGED"
+    if pr["state"] != "closed":
+        raise Unverified("merged PR has contradictory open state")
     merged_at, commit = pr.get("merged_at"), pr.get("merge_commit_sha")
     if not isinstance(merged_at, str) or not isinstance(commit, str) or not SHA.fullmatch(commit):
         raise Unverified("merged PR lacks merge time or commit identity")
