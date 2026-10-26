@@ -17,7 +17,8 @@ null), and `merge_commit_sha` (full SHA or null). A reported
 `MERGE_CLAIM_IN_SUPPLIED_SNAPSHOT` means only that this *unproven input* is
 internally shaped like a merged PR at the expected head. Squash/rebase merge
 commit SHA may differ from the PR head. Missing/conflicting identity or merge
-evidence returns `UNVERIFIED` (exit 3); a correctly shaped open/closed PR is
+evidence, including an open PR with a non-null merge commit SHA or a future
+merge timestamp, returns `UNVERIFIED` (exit 3); a consistently shaped open/closed PR is
 reported as `NOT_MERGED_IN_SUPPLIED_SNAPSHOT` or
 `CLOSED_NOT_MERGED_IN_SUPPLIED_SNAPSHOT`. The probe does not read GitHub, bind a
 ledger case, inspect checks/reviews/rulesets, or claim delivery credit. It

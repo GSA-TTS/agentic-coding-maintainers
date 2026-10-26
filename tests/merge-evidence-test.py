@@ -41,8 +41,8 @@ def refuses(snapshot, **args):
 
 
 expects("MERGE_CLAIM_IN_SUPPLIED_SNAPSHOT", example())  # squash SHA != head
-expects("NOT_MERGED_IN_SUPPLIED_SNAPSHOT", example(state="OPEN", merged_at=None))
-expects("NOT_MERGED_IN_SUPPLIED_SNAPSHOT", example(state="OPEN", merged_at=None, merge_commit_sha=MERGE))
+expects("NOT_MERGED_IN_SUPPLIED_SNAPSHOT", example(state="OPEN", merged_at=None, merge_commit_sha=None))
+refuses(example(state="OPEN", merged_at=None, merge_commit_sha=MERGE))
 expects("CLOSED_NOT_MERGED_IN_SUPPLIED_SNAPSHOT", example(merged_at=None, merge_commit_sha=None))
 expects("HEAD_MISMATCH_IN_SUPPLIED_SNAPSHOT", example(head_sha="c" * 40))
 refuses(example(repository="other/widgets"))
@@ -54,6 +54,7 @@ refuses(example(state="OPEN", head_sha="c" * 40))  # contradictory fields win ov
 refuses(example(merged_at=None, head_sha="c" * 40))
 refuses(example(merged_at="2026-99-99T99:99:99Z"))
 refuses(example(merged_at="2026-02-30T12:00:00Z"))
+refuses(example(merged_at="9999-12-31T12:00:00Z"))
 refuses(example(schema_version=True))
 refuses(example(extra="never echo this"))
 refuses(example(head_sha="not-a-sha"))

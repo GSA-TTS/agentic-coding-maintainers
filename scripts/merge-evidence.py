@@ -59,8 +59,12 @@ def parse_snapshot(data: bytes) -> dict:
             raise Unverified("merge timestamp has an impossible date or time") from exc
         if instant.tzinfo != timezone.utc:
             raise Unverified("merge timestamp must be UTC")
+        if instant > datetime.now(timezone.utc):
+            raise Unverified("merge timestamp is in the future")
     if value["state"] == "OPEN" and merged_at is not None:
         raise Unverified("open PR has a merge timestamp")
+    if value["state"] == "OPEN" and value["merge_commit_sha"] is not None:
+        raise Unverified("open PR has an ambiguous merge commit SHA")
     if value["state"] == "CLOSED" and merged_at is None and value["merge_commit_sha"] is not None:
         raise Unverified("closed PR has ambiguous merge evidence")
     if value["state"] == "CLOSED" and merged_at is not None and value["merge_commit_sha"] is None:
