@@ -23,11 +23,12 @@ so **any corrected case makes conditional intake coverage UNVERIFIED** even if
 the current labels match. A correction does not rewrite the original intake
 cohort or establish historical source eligibility.
 
-The meaning and evidence requirements of a **verified outcome** remain an
-open policy decision. Neither `ready_for_human_review`, a ledger `outcome`
-event, a passing check recorded by an operator nor a closed issue establishes
-verified completion by itself. Keep those outcomes UNVERIFIED while the
-decision is made separately.
+Delivery criteria are decided in [`VERIFIED-OUTCOMES.md`](VERIFIED-OUTCOMES.md),
+with check/review compliance reported separately. Neither
+`ready_for_human_review`, a ledger `outcome` claim nor a closed issue by itself
+establishes attested delivery. The reader's `verified_completion_ids` remains
+empty until an evidence-backed per-type attestor exists; historical current
+state is a labelled proxy, not at-event-time proof.
 
 ### Evaluation of the intake process itself
 
