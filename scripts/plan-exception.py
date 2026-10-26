@@ -90,7 +90,8 @@ def plan(value):
         if value["independent_work_ready"]:
             return "REVIEW_INDEPENDENT_WORK", "CI check deferred; unrelated ready work can be reviewed"
         return "DEFER_CI_MEASUREMENT", "CI availability blocks this check, not independent tasks"
-    if value["blocker"] == "CODE_BUG" and value["evidence_coverage"] == "complete" and value["task_head_sha"] == value["evidence_head_sha"]:
+    if (value["blocker"] == "CODE_BUG" and value["evidence_coverage"] == "complete" and
+            value["task_head_sha"] is not None and value["evidence_head_sha"] == value["task_head_sha"]):
         return "OWNER_REWORK_REVIEW", "reproducible failure is head-bound; owner fix then fixed-head review"
     if value["blocker"] == "MISSING_PROVENANCE" and value["measurement"] == "source_provenance" and value["attempts_for_head"] < 2:
         return "MEASURE_SOURCE_READ_ONLY", "bounded provenance measurement is still available"

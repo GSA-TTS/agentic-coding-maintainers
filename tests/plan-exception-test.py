@@ -54,6 +54,9 @@ action("REVIEW_INDEPENDENT_WORK", blocker="UNKNOWN", measurement="check_status",
        independent_work_ready=True)
 action("HUMAN_TRIAGE", blocker="UNKNOWN", measurement="check_status", attempts_for_head=2)
 action("HUMAN_TRIAGE", blocker="CODE_BUG", evidence_coverage="none", evidence_head_sha=HEAD)
+action("HUMAN_TRIAGE", blocker="CODE_BUG", evidence_coverage="complete", task_head_sha=None,
+       evidence_head_sha=None)
+action("HUMAN_TRIAGE", blocker="CODE_BUG", evidence_coverage="complete", evidence_head_sha=None)
 
 refuses(snapshot(schema_version=True))
 refuses(snapshot(blocker=[]))
