@@ -41,6 +41,19 @@ git -C "$REPO" worktree add -q -b task/one "$WORKTREE" "$base"
 printf 'change\n' >> "$WORKTREE/example.txt"
 git -C "$WORKTREE" add example.txt
 git -C "$WORKTREE" commit -q -m 'test: implementation'
+# A clean checkout may contain an uninitialized submodule. Add a gitlink
+# directly so the fixture remains offline and never executes nested Git config.
+GITLINK_REPO="$CONSUMER/gitlink-source"
+mkdir "$GITLINK_REPO"
+git -C "$GITLINK_REPO" init -q --template="$CONSUMER/empty-template"
+git -C "$GITLINK_REPO" config user.name "Orchestrator Test"
+git -C "$GITLINK_REPO" config user.email orchestrator-test@example.invalid
+printf 'nested\n' > "$GITLINK_REPO/nested.txt"
+git -C "$GITLINK_REPO" add nested.txt
+git -C "$GITLINK_REPO" commit -q -m 'test: nested fixture'
+gitlink_head="$(git -C "$GITLINK_REPO" rev-parse HEAD)"
+git -C "$WORKTREE" update-index --add --cacheinfo "160000,$gitlink_head,vendor/dependency"
+git -C "$WORKTREE" commit -q -m 'test: add uninitialized gitlink'
 head="$(git -C "$WORKTREE" rev-parse HEAD)"
 "$CMD" update-head production-task "$head" >/dev/null
 
@@ -103,6 +116,21 @@ git -C "$REPO" worktree add -q --detach "$REVIEW_WORKTREE" "$head"
 "$CMD" record fixed-review reviewer qa --reviewed-sha "$head" >/dev/null
 "$CMD" record fixed-review validation 'fixed review evidence' >/dev/null
 "$CMD" transition fixed-review 'Ready for human review' >/dev/null
+
+# Populating a gitlink changes what the reviewer can read and must remain a
+# verified dirty-checkout refusal without invoking Git inside the directory.
+git -C "$REPO" worktree add -q --detach "$CONSUMER/work/dirty-gitlink-review" "$head"
+mkdir -p "$CONSUMER/work/dirty-gitlink-review/vendor/dependency"
+printf 'local content\n' > "$CONSUMER/work/dirty-gitlink-review/vendor/dependency/local.txt"
+"$CMD" create dirty-gitlink-review --scope 'example/repo:pr:dirty-gitlink' --kind review \
+  --repo example/repo --worktree "$CONSUMER/work/dirty-gitlink-review" --head-sha "$head" >/dev/null
+"$CMD" claim dirty-gitlink-review --owner reviewer --pid $$ >/dev/null
+set +e
+"$CMD" transition dirty-gitlink-review Reviewing >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 4 ]]
+grep -q '"state": "Claimed"' "$CONSUMER/.orchestrator/tasks/dirty-gitlink-review/task.json"
 
 # An ignored file changes what a test or reviewer may read. The fixed-head
 # readiness check must reject it, even though `git status` may omit it.
