@@ -7,6 +7,8 @@ It performs at most two public `api.github.com` **GET** calls: one for that PR, 
 commit lookup when GitHub says it merged. It checks that GitHub's PR identity,
 `gh --jq` projects only the allowlisted identity/merge fields before returning
 to this tool; the projected stdout and diagnostics are each bounded to 8 KiB.
+Presence flags distinguish an explicitly null merge field on an open PR from a
+field omitted by a degraded GitHub response; omitted fields are UNVERIFIED.
 Large PR bodies are discarded by the projection and never entered into the
 report. A host-side `gh` process still receives GitHub's full API response;
 its resource use is limited by the subprocess deadline, not the projected

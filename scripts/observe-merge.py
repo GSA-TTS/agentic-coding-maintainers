@@ -21,7 +21,7 @@ import subprocess
 import time
 
 MAX_BYTES = 8192
-PR_FIELDS = "{number,base:{repo:{full_name}},head:{sha},state,merged,merged_at,merge_commit_sha}"
+PR_FIELDS = "{number,base:{repo:{full_name}},head:{sha},state,merged,merged_at,merge_commit_sha,merged_at_present:has(\"merged_at\"),merge_commit_sha_present:has(\"merge_commit_sha\")}"
 COMMIT_FIELDS = "{sha}"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -159,6 +159,8 @@ def observe(mapping, get=github_get):
     merged = pr.get("merged")
     if type(merged) is not bool:
         raise Unverified("GitHub merge state is not measured")
+    if type(pr.get("merged_at_present")) is not bool or not pr["merged_at_present"] or type(pr.get("merge_commit_sha_present")) is not bool or not pr["merge_commit_sha_present"]:
+        raise Unverified("GitHub merge fields are omitted")
     if not merged:
         if pr.get("merged_at") is not None:
             raise Unverified("unmerged PR has contradictory merge time")

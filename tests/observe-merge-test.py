@@ -18,7 +18,7 @@ spec.loader.exec_module(module)
 HEAD, MERGE = "a" * 40, "b" * 40
 mapping = {"schema_version": 1, "case_id": "case-1", "repository": "acme/widgets", "number": 7, "head_sha": HEAD}
 pr = {"number": 7, "base": {"repo": {"full_name": "acme/widgets"}}, "head": {"sha": HEAD},
-      "state": "closed",
+      "state": "closed", "merged_at_present": True, "merge_commit_sha_present": True,
       "merged": True, "merged_at": "2020-01-01T12:00:00Z", "merge_commit_sha": MERGE}
 
 
@@ -61,6 +61,8 @@ refuses(dict(pr, merged_at=None))
 refuses(dict(pr, merged_at="9999-12-31T12:00:00Z"))
 refuses(dict(pr, merge_commit_sha=None))
 refuses(dict(pr, merged=False))
+refuses(dict(pr, merged=False, merged_at=None, merged_at_present=False))
+refuses(dict(pr, merged=False, merged_at=None, merge_commit_sha_present=False))
 refuses(dict(pr, state="open"))
 refuses(dict(pr, state=None))
 refuses({key: value for key, value in pr.items() if key != "state"})
@@ -118,7 +120,7 @@ stub.write_text(
     "assert url.startswith('https://api.github.com/repos/acme/widgets/')\n"
     "if url.endswith('/pulls/7'):\n"
     "  value=" + repr(dict(pr, body="x" * 100_000)) + "\n"
-    "  print(json.dumps({k:value[k] for k in ('number','base','head','state','merged','merged_at','merge_commit_sha')}))\n"
+    "  print(json.dumps({k:value[k] for k in ('number','base','head','state','merged','merged_at','merge_commit_sha','merged_at_present','merge_commit_sha_present')}))\n"
     "elif url.endswith('/commits/' + '" + MERGE + "'):\n"
     "  print(json.dumps({'sha':'" + MERGE + "'}))\n"
     "else: sys.exit(9)\n",
