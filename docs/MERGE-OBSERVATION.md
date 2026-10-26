@@ -6,9 +6,12 @@ The tool also requires a private, validated cohort ledger. It checks for one
 recorded implementation/documentation intake whose **effective eligibility**
 is eligible at observation time (either initially or through a validated
 correction), and
-rejects a contradictory recorded outcome head. These checks do **not**
-authenticate who confirmed the case-to-PR association: v1 ledger events carry
-no repository or PR identity, so the mapping remains unverified.
+exactly one matching `pr_association` event with `provenance: agent_recorded`;
+it rejects a contradictory recorded outcome head. These checks do **not**
+authenticate who confirmed the case-to-PR association. A signature can be an
+**optional** stronger provenance layer later, not a prerequisite for
+automating implementation and reviews. The association remains unverified as
+a maintainer decision and never grants cohort delivery credit.
 It performs at most two public `api.github.com` **GET** calls: one for that PR, and a
 commit lookup when GitHub says it merged. It checks that GitHub's PR identity,
 `gh --jq` projects only the allowlisted identity/merge fields before returning
@@ -35,10 +38,16 @@ the repository. Run:
 ```bash
 python3 -I -B scripts/observe-merge.py \
   --mapping /absolute/private/mapping.json \
-  --ledger /absolute/private/cases.jsonl --case-id opaque-case-id
+  --ledger /absolute/private/cases.jsonl \
+  --key-file /absolute/private/report.key --case-id opaque-case-id
 ```
 
-The output has no raw case ID, repository, title, branch or PR body. A positive
+The key is the same private 32–128-byte cohort report key used by
+`cohort-reflection.py`; no key is created or printed by this command. The
+result includes a **keyed HMAC of the exact ledger bytes** and the UTC
+observation time, so a later changed ledger cannot masquerade as the same
+snapshot. Neither is a signature on the agent's association or proof a human
+approved it. The output has no raw case ID, repository, title, branch or PR body. A positive
 `MERGE_OBSERVED_IN_GITHUB` is a **fresh read-only observation**, not an
 as-of-merge record, historical policy-compliance verdict, authorization to
 merge, or completed case in the cohort report. `cohort_delivery_credit` is

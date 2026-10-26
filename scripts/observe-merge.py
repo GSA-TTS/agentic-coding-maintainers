@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import datetime
 import hashlib
+import hmac
 import importlib.machinery
 import importlib.util
 import json
@@ -29,7 +30,7 @@ COMMIT_FIELDS = "{sha}"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CASE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
-VALIDATOR_SHA256 = "cd90fa7e40654aea1937b2cc2bfef43c8aa0ec1d6ee1975ba749098cb46129fa"
+VALIDATOR_SHA256 = "d8613320df169ecb6bfafce10f3bee5a4a11102a74d0433ab90cd3db14d88975"
 MAX_VALIDATOR_BYTES = 65536
 
 
@@ -93,12 +94,8 @@ def private_mapping(path):
     return value
 
 
-def bind_ledger(path, mapping):
-    """Check recorded case membership, never authenticate the PR association.
-
-    The v1 ledger has no repository or PR identity. A matching intake proves
-    only that a case was recorded; the caller-supplied link remains unverified.
-    """
+def load_validator():
+    """Load the reviewed ledger parser from exactly one pinned no-follow read."""
     # Importing a mutable sibling after a path check executes whatever bytes
     # the filesystem supplies at import time. Read ONE no-follow descriptor,
     # authenticate its complete bytes against the reviewed pin, then compile
@@ -140,9 +137,26 @@ def bind_ledger(path, mapping):
         loader.exec_module(reader)
     except Exception as exc:
         raise Unverified("trusted ledger validator unavailable") from exc
+    return reader
+
+
+def private_key(reader, path):
+    try:
+        key = reader.private_file(path)
+    except reader.Unverified as exc:
+        raise Unverified("private report key unavailable") from exc
+    if not 32 <= len(key) <= 128:
+        raise Unverified("private report key has invalid length")
+    return key
+
+
+def bind_ledger(path, mapping, key, reader=None):
+    """Check recorded case membership, never authenticate the PR association."""
+    reader = reader if reader is not None else load_validator()
     as_of = datetime.datetime.now(datetime.timezone.utc)
     try:
-        events = reader.events_from(reader.private_file(path), as_of)
+        data = reader.private_file(path)
+        events = reader.events_from(data, as_of)
     except reader.Unverified as exc:
         raise Unverified("private case ledger is unavailable or invalid") from exc
     if any(reader.timestamp(row["recorded_at"]) > as_of for row in events):
@@ -156,8 +170,17 @@ def bind_ledger(path, mapping):
                       if row["event_type"] == "eligibility_correction"), case[0]["eligibility"])
     if effective != "eligible":
         raise Unverified("mapping case is not recorded eligible")
+    links = [row for row in case if row["event_type"] == "pr_association"]
+    if len(links) != 1:
+        raise Unverified("case has no single recorded PR association")
+    link = links[0]
+    if (link["repository"], link["pr_number"], link["head_sha"]) != (
+        mapping["repository"], mapping["number"], mapping["head_sha"]
+    ):
+        raise Unverified("recorded PR association disagrees with supplied mapping")
     if any(row["event_type"] == "outcome" and row["head_sha"] != mapping["head_sha"] for row in case):
         raise Unverified("ledger outcome claim conflicts with mapped head")
+    return as_of, hmac.new(key, b"merge-ledger-v1\0" + data, hashlib.sha256).hexdigest()
 
 
 def github_get(endpoint, projection):
@@ -260,13 +283,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mapping", required=True, type=pathlib.Path)
     parser.add_argument("--ledger", required=True, type=pathlib.Path)
+    parser.add_argument("--key-file", required=True, type=pathlib.Path)
     parser.add_argument("--case-id", required=True)
     args = parser.parse_args()
     try:
         mapping = private_mapping(args.mapping)
         if args.case_id != mapping["case_id"]:
             raise Unverified("requested case disagrees with private mapping")
-        bind_ledger(args.ledger, mapping)
+        # The report key is private, stable per consumer and never echoed.
+        # An unkeyed digest would permit guessing a small ledger offline.
+        reader = load_validator()
+        key = private_key(reader, args.key_file)
+        observed_at, ledger_identity = bind_ledger(args.ledger, mapping, key, reader)
         status = observe(mapping)
     except (Unverified, OSError, ValueError, TypeError, RecursionError) as exc:
         print(f"merge observation: UNVERIFIED — {exc if isinstance(exc, Unverified) else 'evidence unavailable'}", file=sys.stderr)
@@ -274,7 +302,9 @@ def main():
     # Never output raw case ID, repository or PR metadata. Pseudonyms need a
     # private key and case-ledger binding that this first attestor lacks.
     print(json.dumps({"schema_version": 1, "classification": status,
-                      "source": "fresh GitHub GET observation; recorded eligible intake; UNVERIFIED caller-supplied case-to-PR link",
+                      "source": "fresh GitHub GET observation; agent-recorded eligible case-to-PR link; association authenticity UNVERIFIED",
+                      "observed_at": observed_at.isoformat().replace("+00:00", "Z"),
+                      "ledger_identity_hmac": ledger_identity,
                       "policy_compliance": "UNMEASURED", "cohort_delivery_credit": False}, sort_keys=True))
     return 0
 
