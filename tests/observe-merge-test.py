@@ -108,10 +108,18 @@ fixture.chmod(0o700)
     "This private test directory is safe for operator disposal.\n", encoding="utf-8")
 private = fixture / "mapping.json"
 ledger = fixture / "cases.jsonl"
+key_file = fixture / "report.key"
+test_key = b"synthetic-merge-ledger-report-key!!"
+key_file.write_bytes(test_key)
+key_file.chmod(0o600)
 intake = {"schema_version": 1, "event_id": "intake-1", "case_id": "case-1", "event_type": "intake",
           "occurred_at": "2020-01-01T00:00:00Z", "recorded_at": "2020-01-01T00:01:00Z",
           "case_type": "implementation", "eligibility": "eligible"}
-ledger.write_text(json.dumps(intake) + "\n", encoding="utf-8")
+association = {"schema_version": 1, "event_id": "association-2", "case_id": "case-1", "event_type": "pr_association",
+               "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "2020-01-02T00:01:00Z",
+               "intake_event_id": "intake-1", "repository": "acme/widgets", "pr_number": 7,
+               "head_sha": HEAD, "provenance": "agent_recorded"}
+ledger.write_text(json.dumps(intake) + "\n" + json.dumps(association) + "\n", encoding="utf-8")
 ledger.chmod(0o600)
 
 
@@ -119,38 +127,44 @@ def check_binding(candidate, mapped=mapping, *, valid=True):
     ledger.write_text("".join(json.dumps(row) + "\n" for row in candidate), encoding="utf-8")
     ledger.chmod(0o600)
     if valid:
-        module.bind_ledger(ledger, mapped)
+        module.bind_ledger(ledger, mapped, test_key)
     else:
         try:
-            module.bind_ledger(ledger, mapped)
+            module.bind_ledger(ledger, mapped, test_key)
         except (module.Unverified, ValueError):
             pass
         else:
             raise AssertionError("invalid ledger association was accepted")
 
 
-check_binding([intake])
+check_binding([intake, association])
 check_binding([], valid=False)
 check_binding([dict(intake, case_id="other")], valid=False)
 check_binding([dict(intake, case_type="review")], valid=False)
 check_binding([dict(intake, eligibility="unknown")], valid=False)
 check_binding([dict(intake, eligibility="excluded")], valid=False)
 check_binding([dict(intake, recorded_at="9999-12-31T00:00:00Z")], valid=False)
+check_binding([intake], valid=False)
+check_binding([intake, dict(association, repository="other/widgets")], valid=False)
+check_binding([intake, dict(association, pr_number=8)], valid=False)
+check_binding([intake, dict(association, head_sha="c" * 40)], valid=False)
+check_binding([intake, association, dict(association, event_id="association-3")], valid=False)
+check_binding([intake, dict(association, provenance="maintainer_confirmed")], valid=False)
 valid_fix = {"schema_version": 1, "event_id": "correction-2", "case_id": "case-1",
              "event_type": "eligibility_correction", "intake_event_id": "intake-1",
              "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "2020-01-02T00:01:00Z",
              "replacement": "eligible", "reason_code": "eligibility_review"}
-check_binding([dict(intake, eligibility="unknown"), valid_fix], valid=True)
-check_binding([intake, dict(valid_fix, replacement="excluded")], valid=False)
+check_binding([dict(intake, eligibility="unknown"), valid_fix, association], valid=True)
+check_binding([intake, dict(valid_fix, replacement="excluded"), association], valid=False)
 future_fix = {"schema_version": 1, "event_id": "correction-2", "case_id": "case-1",
               "event_type": "eligibility_correction", "intake_event_id": "intake-1",
               "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "9999-12-31T00:00:00Z",
               "replacement": "eligible", "reason_code": "eligibility_review"}
-check_binding([dict(intake, eligibility="unknown"), future_fix], valid=False)
+check_binding([dict(intake, eligibility="unknown"), future_fix, association], valid=False)
 conflicting_review = {"schema_version": 1, "event_id": "review-2", "case_id": "case-1", "event_type": "review",
                       "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "2020-01-02T00:01:00Z",
                       "head_sha": "c" * 40, "independent": "yes"}
-check_binding([intake, conflicting_review], valid=True)  # no outcome claim yet
+check_binding([intake, association, conflicting_review], valid=True)  # no outcome claim yet
 # The v1 event chain requires review → handoff → outcome on the same case/head.
 review = dict(conflicting_review, head_sha="a" * 40)
 handoff = {"schema_version": 1, "event_id": "handoff-3", "case_id": "case-1", "event_type": "handoff",
@@ -159,10 +173,10 @@ handoff = {"schema_version": 1, "event_id": "handoff-3", "case_id": "case-1", "e
 outcome = {"schema_version": 1, "event_id": "outcome-4", "case_id": "case-1", "event_type": "outcome",
            "occurred_at": "2020-01-04T00:00:00Z", "recorded_at": "2020-01-04T00:01:00Z",
            "handoff_event_id": "handoff-3", "head_sha": "a" * 40, "repository_event_id": "merge-7"}
-check_binding([intake, review, handoff, outcome], valid=True)
-check_binding([intake, dict(review, head_sha="c" * 40), dict(handoff, head_sha="c" * 40),
+check_binding([intake, association, review, handoff, outcome], valid=True)
+check_binding([intake, association, dict(review, head_sha="c" * 40), dict(handoff, head_sha="c" * 40),
                dict(outcome, head_sha="c" * 40)], valid=False)
-check_binding([intake])  # restore the positive CLI fixture
+check_binding([intake, association])  # restore the positive CLI fixture
 # The validator is code, not ledger data: never follow a symlinked sibling or
 # leak a traceback if its import is broken. Do not mutate the checkout's
 # canonical validator: an interrupted test must not leave reviewed source
@@ -186,7 +200,7 @@ isolated_spec.loader.exec_module(isolated_module)
 validator.unlink()
 validator.symlink_to(validator_backup)
 try:
-    isolated_module.bind_ledger(ledger, mapping)
+    isolated_module.bind_ledger(ledger, mapping, test_key)
 except isolated_module.Unverified:
     pass
 else:
@@ -194,7 +208,7 @@ else:
 validator.unlink()
 validator.write_text("raise ImportError('synthetic broken validator')\n", encoding="utf-8")
 try:
-    isolated_module.bind_ledger(ledger, mapping)
+    isolated_module.bind_ledger(ledger, mapping, test_key)
 except isolated_module.Unverified:
     pass
 else:
@@ -228,7 +242,7 @@ else:
     raise AssertionError("world-readable mapping accepted")
 private.chmod(0o600)
 result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                         "--ledger", str(ledger), "--case-id", "other"],
+                         "--ledger", str(ledger), "--key-file", str(key_file), "--case-id", "other"],
                         capture_output=True, text=True, check=False)
 assert result.returncode == 3 and "UNVERIFIED" in result.stderr and not result.stdout
 # Exercise the SUCCESSFUL CLI through a local gh fixture, not only observe()
@@ -255,17 +269,18 @@ env = {**os.environ, "PATH": str(fixture) + os.pathsep + os.environ.get("PATH", 
 env.pop("GH_HOST", None)
 env.pop("GITHUB_HOST", None)
 success = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                          "--ledger", str(ledger), "--case-id", "case-1"],
+                          "--ledger", str(ledger), "--key-file", str(key_file), "--case-id", "case-1"],
                          env=env, capture_output=True, text=True, check=False, timeout=25)
 assert success.returncode == 0 and not success.stderr
 output = json.loads(success.stdout)
 assert output["classification"] == "MERGE_OBSERVED_IN_GITHUB"
 assert output["cohort_delivery_credit"] is False and output["policy_compliance"] == "UNMEASURED"
-assert "UNVERIFIED caller-supplied" in output["source"]
+assert "association authenticity UNVERIFIED" in output["source"]
+assert len(output["ledger_identity_hmac"]) == 64 and output["observed_at"].endswith("Z")
 assert "case-1" not in success.stdout and "acme/widgets" not in success.stdout
 env["GH_HOST"] = "other.example"
 wrong_host = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                             "--ledger", str(ledger), "--case-id", "case-1"],
+                             "--ledger", str(ledger), "--key-file", str(key_file), "--case-id", "case-1"],
                             env=env, capture_output=True, text=True, check=False, timeout=25)
 assert wrong_host.returncode == 3 and "UNVERIFIED" in wrong_host.stderr and not wrong_host.stdout
 # Failure-mode stub variants: none may return success JSON. The subprocess
@@ -278,7 +293,7 @@ def failure_stub(body):
     stub.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
     stub.chmod(0o700)
     attempted = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                                 "--ledger", str(ledger), "--case-id", "case-1"], env=env, capture_output=True, text=True,
+                                 "--ledger", str(ledger), "--key-file", str(key_file), "--case-id", "case-1"], env=env, capture_output=True, text=True,
                                check=False, timeout=25)
     assert attempted.returncode == 3 and "UNVERIFIED" in attempted.stderr and not attempted.stdout, attempted
 
@@ -300,7 +315,7 @@ stub.write_text(
 )
 stub.chmod(0o700)
 held_pipe = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                            "--ledger", str(ledger), "--case-id", "case-1"], env=env, capture_output=True, text=True,
+                            "--ledger", str(ledger), "--key-file", str(key_file), "--case-id", "case-1"], env=env, capture_output=True, text=True,
                            check=False, timeout=25)
 assert held_pipe.returncode == 3 and "UNVERIFIED" in held_pipe.stderr and not held_pipe.stdout
 assert child_pid.exists(), "child never started; test did not exercise process-group cleanup"
