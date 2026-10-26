@@ -3,7 +3,9 @@
 `scripts/observe-merge.py` takes a **caller-supplied, private mapping**
 from an opaque case ID to `owner/repo`, PR number and full expected head SHA.
 The tool also requires a private, validated cohort ledger. It checks for one
-recorded eligible implementation/documentation intake at that case ID and
+recorded implementation/documentation intake whose **effective eligibility**
+is eligible at observation time (either initially or through a validated
+correction), and
 rejects a contradictory recorded outcome head. These checks do **not**
 authenticate who confirmed the case-to-PR association: v1 ledger events carry
 no repository or PR identity, so the mapping remains unverified.

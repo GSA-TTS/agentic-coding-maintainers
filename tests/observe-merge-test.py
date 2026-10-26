@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -159,29 +160,45 @@ outcome = {"schema_version": 1, "event_id": "outcome-4", "case_id": "case-1", "e
            "occurred_at": "2020-01-04T00:00:00Z", "recorded_at": "2020-01-04T00:01:00Z",
            "handoff_event_id": "handoff-3", "head_sha": "a" * 40, "repository_event_id": "merge-7"}
 check_binding([intake, review, handoff, outcome], valid=True)
-check_binding([intake, review, handoff, dict(outcome, head_sha="c" * 40)], valid=False)
+check_binding([intake, dict(review, head_sha="c" * 40), dict(handoff, head_sha="c" * 40),
+               dict(outcome, head_sha="c" * 40)], valid=False)
 check_binding([intake])  # restore the positive CLI fixture
 # The validator is code, not ledger data: never follow a symlinked sibling or
-# leak a traceback if its import is broken. Preserve the original bytes/mode.
-validator = SCRIPT.with_name("cohort-reflection.py")
-validator_bytes = validator.read_bytes()
-validator_mode = validator.stat().st_mode & 0o777
+# leak a traceback if its import is broken. Do not mutate the checkout's
+# canonical validator: an interrupted test must not leave reviewed source
+# missing/replaced or race another reader. Run those cases on an isolated copy.
+isolated = fixture / "isolated-scripts"
+isolated.mkdir(mode=0o700)
+copy_script = isolated / SCRIPT.name
+shutil.copyfile(SCRIPT, copy_script)
+copy_script.chmod(0o600)
+validator = isolated / "cohort-reflection.py"
+validator_bytes = SCRIPT.with_name("cohort-reflection.py").read_bytes()
+validator.write_bytes(validator_bytes)
+validator.chmod(0o600)
 validator_backup = fixture / "validator-original.py"
 validator_backup.write_bytes(validator_bytes)
 validator_backup.chmod(0o600)
+isolated_spec = importlib.util.spec_from_file_location("isolated_observer", copy_script)
+assert isolated_spec and isolated_spec.loader
+isolated_module = importlib.util.module_from_spec(isolated_spec)
+isolated_spec.loader.exec_module(isolated_module)
+validator.unlink()
+validator.symlink_to(validator_backup)
 try:
-    validator.unlink()
-    validator.symlink_to(validator_backup)
-    check_binding([intake], valid=False)
-    validator.unlink()
-    validator.write_text("raise ImportError('synthetic broken validator')\n", encoding="utf-8")
-    validator.chmod(validator_mode)
-    check_binding([intake], valid=False)
-finally:
-    if validator.is_symlink():
-        validator.unlink()
-    validator.write_bytes(validator_bytes)
-    validator.chmod(validator_mode)
+    isolated_module.bind_ledger(ledger, mapping)
+except isolated_module.Unverified:
+    pass
+else:
+    raise AssertionError("symlinked validator accepted")
+validator.unlink()
+validator.write_text("raise ImportError('synthetic broken validator')\n", encoding="utf-8")
+try:
+    isolated_module.bind_ledger(ledger, mapping)
+except isolated_module.Unverified:
+    pass
+else:
+    raise AssertionError("changed validator accepted without a reviewed digest")
 private.write_text(json.dumps(mapping), encoding="utf-8")
 private.chmod(0o600)
 assert module.private_mapping(private) == mapping
