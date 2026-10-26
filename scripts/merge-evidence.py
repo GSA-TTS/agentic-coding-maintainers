@@ -76,7 +76,7 @@ def classify(value: dict, expected_repo: str, expected_number: int, expected_hea
     if value["repository"] != expected_repo or value["number"] != expected_number:
         raise Unverified("snapshot does not match requested repository and PR")
     if value["head_sha"] != expected_head:
-        return "HEAD_MISMATCH_IN_SUPPLIED_SNAPSHOT"
+        raise Unverified("snapshot head does not match requested head")
     if value["state"] == "OPEN":
         return "NOT_MERGED_IN_SUPPLIED_SNAPSHOT"
     if value["merged_at"] is None:

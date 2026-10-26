@@ -16,7 +16,8 @@ The input schema (`schema_version: 1`) has exactly `repository` (`owner/name`),
 null), and `merge_commit_sha` (full SHA or null). A reported
 `MERGE_CLAIM_IN_SUPPLIED_SNAPSHOT` means only that this *unproven input* is
 internally shaped like a merged PR at the expected head. Squash/rebase merge
-commit SHA may differ from the PR head. Missing/conflicting identity or merge
+commit SHA may differ from the PR head. Missing/conflicting identity, a
+head mismatch, or contradictory merge
 evidence, including an open PR with a non-null merge commit SHA or a future
 merge timestamp, returns `UNVERIFIED` (exit 3); a consistently shaped open/closed PR is
 reported as `NOT_MERGED_IN_SUPPLIED_SNAPSHOT` or

@@ -20,7 +20,7 @@ def run(snapshot, *, repository="acme/widgets", number=7, head=HEAD):
 def example(**changes):
     value = {"schema_version": 1, "repository": "acme/widgets", "number": 7,
              "state": "CLOSED", "head_sha": HEAD,
-             "merged_at": "2026-10-25T12:00:00Z", "merge_commit_sha": MERGE}
+             "merged_at": "2020-01-01T12:00:00Z", "merge_commit_sha": MERGE}
     value.update(changes)
     return value
 
@@ -44,7 +44,7 @@ expects("MERGE_CLAIM_IN_SUPPLIED_SNAPSHOT", example())  # squash SHA != head
 expects("NOT_MERGED_IN_SUPPLIED_SNAPSHOT", example(state="OPEN", merged_at=None, merge_commit_sha=None))
 refuses(example(state="OPEN", merged_at=None, merge_commit_sha=MERGE))
 expects("CLOSED_NOT_MERGED_IN_SUPPLIED_SNAPSHOT", example(merged_at=None, merge_commit_sha=None))
-expects("HEAD_MISMATCH_IN_SUPPLIED_SNAPSHOT", example(head_sha="c" * 40))
+refuses(example(head_sha="c" * 40))
 refuses(example(repository="other/widgets"))
 refuses(example(number=8))
 refuses(example(merged_at=None))  # closed with ambiguous merge_commit_sha
