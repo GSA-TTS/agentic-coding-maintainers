@@ -4,7 +4,7 @@ c4b7230239fea3efb5cccaba2bc5be629d0b909b2fec1018d7c4094244611eef  ./PROVENANCE.m
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 17ddcb478d99792ce3c443eefa164b5c86efa5de9e88d9b216c8b41dcab1cfbd  ./bin/orchestrator-monitor.py
 9db14f7955e7d611e525fdf2fa90d7bc41ba43223935a2a1351796d851f8d086  ./bin/orchestrator-monitor.sh
-a8380e1e68f31549ff7821c8eddc6f651f22776a3b345b07537d1de9e5cb50a7  ./bin/orchestrator-state.py
+5824b27d9c6747a2e7b904b0805820d669a4b2f51c6cc6836050d466dc18e1e1  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 db0a57e6bd55dddd40d4860e84e80e8beec7b866825f81d22d29b05cdca8e7e6  ./docs/OPERATOR-GUIDE.md
 532877ba1c91464c7efb09f0b3e39dfd3699b961508d5c55b081ef3afbceb58e  ./examples/gsa-agentic-coding.json
@@ -19,5 +19,5 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 da22255cf7ecf7fe73af425f999e9818bd82e6900db27cf494ad78bbdf6286f7  ./tests/fixtures/orchestrator-monitor-bin/gh
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh
 b87b1459c7f3bd39366bd2df59b6ba825826da956a48ca931cc4077a7354f9de  ./tests/orchestrator-monitor-test.sh
-6d47797f5943327b8ac04248fb43c392dd9cafbccd74773dc84c211d74e091f8  ./tests/orchestrator-production-worktree-test.sh
+ddb038285f9ba72ebd65f8e25f0f1e861611ce09607c1cbb36597c715f2a99ce  ./tests/orchestrator-production-worktree-test.sh
 e5b97e220f20c8ecb0a1209860ede2c52f95e03dd211be1774f33cc78cfe55f8  ./tests/orchestrator-state-test.sh
