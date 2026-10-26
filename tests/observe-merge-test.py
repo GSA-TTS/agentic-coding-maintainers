@@ -46,17 +46,29 @@ assert calls == [("repos/acme/widgets/pulls/7", module.PR_FIELDS),
 # a large PR body or distinguishes omitted fields from explicit null values.
 raw_pr = dict(pr, body="x" * 100_000)
 for label, value in (("complete", raw_pr),
-                     ("omitted", {key: item for key, item in raw_pr.items() if key != "merged_at"}),
-                     ("explicit-null", dict(raw_pr, merged_at=None))):
+                     ("omitted-time", {key: item for key, item in raw_pr.items() if key != "merged_at"}),
+                     ("explicit-null-time", dict(raw_pr, merged_at=None)),
+                     ("omitted-commit", {key: item for key, item in raw_pr.items() if key != "merge_commit_sha"}),
+                     ("explicit-null-commit", dict(raw_pr, merge_commit_sha=None))):
     projection = subprocess.run(["jq", "-c", module.PR_FIELDS], input=json.dumps(value).encode(),
                                 capture_output=True, check=False, timeout=5)
     assert projection.returncode == 0, projection.stderr
     projected = json.loads(projection.stdout)
     assert "body" not in projected and len(projection.stdout) < module.MAX_BYTES
-    assert projected["merged_at_present"] is (label != "omitted")
-    assert "merged_at" in projected
-    if label == "explicit-null":
+    assert projected["merged_at_present"] is (label != "omitted-time")
+    assert projected["merge_commit_sha_present"] is (label != "omitted-commit")
+    assert "merged_at" in projected and "merge_commit_sha" in projected
+    if label == "explicit-null-time":
         assert projected["merged_at"] is None
+    if label == "explicit-null-commit":
+        assert projected["merge_commit_sha"] is None
+    if label.startswith("omitted"):
+        refuses_projection = False
+        try:
+            module.observe(mapping, lambda _endpoint, _projection: projected)
+        except module.Unverified:
+            refuses_projection = True
+        assert refuses_projection, "an omitted raw merge field survived the projection"
 unmerged = dict(pr, merged=False, state="open", merged_at=None, merge_commit_sha=None)
 assert observed(unmerged)[0] == "NOT_MERGED"
 
