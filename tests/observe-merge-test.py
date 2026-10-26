@@ -106,6 +106,66 @@ fixture.chmod(0o700)
     "Synthetic case-to-PR mapping for tests/observe-merge-test.py; no real user data. "
     "This private test directory is safe for operator disposal.\n", encoding="utf-8")
 private = fixture / "mapping.json"
+ledger = fixture / "cases.jsonl"
+intake = {"schema_version": 1, "event_id": "intake-1", "case_id": "case-1", "event_type": "intake",
+          "occurred_at": "2020-01-01T00:00:00Z", "recorded_at": "2020-01-01T00:01:00Z",
+          "case_type": "implementation", "eligibility": "eligible"}
+ledger.write_text(json.dumps(intake) + "\n", encoding="utf-8")
+ledger.chmod(0o600)
+
+
+def check_binding(candidate, mapped=mapping, *, valid=True):
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in candidate), encoding="utf-8")
+    ledger.chmod(0o600)
+    if valid:
+        module.bind_ledger(ledger, mapped)
+    else:
+        try:
+            module.bind_ledger(ledger, mapped)
+        except (module.Unverified, ValueError):
+            pass
+        else:
+            raise AssertionError("invalid ledger association was accepted")
+
+
+check_binding([intake])
+check_binding([], valid=False)
+check_binding([dict(intake, case_id="other")], valid=False)
+check_binding([dict(intake, case_type="review")], valid=False)
+check_binding([dict(intake, eligibility="unknown")], valid=False)
+check_binding([dict(intake, eligibility="excluded")], valid=False)
+check_binding([dict(intake, recorded_at="9999-12-31T00:00:00Z")], valid=False)
+future_fix = {"schema_version": 1, "event_id": "correction-2", "case_id": "case-1",
+              "event_type": "eligibility_correction", "intake_event_id": "intake-1",
+              "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "9999-12-31T00:00:00Z",
+              "replacement": "eligible", "reason_code": "eligibility_review"}
+check_binding([dict(intake, eligibility="unknown"), future_fix], valid=False)
+conflicting_review = {"schema_version": 1, "event_id": "review-2", "case_id": "case-1", "event_type": "review",
+                      "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "2020-01-02T00:01:00Z",
+                      "head_sha": "c" * 40, "independent": "yes"}
+check_binding([intake, conflicting_review], valid=True)  # no outcome claim yet
+check_binding([intake])  # restore the positive CLI fixture
+# The validator is code, not ledger data: never follow a symlinked sibling or
+# leak a traceback if its import is broken. Preserve the original bytes/mode.
+validator = SCRIPT.with_name("cohort-reflection.py")
+validator_bytes = validator.read_bytes()
+validator_mode = validator.stat().st_mode & 0o777
+validator_backup = fixture / "validator-original.py"
+validator_backup.write_bytes(validator_bytes)
+validator_backup.chmod(0o600)
+try:
+    validator.unlink()
+    validator.symlink_to(validator_backup)
+    check_binding([intake], valid=False)
+    validator.unlink()
+    validator.write_text("raise ImportError('synthetic broken validator')\n", encoding="utf-8")
+    validator.chmod(validator_mode)
+    check_binding([intake], valid=False)
+finally:
+    if validator.is_symlink():
+        validator.unlink()
+    validator.write_bytes(validator_bytes)
+    validator.chmod(validator_mode)
 private.write_text(json.dumps(mapping), encoding="utf-8")
 private.chmod(0o600)
 assert module.private_mapping(private) == mapping
@@ -134,7 +194,8 @@ except module.Unverified:
 else:
     raise AssertionError("world-readable mapping accepted")
 private.chmod(0o600)
-result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private), "--case-id", "other"],
+result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
+                         "--ledger", str(ledger), "--case-id", "other"],
                         capture_output=True, text=True, check=False)
 assert result.returncode == 3 and "UNVERIFIED" in result.stderr and not result.stdout
 # Exercise the SUCCESSFUL CLI through a local gh fixture, not only observe()
@@ -161,7 +222,8 @@ env = {**os.environ, "PATH": str(fixture) + os.pathsep + os.environ.get("PATH", 
 env.pop("GH_HOST", None)
 env.pop("GITHUB_HOST", None)
 success = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                          "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False, timeout=25)
+                          "--ledger", str(ledger), "--case-id", "case-1"],
+                         env=env, capture_output=True, text=True, check=False, timeout=25)
 assert success.returncode == 0 and not success.stderr
 output = json.loads(success.stdout)
 assert output["classification"] == "MERGE_OBSERVED_IN_GITHUB"
@@ -170,7 +232,8 @@ assert "UNVERIFIED caller-supplied" in output["source"]
 assert "case-1" not in success.stdout and "acme/widgets" not in success.stdout
 env["GH_HOST"] = "other.example"
 wrong_host = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                             "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False, timeout=25)
+                             "--ledger", str(ledger), "--case-id", "case-1"],
+                            env=env, capture_output=True, text=True, check=False, timeout=25)
 assert wrong_host.returncode == 3 and "UNVERIFIED" in wrong_host.stderr and not wrong_host.stdout
 # Failure-mode stub variants: none may return success JSON. The subprocess
 # calling the CLI has its OWN timeout, so a hanging implementation goes red
@@ -182,7 +245,7 @@ def failure_stub(body):
     stub.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
     stub.chmod(0o700)
     attempted = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                                "--case-id", "case-1"], env=env, capture_output=True, text=True,
+                                 "--ledger", str(ledger), "--case-id", "case-1"], env=env, capture_output=True, text=True,
                                check=False, timeout=25)
     assert attempted.returncode == 3 and "UNVERIFIED" in attempted.stderr and not attempted.stdout, attempted
 
@@ -204,7 +267,7 @@ stub.write_text(
 )
 stub.chmod(0o700)
 held_pipe = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                            "--case-id", "case-1"], env=env, capture_output=True, text=True,
+                            "--ledger", str(ledger), "--case-id", "case-1"], env=env, capture_output=True, text=True,
                            check=False, timeout=25)
 assert held_pipe.returncode == 3 and "UNVERIFIED" in held_pipe.stderr and not held_pipe.stdout
 assert child_pid.exists(), "child never started; test did not exercise process-group cleanup"
