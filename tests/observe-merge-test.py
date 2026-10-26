@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts/observe-merge.py"
@@ -136,6 +137,8 @@ assert wrong_host.returncode == 3 and "UNVERIFIED" in wrong_host.stderr and not 
 # calling the CLI has its OWN timeout, so a hanging implementation goes red
 # instead of hanging the test suite indefinitely.
 env.pop("GH_HOST")
+
+
 def failure_stub(body):
     stub.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
     stub.chmod(0o700)
@@ -146,13 +149,34 @@ def failure_stub(body):
 
 
 failure_stub("import sys; sys.stdout.write('x'*9000)\n")
+failure_stub("import sys; sys.stderr.write('x'*9000)\n")
 failure_stub("print('not-json')\n")
 failure_stub("import sys; sys.exit(9)\n")
 failure_stub("import time; time.sleep(16)\n")
 # A child inherits gh's stdout and tries to outlive it. The observation must
 # terminate the isolated group and not wait forever for that open pipe.
-failure_stub("import subprocess,sys\n"
-             "subprocess.Popen([sys.executable,'-c','import time; time.sleep(16)'])\n"
-             "sys.exit(0)\n")
+child_pid = fixture / "child.pid"
+stub.write_text(
+    "#!/usr/bin/env python3\n"
+    "import json,subprocess,sys\n"
+    "subprocess.Popen([sys.executable,'-c'," + repr("import os,time; open(" + repr(str(child_pid)) + ", 'w').write(str(os.getpid())); time.sleep(16)") + "])\n"
+    "print(json.dumps(" + repr(pr) + "),flush=True)\n",
+    encoding="utf-8",
+)
+stub.chmod(0o700)
+held_pipe = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
+                            "--case-id", "case-1"], env=env, capture_output=True, text=True,
+                           check=False, timeout=25)
+assert held_pipe.returncode == 3 and "UNVERIFIED" in held_pipe.stderr and not held_pipe.stdout
+assert child_pid.exists(), "child never started; test did not exercise process-group cleanup"
+pid = int(child_pid.read_text(encoding="utf-8"))
+for _ in range(20):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError("GitHub helper child survived the timed-out observation")
 print("observe-merge tests: PASS")
 print("observe_merge_fixture=" + str(fixture), file=sys.stderr)
