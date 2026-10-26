@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -98,5 +99,38 @@ private.chmod(0o600)
 result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private), "--case-id", "other"],
                         capture_output=True, text=True, check=False)
 assert result.returncode == 3 and "UNVERIFIED" in result.stderr and not result.stdout
+# Exercise the SUCCESSFUL CLI through a local gh fixture, not only observe()
+# with a Python getter. It must keep delivery credit false and never emit raw
+# case/repo identity. The stub refuses any host other than api.github.com.
+stub = fixture / "gh"
+stub.write_text(
+    "#!/usr/bin/env python3\n"
+    "import json,sys\n"
+    "assert sys.argv[1:4] == ['api','--method','GET']\n"
+    "url=sys.argv[4]\n"
+    "assert url.startswith('https://api.github.com/repos/acme/widgets/')\n"
+    "if url.endswith('/pulls/7'):\n"
+    "  print(json.dumps(" + repr(pr) + "))\n"
+    "elif url.endswith('/commits/' + '" + MERGE + "'):\n"
+    "  print(json.dumps({'sha':'" + MERGE + "'}))\n"
+    "else: sys.exit(9)\n",
+    encoding="utf-8",
+)
+stub.chmod(0o700)
+env = {**os.environ, "PATH": str(fixture) + os.pathsep + os.environ.get("PATH", "")}
+env.pop("GH_HOST", None)
+env.pop("GITHUB_HOST", None)
+success = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
+                          "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False)
+assert success.returncode == 0 and not success.stderr
+output = json.loads(success.stdout)
+assert output["classification"] == "MERGE_OBSERVED_IN_GITHUB"
+assert output["cohort_delivery_credit"] is False and output["policy_compliance"] == "UNMEASURED"
+assert "UNVERIFIED caller-supplied" in output["source"]
+assert "case-1" not in success.stdout and "acme/widgets" not in success.stdout
+env["GH_HOST"] = "other.example"
+wrong_host = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
+                             "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False)
+assert wrong_host.returncode == 3 and "UNVERIFIED" in wrong_host.stderr and not wrong_host.stdout
 print("observe-merge tests: PASS")
 print("observe_merge_fixture=" + str(fixture), file=sys.stderr)

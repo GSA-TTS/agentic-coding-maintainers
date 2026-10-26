@@ -14,8 +14,10 @@ import json
 import os
 import pathlib
 import re
+import selectors
 import stat
 import subprocess
+import time
 
 MAX_BYTES = 8192
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -84,15 +86,48 @@ def private_mapping(path):
 
 
 def github_get(endpoint):
+    # GH_HOST and enterprise-api overrides must not redirect a relative API
+    # request to another host with the same owner/repo name. Use an absolute
+    # public GitHub API URL and fail if an inherited host selector is present.
+    if os.environ.get("GH_HOST") or os.environ.get("GITHUB_HOST"):
+        raise Unverified("GitHub host override is not supported")
+    if not isinstance(endpoint, str) or not endpoint.startswith("repos/"):
+        raise Unverified("GitHub endpoint is not allowlisted")
+    process = None
     try:
-        result = subprocess.run(["gh", "api", "--method", "GET", endpoint], capture_output=True,
-                                timeout=15, check=False)
+        process = subprocess.Popen(["gh", "api", "--method", "GET", f"https://api.github.com/{endpoint}"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output = bytearray()
+        diagnostic = bytearray()
+        deadline = time.monotonic() + 15
+        with selectors.DefaultSelector() as selector:
+            assert process.stdout and process.stderr
+            selector.register(process.stdout, selectors.EVENT_READ, output)
+            selector.register(process.stderr, selectors.EVENT_READ, diagnostic)
+            while selector.get_map():
+                if time.monotonic() >= deadline:
+                    raise Unverified("GitHub read timed out")
+                for key, _ in selector.select(timeout=min(0.25, max(0.0, deadline - time.monotonic()))):
+                    stream = key.fileobj
+                    descriptor = stream if isinstance(stream, int) else stream.fileno()
+                    chunk = os.read(descriptor, min(4096, MAX_BYTES + 1))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    key.data.extend(chunk)
+                    if len(key.data) > MAX_BYTES:
+                        raise Unverified("GitHub response exceeds byte limit")
+        remaining = max(0.0, deadline - time.monotonic())
+        if process.wait(timeout=remaining) != 0 or not output:
+            raise Unverified("GitHub returned no bounded evidence")
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Unverified("GitHub read unavailable") from exc
-    if result.returncode or len(result.stdout) > MAX_BYTES or not result.stdout:
-        raise Unverified("GitHub returned no bounded evidence")
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
     try:
-        return json.loads(result.stdout, object_pairs_hook=no_duplicates)
+        return json.loads(output, object_pairs_hook=no_duplicates)
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise Unverified("GitHub response malformed") from exc
 
@@ -142,7 +177,7 @@ def main():
     # Never output raw case ID, repository or PR metadata. Pseudonyms need a
     # private key and case-ledger binding that this first attestor lacks.
     print(json.dumps({"schema_version": 1, "classification": status,
-                      "source": "fresh GitHub GET observation; maintainer-confirmed private mapping",
+                      "source": "fresh GitHub GET observation; UNVERIFIED caller-supplied private mapping",
                       "policy_compliance": "UNMEASURED", "cohort_delivery_credit": False}, sort_keys=True))
     return 0
 
