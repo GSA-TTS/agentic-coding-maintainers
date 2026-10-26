@@ -41,5 +41,7 @@ completion. `cohort-reflection.py` deliberately leaves verified completion IDs
 empty. Event IDs and case IDs must be opaque; do not enter issue titles,
 credentials, raw PR text, worker names, hostnames, or findings. The CLI neither
 fetches GitHub nor sends event content to a model. Read-only cohort reflection,
-request-inventory reconciliation, other correction events, and current-head outcome
-attestation are separate concerns under issue #21.
+request-inventory reconciliation, other correction events, and category-specific
+delivery attestation (including private assessment evidence) are separate
+concerns under issue #21. Check and review compliance are measured separately
+where applicable; a private assessment must not need a public GitHub artifact.

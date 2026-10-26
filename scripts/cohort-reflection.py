@@ -261,7 +261,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         if any(row["event_type"] == "outcome" for row in rows):
             documented_outcomes.append(case_id)
         # Recorded outcomes remain unfinished for VERIFIED throughput until a
-        # separate repository/head/check attestation has been established.
+        # separate category-specific delivery attestation has been established.
         unfinished.append((case_id, latest,
                            round((as_of - timestamp(rows[0]["occurred_at"])).total_seconds() / 86400, 2)))
         if any(row["event_type"] == "review" and row["independent"] == "yes" for row in rows):
@@ -323,7 +323,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "needs_maintainer_disposition": disposition_queue,
         "disposition_policy": "manual review; review_due after 7 days since recording; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
-        "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: no live GitHub/head/check attestation",
+        "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: category-specific delivery attestation not implemented; compliance separately unmeasured",
         "unfinished_for_verified_throughput": sorted(
             ({"case_id": label[cid], "state": state, "age_days": age} for cid, state, age in unfinished),
             key=lambda row: (-row["age_days"], row["case_id"]),
@@ -332,7 +332,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "post_review_substantive_rework_ids": sorted(label[cid] for cid in reworked),
         "recommendations": [
             "Reconcile the intake cohort against an independently defined request inventory.",
-            "Verify outcome head, checks and repository event before counting any completion.",
+            "Verify category-specific delivery evidence before counting completion; report applicable check/review compliance separately.",
         ][:3],
     }
 
