@@ -10,6 +10,8 @@ if not sys.flags.isolated or not sys.dont_write_bytecode:
 import argparse
 import contextlib
 import datetime
+import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -27,6 +29,8 @@ COMMIT_FIELDS = "{sha}"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CASE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
+VALIDATOR_SHA256 = "cd90fa7e40654aea1937b2cc2bfef43c8aa0ec1d6ee1975ba749098cb46129fa"
+MAX_VALIDATOR_BYTES = 65536
 
 
 class Unverified(Exception):
@@ -95,16 +99,46 @@ def bind_ledger(path, mapping):
     The v1 ledger has no repository or PR identity. A matching intake proves
     only that a case was recorded; the caller-supplied link remains unverified.
     """
-    reader_path = pathlib.Path(__file__).absolute().with_name("cohort-reflection.py")
-    if reader_path.is_symlink() or not reader_path.is_file():
-        raise Unverified("trusted ledger validator unavailable")
-    spec = importlib.util.spec_from_file_location("cohort_reader_for_merge", reader_path)
-    if spec is None or spec.loader is None:
+    # Importing a mutable sibling after a path check executes whatever bytes
+    # the filesystem supplies at import time. Read ONE no-follow descriptor,
+    # authenticate its complete bytes against the reviewed pin, then compile
+    # precisely those bytes. A later canonical validator update requires an
+    # explicit reviewed pin change; a changed file cannot execute silently.
+    script = pathlib.Path(__file__).absolute()
+    with contextlib.ExitStack() as stack:
+        parent = os.open(script.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, parent)
+        try:
+            fd = os.open("cohort-reflection.py", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        except OSError as exc:
+            raise Unverified("trusted ledger validator unavailable") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_VALIDATOR_BYTES:
+                raise Unverified("trusted ledger validator unavailable")
+            with os.fdopen(fd, "rb") as handle:
+                fd = -1
+                source = handle.read(MAX_VALIDATOR_BYTES + 1)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    if not source or len(source) > MAX_VALIDATOR_BYTES or hashlib.sha256(source).hexdigest() != VALIDATOR_SHA256:
+        raise Unverified("trusted ledger validator digest mismatch")
+    class PinnedValidatorLoader(importlib.machinery.SourceFileLoader):
+        def get_code(self, fullname):
+            # SourceFileLoader normally reads a path (and possibly cached
+            # bytecode). Override that method: the loader can execute only the
+            # authenticated bytes already read from our single descriptor.
+            return compile(source, "<pinned cohort validator>", "exec")
+
+    loader = PinnedValidatorLoader("cohort_reader_for_merge", "<pinned cohort validator>")
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
         raise Unverified("trusted ledger validator unavailable")
     reader = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(reader)
-    except (OSError, SyntaxError, ImportError, ValueError, TypeError) as exc:
+        loader.exec_module(reader)
+    except Exception as exc:
         raise Unverified("trusted ledger validator unavailable") from exc
     as_of = datetime.datetime.now(datetime.timezone.utc)
     try:

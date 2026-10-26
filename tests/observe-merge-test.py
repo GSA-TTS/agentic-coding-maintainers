@@ -135,6 +135,12 @@ check_binding([dict(intake, case_type="review")], valid=False)
 check_binding([dict(intake, eligibility="unknown")], valid=False)
 check_binding([dict(intake, eligibility="excluded")], valid=False)
 check_binding([dict(intake, recorded_at="9999-12-31T00:00:00Z")], valid=False)
+valid_fix = {"schema_version": 1, "event_id": "correction-2", "case_id": "case-1",
+             "event_type": "eligibility_correction", "intake_event_id": "intake-1",
+             "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "2020-01-02T00:01:00Z",
+             "replacement": "eligible", "reason_code": "eligibility_review"}
+check_binding([dict(intake, eligibility="unknown"), valid_fix], valid=True)
+check_binding([intake, dict(valid_fix, replacement="excluded")], valid=False)
 future_fix = {"schema_version": 1, "event_id": "correction-2", "case_id": "case-1",
               "event_type": "eligibility_correction", "intake_event_id": "intake-1",
               "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "9999-12-31T00:00:00Z",
@@ -144,6 +150,16 @@ conflicting_review = {"schema_version": 1, "event_id": "review-2", "case_id": "c
                       "occurred_at": "2020-01-02T00:00:00Z", "recorded_at": "2020-01-02T00:01:00Z",
                       "head_sha": "c" * 40, "independent": "yes"}
 check_binding([intake, conflicting_review], valid=True)  # no outcome claim yet
+# The v1 event chain requires review → handoff → outcome on the same case/head.
+review = dict(conflicting_review, head_sha="a" * 40)
+handoff = {"schema_version": 1, "event_id": "handoff-3", "case_id": "case-1", "event_type": "handoff",
+           "occurred_at": "2020-01-03T00:00:00Z", "recorded_at": "2020-01-03T00:01:00Z",
+           "review_event_id": "review-2", "head_sha": "a" * 40, "checks": "passing"}
+outcome = {"schema_version": 1, "event_id": "outcome-4", "case_id": "case-1", "event_type": "outcome",
+           "occurred_at": "2020-01-04T00:00:00Z", "recorded_at": "2020-01-04T00:01:00Z",
+           "handoff_event_id": "handoff-3", "head_sha": "a" * 40, "repository_event_id": "merge-7"}
+check_binding([intake, review, handoff, outcome], valid=True)
+check_binding([intake, review, handoff, dict(outcome, head_sha="c" * 40)], valid=False)
 check_binding([intake])  # restore the positive CLI fixture
 # The validator is code, not ledger data: never follow a symlinked sibling or
 # leak a traceback if its import is broken. Preserve the original bytes/mode.
