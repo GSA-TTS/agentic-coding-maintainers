@@ -161,6 +161,8 @@ def observe(mapping, get=github_get):
         raise Unverified("GitHub merge state is not measured")
     if type(pr.get("merged_at_present")) is not bool or not pr["merged_at_present"] or type(pr.get("merge_commit_sha_present")) is not bool or not pr["merge_commit_sha_present"]:
         raise Unverified("GitHub merge fields are omitted")
+    if "merged_at" not in pr or "merge_commit_sha" not in pr:
+        raise Unverified("projected merge fields contradict presence flags")
     if not merged:
         if pr.get("merged_at") is not None:
             raise Unverified("unmerged PR has contradictory merge time")

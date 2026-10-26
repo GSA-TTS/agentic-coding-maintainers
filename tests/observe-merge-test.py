@@ -41,6 +41,22 @@ result, calls = observed()
 assert result == "MERGE_OBSERVED_IN_GITHUB"
 assert calls == [("repos/acme/widgets/pulls/7", module.PR_FIELDS),
                  ("repos/acme/widgets/commits/" + MERGE, module.COMMIT_FIELDS)]
+# Evaluate the EXACT --jq expression on raw synthetic API responses. The CLI
+# stub below manually emits projected JSON and cannot prove jq actually drops
+# a large PR body or distinguishes omitted fields from explicit null values.
+raw_pr = dict(pr, body="x" * 100_000)
+for label, value in (("complete", raw_pr),
+                     ("omitted", {key: item for key, item in raw_pr.items() if key != "merged_at"}),
+                     ("explicit-null", dict(raw_pr, merged_at=None))):
+    projection = subprocess.run(["jq", "-c", module.PR_FIELDS], input=json.dumps(value).encode(),
+                                capture_output=True, check=False, timeout=5)
+    assert projection.returncode == 0, projection.stderr
+    projected = json.loads(projection.stdout)
+    assert "body" not in projected and len(projection.stdout) < module.MAX_BYTES
+    assert projected["merged_at_present"] is (label != "omitted")
+    assert "merged_at" in projected
+    if label == "explicit-null":
+        assert projected["merged_at"] is None
 unmerged = dict(pr, merged=False, state="open", merged_at=None, merge_commit_sha=None)
 assert observed(unmerged)[0] == "NOT_MERGED"
 
@@ -63,6 +79,8 @@ refuses(dict(pr, merge_commit_sha=None))
 refuses(dict(pr, merged=False))
 refuses(dict(pr, merged=False, merged_at=None, merged_at_present=False))
 refuses(dict(pr, merged=False, merged_at=None, merge_commit_sha_present=False))
+refuses({k: v for k, v in dict(pr, merged=False).items() if k != "merged_at"})
+refuses({k: v for k, v in dict(pr, merged=False).items() if k != "merge_commit_sha"})
 refuses(dict(pr, state="open"))
 refuses(dict(pr, state=None))
 refuses({key: value for key, value in pr.items() if key != "state"})
