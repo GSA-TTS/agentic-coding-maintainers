@@ -121,7 +121,7 @@ env = {**os.environ, "PATH": str(fixture) + os.pathsep + os.environ.get("PATH", 
 env.pop("GH_HOST", None)
 env.pop("GITHUB_HOST", None)
 success = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                          "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False)
+                          "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False, timeout=25)
 assert success.returncode == 0 and not success.stderr
 output = json.loads(success.stdout)
 assert output["classification"] == "MERGE_OBSERVED_IN_GITHUB"
@@ -130,7 +130,29 @@ assert "UNVERIFIED caller-supplied" in output["source"]
 assert "case-1" not in success.stdout and "acme/widgets" not in success.stdout
 env["GH_HOST"] = "other.example"
 wrong_host = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
-                             "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False)
+                             "--case-id", "case-1"], env=env, capture_output=True, text=True, check=False, timeout=25)
 assert wrong_host.returncode == 3 and "UNVERIFIED" in wrong_host.stderr and not wrong_host.stdout
+# Failure-mode stub variants: none may return success JSON. The subprocess
+# calling the CLI has its OWN timeout, so a hanging implementation goes red
+# instead of hanging the test suite indefinitely.
+env.pop("GH_HOST")
+def failure_stub(body):
+    stub.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+    stub.chmod(0o700)
+    attempted = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "--mapping", str(private),
+                                "--case-id", "case-1"], env=env, capture_output=True, text=True,
+                               check=False, timeout=25)
+    assert attempted.returncode == 3 and "UNVERIFIED" in attempted.stderr and not attempted.stdout, attempted
+
+
+failure_stub("import sys; sys.stdout.write('x'*9000)\n")
+failure_stub("print('not-json')\n")
+failure_stub("import sys; sys.exit(9)\n")
+failure_stub("import time; time.sleep(16)\n")
+# A child inherits gh's stdout and tries to outlive it. The observation must
+# terminate the isolated group and not wait forever for that open pipe.
+failure_stub("import subprocess,sys\n"
+             "subprocess.Popen([sys.executable,'-c','import time; time.sleep(16)'])\n"
+             "sys.exit(0)\n")
 print("observe-merge tests: PASS")
 print("observe_merge_fixture=" + str(fixture), file=sys.stderr)

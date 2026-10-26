@@ -15,6 +15,7 @@ import os
 import pathlib
 import re
 import selectors
+import signal
 import stat
 import subprocess
 import time
@@ -96,7 +97,7 @@ def github_get(endpoint):
     process = None
     try:
         process = subprocess.Popen(["gh", "api", "--method", "GET", f"https://api.github.com/{endpoint}"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         output = bytearray()
         diagnostic = bytearray()
         deadline = time.monotonic() + 15
@@ -123,9 +124,19 @@ def github_get(endpoint):
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Unverified("GitHub read unavailable") from exc
     finally:
-        if process is not None and process.poll() is None:
-            process.kill()
+        if process is not None:
+            # A CLI may spawn a credential helper or a descendant retaining a
+            # pipe. Kill the whole isolated process group even when the direct
+            # gh process exited but a child kept stdout/stderr open.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             process.wait()
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
     try:
         return json.loads(output, object_pairs_hook=no_duplicates)
     except (ValueError, UnicodeError, RecursionError) as exc:
