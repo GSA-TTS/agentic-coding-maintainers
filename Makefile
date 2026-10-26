@@ -17,6 +17,7 @@ test:
 	bash tests/cohort-reflection-test.sh
 	python3 -I -B tests/append-cohort-event-test.py
 	python3 -I -B tests/intake-inventory-test.py
+	python3 -I -B tests/merge-evidence-test.py
 	bash tests/operating-surface-test.sh
 
 check: test
