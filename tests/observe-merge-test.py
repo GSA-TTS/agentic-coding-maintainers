@@ -25,8 +25,8 @@ pr = {"number": 7, "base": {"repo": {"full_name": "acme/widgets"}}, "head": {"sh
 def observed(response=pr, commit_sha=MERGE):
     calls = []
 
-    def get(endpoint):
-        calls.append(endpoint)
+    def get(endpoint, projection):
+        calls.append((endpoint, projection))
         if endpoint.endswith("/pulls/7"):
             return response
         if endpoint.endswith("/commits/" + MERGE):
@@ -39,7 +39,8 @@ def observed(response=pr, commit_sha=MERGE):
 
 result, calls = observed()
 assert result == "MERGE_OBSERVED_IN_GITHUB"
-assert calls == ["repos/acme/widgets/pulls/7", "repos/acme/widgets/commits/" + MERGE]
+assert calls == [("repos/acme/widgets/pulls/7", module.PR_FIELDS),
+                 ("repos/acme/widgets/commits/" + MERGE, module.COMMIT_FIELDS)]
 unmerged = dict(pr, merged=False, state="open", merged_at=None, merge_commit_sha=None)
 assert observed(unmerged)[0] == "NOT_MERGED"
 
@@ -113,9 +114,11 @@ stub.write_text(
     "import json,sys\n"
     "assert sys.argv[1:4] == ['api','--method','GET']\n"
     "url=sys.argv[4]\n"
+    "assert sys.argv[5] == '--jq' and sys.argv[6] in " + repr([module.PR_FIELDS, module.COMMIT_FIELDS]) + "\n"
     "assert url.startswith('https://api.github.com/repos/acme/widgets/')\n"
     "if url.endswith('/pulls/7'):\n"
-    "  print(json.dumps(" + repr(pr) + "))\n"
+    "  value=" + repr(dict(pr, body="x" * 100_000)) + "\n"
+    "  print(json.dumps({k:value[k] for k in ('number','base','head','state','merged','merged_at','merge_commit_sha')}))\n"
     "elif url.endswith('/commits/' + '" + MERGE + "'):\n"
     "  print(json.dumps({'sha':'" + MERGE + "'}))\n"
     "else: sys.exit(9)\n",

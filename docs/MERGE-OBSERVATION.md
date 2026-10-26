@@ -3,8 +3,14 @@
 `scripts/observe-merge.py` takes a **caller-supplied, private mapping**
 from an opaque case ID to `owner/repo`, PR number and full expected head SHA.
 The mapping is not authenticated as a maintainer decision in this slice.
-It performs at most two bounded public `api.github.com` **GET** calls: one for that PR, and a
+It performs at most two public `api.github.com` **GET** calls: one for that PR, and a
 commit lookup when GitHub says it merged. It checks that GitHub's PR identity,
+`gh --jq` projects only the allowlisted identity/merge fields before returning
+to this tool; the projected stdout and diagnostics are each bounded to 8 KiB.
+Large PR bodies are discarded by the projection and never entered into the
+report. A host-side `gh` process still receives GitHub's full API response;
+its resource use is limited by the subprocess deadline, not the projected
+output cap. It checks that GitHub's PR identity,
 base repository and head agree with the mapping; merged PRs require a valid
 closed state, merge time and corroborated merge commit. A response claiming
 `merged: true` while still `state: open` is contradictory and UNVERIFIED.

@@ -21,6 +21,8 @@ import subprocess
 import time
 
 MAX_BYTES = 8192
+PR_FIELDS = "{number,base:{repo:{full_name}},head:{sha},state,merged,merged_at,merge_commit_sha}"
+COMMIT_FIELDS = "{sha}"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CASE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
@@ -86,7 +88,7 @@ def private_mapping(path):
     return value
 
 
-def github_get(endpoint):
+def github_get(endpoint, projection):
     # GH_HOST and enterprise-api overrides must not redirect a relative API
     # request to another host with the same owner/repo name. Use an absolute
     # public GitHub API URL and fail if an inherited host selector is present.
@@ -94,9 +96,11 @@ def github_get(endpoint):
         raise Unverified("GitHub host override is not supported")
     if not isinstance(endpoint, str) or not endpoint.startswith("repos/"):
         raise Unverified("GitHub endpoint is not allowlisted")
+    if projection not in {PR_FIELDS, COMMIT_FIELDS}:
+        raise Unverified("GitHub projection is not allowlisted")
     process = None
     try:
-        process = subprocess.Popen(["gh", "api", "--method", "GET", f"https://api.github.com/{endpoint}"],
+        process = subprocess.Popen(["gh", "api", "--method", "GET", f"https://api.github.com/{endpoint}", "--jq", projection],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         output = bytearray()
         diagnostic = bytearray()
@@ -145,7 +149,7 @@ def github_get(endpoint):
 
 def observe(mapping, get=github_get):
     repository, number, head = mapping["repository"], mapping["number"], mapping["head_sha"]
-    pr = get(f"repos/{repository}/pulls/{number}")
+    pr = get(f"repos/{repository}/pulls/{number}", PR_FIELDS)
     if not isinstance(pr, dict) or type(pr.get("number")) is not int or pr["number"] != number or not isinstance(pr.get("base"), dict) or not isinstance(pr["base"].get("repo"), dict) or pr["base"]["repo"].get("full_name") != repository:
         raise Unverified("GitHub PR identity disagrees with mapping")
     if not isinstance(pr.get("head"), dict) or pr["head"].get("sha") != head:
@@ -170,7 +174,7 @@ def observe(mapping, get=github_get):
         raise Unverified("GitHub merge time is malformed") from exc
     if at.tzinfo != datetime.timezone.utc or at > datetime.datetime.now(datetime.timezone.utc):
         raise Unverified("GitHub merge time is not valid UTC history")
-    commit_data = get(f"repos/{repository}/commits/{commit}")
+    commit_data = get(f"repos/{repository}/commits/{commit}", COMMIT_FIELDS)
     if not isinstance(commit_data, dict) or commit_data.get("sha") != commit:
         raise Unverified("merge commit could not be corroborated")
     return "MERGE_OBSERVED_IN_GITHUB"
