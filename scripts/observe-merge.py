@@ -10,6 +10,9 @@ if not sys.flags.isolated or not sys.dont_write_bytecode:
 import argparse
 import contextlib
 import datetime
+import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import pathlib
@@ -26,6 +29,8 @@ COMMIT_FIELDS = "{sha}"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CASE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
+VALIDATOR_SHA256 = "cd90fa7e40654aea1937b2cc2bfef43c8aa0ec1d6ee1975ba749098cb46129fa"
+MAX_VALIDATOR_BYTES = 65536
 
 
 class Unverified(Exception):
@@ -86,6 +91,73 @@ def private_mapping(path):
     if not isinstance(value["head_sha"], str) or not SHA.fullmatch(value["head_sha"]):
         raise Unverified("expected head SHA is invalid")
     return value
+
+
+def bind_ledger(path, mapping):
+    """Check recorded case membership, never authenticate the PR association.
+
+    The v1 ledger has no repository or PR identity. A matching intake proves
+    only that a case was recorded; the caller-supplied link remains unverified.
+    """
+    # Importing a mutable sibling after a path check executes whatever bytes
+    # the filesystem supplies at import time. Read ONE no-follow descriptor,
+    # authenticate its complete bytes against the reviewed pin, then compile
+    # precisely those bytes. A later canonical validator update requires an
+    # explicit reviewed pin change; a changed file cannot execute silently.
+    script = pathlib.Path(__file__).absolute()
+    with contextlib.ExitStack() as stack:
+        parent = os.open(script.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, parent)
+        try:
+            fd = os.open("cohort-reflection.py", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        except OSError as exc:
+            raise Unverified("trusted ledger validator unavailable") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_VALIDATOR_BYTES:
+                raise Unverified("trusted ledger validator unavailable")
+            with os.fdopen(fd, "rb") as handle:
+                fd = -1
+                source = handle.read(MAX_VALIDATOR_BYTES + 1)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    if not source or len(source) > MAX_VALIDATOR_BYTES or hashlib.sha256(source).hexdigest() != VALIDATOR_SHA256:
+        raise Unverified("trusted ledger validator digest mismatch")
+    class PinnedValidatorLoader(importlib.machinery.SourceFileLoader):
+        def get_code(self, fullname):
+            # SourceFileLoader normally reads a path (and possibly cached
+            # bytecode). Override that method: the loader can execute only the
+            # authenticated bytes already read from our single descriptor.
+            return compile(source, "<pinned cohort validator>", "exec")
+
+    loader = PinnedValidatorLoader("cohort_reader_for_merge", "<pinned cohort validator>")
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise Unverified("trusted ledger validator unavailable")
+    reader = importlib.util.module_from_spec(spec)
+    try:
+        loader.exec_module(reader)
+    except Exception as exc:
+        raise Unverified("trusted ledger validator unavailable") from exc
+    as_of = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        events = reader.events_from(reader.private_file(path), as_of)
+    except reader.Unverified as exc:
+        raise Unverified("private case ledger is unavailable or invalid") from exc
+    if any(reader.timestamp(row["recorded_at"]) > as_of for row in events):
+        raise Unverified("private case ledger contains future-recorded events")
+    case = [row for row in events if row["case_id"] == mapping["case_id"]]
+    if not case or case[0]["event_type"] != "intake":
+        raise Unverified("mapping case has no recorded intake")
+    if case[0]["case_type"] not in {"implementation", "documentation"}:
+        raise Unverified("case type has no PR-merge delivery mapping")
+    effective = next((row["replacement"] for row in reversed(case)
+                      if row["event_type"] == "eligibility_correction"), case[0]["eligibility"])
+    if effective != "eligible":
+        raise Unverified("mapping case is not recorded eligible")
+    if any(row["event_type"] == "outcome" and row["head_sha"] != mapping["head_sha"] for row in case):
+        raise Unverified("ledger outcome claim conflicts with mapped head")
 
 
 def github_get(endpoint, projection):
@@ -187,12 +259,14 @@ def observe(mapping, get=github_get):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mapping", required=True, type=pathlib.Path)
+    parser.add_argument("--ledger", required=True, type=pathlib.Path)
     parser.add_argument("--case-id", required=True)
     args = parser.parse_args()
     try:
         mapping = private_mapping(args.mapping)
         if args.case_id != mapping["case_id"]:
             raise Unverified("requested case disagrees with private mapping")
+        bind_ledger(args.ledger, mapping)
         status = observe(mapping)
     except (Unverified, OSError, ValueError, TypeError, RecursionError) as exc:
         print(f"merge observation: UNVERIFIED — {exc if isinstance(exc, Unverified) else 'evidence unavailable'}", file=sys.stderr)
@@ -200,7 +274,7 @@ def main():
     # Never output raw case ID, repository or PR metadata. Pseudonyms need a
     # private key and case-ledger binding that this first attestor lacks.
     print(json.dumps({"schema_version": 1, "classification": status,
-                      "source": "fresh GitHub GET observation; UNVERIFIED caller-supplied private mapping",
+                      "source": "fresh GitHub GET observation; recorded eligible intake; UNVERIFIED caller-supplied case-to-PR link",
                       "policy_compliance": "UNMEASURED", "cohort_delivery_credit": False}, sort_keys=True))
     return 0
 

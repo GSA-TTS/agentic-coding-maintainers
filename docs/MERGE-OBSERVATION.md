@@ -2,7 +2,13 @@
 
 `scripts/observe-merge.py` takes a **caller-supplied, private mapping**
 from an opaque case ID to `owner/repo`, PR number and full expected head SHA.
-The mapping is not authenticated as a maintainer decision in this slice.
+The tool also requires a private, validated cohort ledger. It checks for one
+recorded implementation/documentation intake whose **effective eligibility**
+is eligible at observation time (either initially or through a validated
+correction), and
+rejects a contradictory recorded outcome head. These checks do **not**
+authenticate who confirmed the case-to-PR association: v1 ledger events carry
+no repository or PR identity, so the mapping remains unverified.
 It performs at most two public `api.github.com` **GET** calls: one for that PR, and a
 commit lookup when GitHub says it merged. It checks that GitHub's PR identity,
 `gh --jq` projects only the allowlisted identity/merge fields before returning
@@ -28,7 +34,8 @@ the repository. Run:
 
 ```bash
 python3 -I -B scripts/observe-merge.py \
-  --mapping /absolute/private/mapping.json --case-id opaque-case-id
+  --mapping /absolute/private/mapping.json \
+  --ledger /absolute/private/cases.jsonl --case-id opaque-case-id
 ```
 
 The output has no raw case ID, repository, title, branch or PR body. A positive
@@ -36,8 +43,7 @@ The output has no raw case ID, repository, title, branch or PR body. A positive
 as-of-merge record, historical policy-compliance verdict, authorization to
 merge, or completed case in the cohort report. `cohort_delivery_credit` is
 always false; `policy_compliance` is always UNMEASURED. This tool does not
-modify the event ledger or `verified_completion_ids`. The mapping was supplied
-by the operator, so its authenticity and relation to an admitted ledger case
-remain unverified by this first slice. Future work must bind the mapping to
-intake with timestamped evidence and record a private case pseudonym and
+modify the event ledger or `verified_completion_ids`. The association between
+the recorded case and PR is still caller-supplied. Future work must establish
+an authenticated, timestamped mapping and private case pseudonym and
 policy revision before affecting a throughput numerator.
