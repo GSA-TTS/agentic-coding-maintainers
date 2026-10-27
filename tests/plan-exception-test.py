@@ -107,6 +107,9 @@ fresh = run(snapshot(measurement="check_status"))
 assert fresh.returncode == 0 and json.loads(fresh.stdout)["attempts_for_head_from_private_ledger"] == 0
 write_attempts([attempt(1), attempt(1)])
 assert run(snapshot()).returncode == 3
+write_attempts([attempt(1, task="unrelated"), dict(attempt(2, task="unrelated"), measurement=[])])
+bad_other = run(snapshot(measurement="check_status"))
+assert bad_other.returncode == 3 and b"UNVERIFIED" in bad_other.stderr and not bad_other.stdout
 write_attempts([attempt(1, when="2020-01-02T00:00:00Z")])
 assert run(snapshot()).returncode == 3
 write_attempts([attempt(1)])
@@ -117,6 +120,9 @@ LEDGER.chmod(0o600)
 LINK = FIXTURE / "linked.jsonl"
 LINK.symlink_to(LEDGER)
 assert run(snapshot(), path=LINK).returncode == 3
+ANCESTOR = FIXTURE / "linked-parent"
+ANCESTOR.symlink_to(FIXTURE, target_is_directory=True)
+assert run(snapshot(), path=ANCESTOR / "attempts.jsonl").returncode == 3
 assert run(snapshot(), path=FIXTURE / "absent.jsonl").returncode == 3
 print("exception_attempt_fixture=" + str(FIXTURE), file=sys.stderr)
 print("plan-exception tests: PASS")

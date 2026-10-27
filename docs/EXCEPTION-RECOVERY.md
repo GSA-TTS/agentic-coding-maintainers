@@ -22,7 +22,10 @@ The v1 snapshot has exactly these fields: `schema_version: 1`; opaque
 `worker_liveness`); boolean `policy_authorization` and
 `independent_work_ready`; and `write_settlement` in `not_attempted`, `unknown`,
 `confirmed`. No raw issue text, URL, reviewer name, hostname, token or command
-is accepted. The input is capped at 8 KiB; unknown fields, wrong types and
+*field* is accepted. `task_id` is a syntactically bounded opaque string, **not
+a secret detector**: a caller must sanitize IDs before submitting a snapshot,
+and must not place tokens, PII or private hostnames into them. The ID is echoed
+in the shadow output for local correlation. The input is capped at 8 KiB; unknown fields, wrong types and
 malformed evidence return `UNVERIFIED` (exit 3), not a guessed action.
 
 An additional required `--attempt-ledger /absolute/private/attempts.jsonl`
