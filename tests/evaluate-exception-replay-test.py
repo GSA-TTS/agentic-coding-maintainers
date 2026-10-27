@@ -20,11 +20,15 @@ def case(cid: str, *, human: str | None = "HUMAN_TRIAGE", planner: str | None = 
             "planner_verdict": verdict, "independent_label": independent}
 
 
-def replay(expected, cases):
+def replay(expected, cases, *, labels=None):
+    # Independent fixture construction: planner results must not be able to
+    # choose the maintainer label or its independence flag. Callers override
+    # labels explicitly where the expected judgment differs from HUMAN_TRIAGE.
+    labels = labels or {}
     MANIFEST.write_text(json.dumps({"schema_version": 1, "frozen_at": "2020-01-01T00:00:00Z",
                                     "cases": [{"case_id": cid,
-                                               "maintainer_action": next((row["maintainer_action"] for row in cases if row["case_id"] == cid), None),
-                                               "independent_label": next((row["independent_label"] for row in cases if row["case_id"] == cid), False)}
+                                               "maintainer_action": labels.get(cid, ("HUMAN_TRIAGE", True))[0],
+                                               "independent_label": labels.get(cid, ("HUMAN_TRIAGE", True))[1]}
                                               for cid in expected]}), encoding="utf-8")
     MANIFEST.chmod(0o600)
     return subprocess.run([sys.executable, "-I", "-B", str(CLI), "--manifest", str(MANIFEST)],
@@ -44,14 +48,14 @@ def report(result, *, expected_rc):
     return value
 
 
-good = report(replay(["case-1", "case-2"], [case("case-1"), case("case-2", human="DEFER_CI_MEASUREMENT",
-                                                              planner="REVIEW_INDEPENDENT_WORK")]), expected_rc=0)
+good = report(replay(["case-1", "case-2"], [case("case-1"), case("case-2", planner="REVIEW_INDEPENDENT_WORK")],
+                     labels={"case-2": ("DEFER_CI_MEASUREMENT", True)}), expected_rc=0)
 assert good["expected_count"] == 2 and good["comparable_count"] == 2 and good["agreement_count"] == 1
 assert good["verdict_measured_count"] == 2 and good["missing_verdict_count"] == 0
 assert good["confusion_coverage"] == "SUPPRESSED_UNVERIFIED_PRIVACY" and good["confusion_counts"] is None
 missing = report(replay(["case-1", "case-2"], [case("case-1")]), expected_rc=3)
 assert missing["missing_count"] == 1 and missing["received_count"] == 1
-unknown = report(replay(["case-1"], [case("case-1", independent=False)]), expected_rc=3)
+unknown = report(replay(["case-1"], [case("case-1")], labels={"case-1": ("HUMAN_TRIAGE", False)}), expected_rc=3)
 assert unknown["unlabelled_count"] == 1 and unknown["comparable_count"] == 0
 unsafe = report(replay(["case-1"], [case("case-1", planner="MERGE", verdict="PASS")]), expected_rc=3)
 assert unsafe["unsafe_recommendation_count"] == 1 and unsafe["rollout_status"] == "NOT_EVALUATED"
@@ -64,7 +68,7 @@ missing_verdict = report(replay(["case-1"], [case("case-1", verdict=None)]), exp
 assert missing_verdict["missing_verdict_count"] == 1 and missing_verdict["verdict_measured_count"] == 0
 missing_action = report(replay(["case-1"], [case("case-1", planner=None)]), expected_rc=3)
 assert missing_action["comparable_count"] == 0
-missing_label = report(replay(["case-1"], [case("case-1", human=None)]), expected_rc=3)
+missing_label = report(replay(["case-1"], [case("case-1")], labels={"case-1": (None, True)}), expected_rc=3)
 assert missing_label["caller_asserted_independent_label_count"] == 0 and missing_label["unlabelled_count"] == 1
 four = report(replay([f"case-{n}" for n in range(1, 5)], [case(f"case-{n}") for n in range(1, 5)]), expected_rc=0)
 assert four["confusion_coverage"] == "SUPPRESSED_UNVERIFIED_PRIVACY" and four["confusion_counts"] is None
@@ -86,6 +90,8 @@ rejects(json.dumps({"schema_version": True, "cases": []}).encode())
 rejects(json.dumps({"schema_version": 1, "cases": [{"case_id": "other", "planner_action": "HUMAN_TRIAGE", "planner_verdict": "UNVERIFIED"}]}).encode())
 rejects(json.dumps({"schema_version": 1, "cases": [{"case_id": "case-1", "planner_action": "HUMAN_TRIAGE", "planner_verdict": "UNVERIFIED"}] * 2}).encode())
 rejects(json.dumps({"schema_version": 1, "cases": [{"case_id": "case-1", "planner_action": "HUMAN_TRIAGE", "planner_verdict": "UNVERIFIED", "raw_pr_body": "untrusted"}]}).encode())
+rejects(json.dumps({"schema_version": 1, "cases": [{"case_id": "case-1", "planner_action": "HUMAN_TRIAGE", "planner_verdict": "UNVERIFIED", "maintainer_action": "MERGE"}]}).encode())
+rejects(json.dumps({"schema_version": 1, "cases": [{"case_id": "case-1", "planner_action": "HUMAN_TRIAGE", "planner_verdict": "UNVERIFIED", "independent_label": True}]}).encode())
 # A stale or symlinked manifest must not silently become a complete cohort.
 MANIFEST.write_text(json.dumps({"schema_version": 1, "frozen_at": "9999-12-31T00:00:00Z", "cases": [{"case_id": "case-1", "maintainer_action": "HUMAN_TRIAGE", "independent_label": True}]}), encoding="utf-8")
 rejects(json.dumps({"schema_version": 1, "cases": []}).encode())
