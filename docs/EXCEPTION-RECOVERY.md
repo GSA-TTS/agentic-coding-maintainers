@@ -7,14 +7,16 @@ one suggested next action as JSON and always reports `current_verdict:
 "UNVERIFIED"`, `mode: "SHADOW_ONLY"`, and `execution_performed: false`.
 
 ```bash
-python3 -I -B scripts/plan-exception.py < private-sanitized-snapshot.json
+python3 -I -B scripts/plan-exception.py \
+  --attempt-ledger /absolute/private/attempts.jsonl \
+  < private-sanitized-snapshot.json
 ```
 
 The v1 snapshot has exactly these fields: `schema_version: 1`; opaque
 `task_id`; `blocker` in `PARTIAL_WRITE`, `STALE_HEAD`, `POLICY_DECISION`,
 `CI_OUTAGE`, `MISSING_PROVENANCE`, `CODE_BUG`, `UNKNOWN`; full 40-hex or null
 `task_head_sha` and `evidence_head_sha`; `evidence_coverage` in `complete`,
-`partial`, `none`; `attempts_for_head` (integer 0–100); `observed_at` (UTC);
+`partial`, `none`; `observed_at` (UTC);
 `operation` in `local_read`, `remote_read`, `remote_write`; optional allowlisted
 `measurement` (`check_status`, `head_identity`, `source_provenance`,
 `worker_liveness`); boolean `policy_authorization` and
@@ -22,6 +24,21 @@ The v1 snapshot has exactly these fields: `schema_version: 1`; opaque
 `confirmed`. No raw issue text, URL, reviewer name, hostname, token or command
 is accepted. The input is capped at 8 KiB; unknown fields, wrong types and
 malformed evidence return `UNVERIFIED` (exit 3), not a guessed action.
+
+An additional required `--attempt-ledger /absolute/private/attempts.jsonl`
+is read before planning. Its parent must be current-user-private, its file
+regular/private and non-symlinked, and it is capped at 128 KiB / 1,000 records.
+Each JSONL line has exactly `schema_version: 1`, a unique opaque `attempt_id`,
+opaque `task_id`, full `head_sha`, allowlisted `measurement`, `outcome` in
+`complete`/`unverified`, and UTC `recorded_at`. Records must be timestamped in
+append order and not later than the supplied snapshot. The planner derives
+`attempts_for_head` for the matching task and SHA; a changed head gets a fresh
+budget. A missing, corrupt, symlinked, wrong-permission, or partial ledger
+returns `UNVERIFIED` (exit 3). An empty private ledger is valid evidence of
+*zero recorded* attempts, not proof of zero real-world attempts. No writer or
+retry executor is added by this change.
+Head-budgeted diagnostics require a measured `task_head_sha`; a null head
+cannot match any record, so treating it as a fresh budget would be fail-open.
 
 ## Priority of recommendations
 
@@ -38,8 +55,10 @@ malformed evidence return `UNVERIFIED` (exit 3), not a guessed action.
 8. Exhausted diagnostic budget: recommend review of independently ready work,
    or `HUMAN_TRIAGE`. An exhausted task remains UNVERIFIED.
 
-`attempts_for_head` is supplied by the caller; the planner does not yet verify
-an append-only attempt ledger or enforce wall-clock backoff. A suggestion is
+The private attempt ledger is **operator-controlled data**, not an authenticated
+attempt history. It prevents accidental undercounting by this CLI, but a
+caller able to rewrite it can still understate attempts; there is no sealed
+writer, signed provenance, wall-clock backoff or live-read executor. A suggestion is
 **not authorization**: a future executor must re-read live evidence and current
 head, validate allowed operations, enforce budgets and per-action GitHub-write
 authorization, and stop on uncertain write settlement. No automatic executor
