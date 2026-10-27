@@ -18,6 +18,7 @@ import signal
 import stat
 import subprocess
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +39,15 @@ QUERY = """query($owner:String!,$repo:String!,$after:String){
 
 class Unverified(Exception):
     pass
+
+
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Unverified("GitHub issues response has duplicate fields")
+        result[key] = value
+    return result
 
 
 def utc(value):
@@ -85,6 +95,31 @@ def private_key(path):
     return data
 
 
+def private_capture(path, data):
+    """Exclusive private output; never replace an earlier observation."""
+    if not path.is_absolute() or path.name in ("", ".", "..") or len(data) > MAX_BYTES:
+        raise Unverified("capture output path or size invalid")
+    if sys.platform == "darwin" and path.parts[:2] == ("/", "var"):
+        path = Path("/private/var", *path.parts[2:])
+    with ExitStack() as stack:
+        fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, fd)
+        for component in path.parent.parts[1:]:
+            if component in (".", ".."):
+                raise Unverified("capture path contains unsafe component")
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            stack.callback(os.close, child)
+            fd = child
+        parent = os.fstat(fd)
+        if parent.st_uid != os.getuid() or parent.st_mode & 0o077:
+            raise Unverified("capture directory must be current-user private")
+        output = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        with os.fdopen(output, "wb", buffering=0) as handle:
+            if handle.write(data) != len(data):
+                raise Unverified("capture write incomplete; inspect before retry")
+            os.fsync(handle.fileno())
+
+
 def fetch(owner, repo, after, deadline):
     if os.environ.get("GH_HOST") or os.environ.get("GITHUB_HOST"):
         raise Unverified("GitHub host override is not supported")
@@ -124,7 +159,7 @@ def fetch(owner, repo, after, deadline):
         if process.wait(timeout=max(0.0, deadline - time.monotonic())) != 0 or not output:
             raise Unverified("GitHub issues response unavailable")
         try:
-            response = json.loads(output)
+            response = json.loads(output, object_pairs_hook=unique_fields)
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise Unverified("GitHub issues response malformed") from exc
         return response
@@ -202,12 +237,78 @@ def scan(repository, start, end, get, deadline):
     raise Unverified("issue page limit reached before termination")
 
 
+def scan_full_capture(repository, get, deadline):
+    """Request-to-response chain, ending ONLY at the real API terminal page.
+
+    Unlike summary scan(), do not stop at the creation-window boundary when
+    the API reports another page. Reuse the same QUERY and bounded fetch().
+    """
+    owner, repo = repository.split("/", 1)
+    cursor = None
+    cursors, issue_numbers = set(), set()
+    previous_time = None
+    pages = []
+    for _ in range(MAX_PAGES):
+        if time.monotonic() >= deadline:
+            raise Unverified("capture deadline exceeded before terminal page")
+        response = get(owner, repo, cursor, deadline)
+        if not isinstance(response, dict) or "errors" in response or not isinstance(response.get("data"), dict):
+            raise Unverified("capture GraphQL response unavailable")
+        parent = response["data"].get("repository")
+        issues = parent.get("issues") if isinstance(parent, dict) else None
+        if not isinstance(issues, dict):
+            raise Unverified("capture Issues connection unavailable")
+        info, nodes = issues.get("pageInfo"), issues.get("nodes")
+        if not isinstance(info, dict) or type(info.get("hasNextPage")) is not bool or not isinstance(nodes, list):
+            raise Unverified("capture pageInfo or nodes malformed")
+        more, raw_end = info["hasNextPage"], info.get("endCursor")
+        if more:
+            if not nodes or not isinstance(raw_end, str) or not 1 <= len(raw_end) <= 256 or raw_end in cursors:
+                raise Unverified("capture continuation is empty, missing or repeated")
+            try:
+                raw_end.encode("utf-8")
+            except UnicodeError as exc:
+                raise Unverified("capture continuation is not UTF-8") from exc
+            cursors.add(raw_end)
+        elif raw_end is not None:
+            if not isinstance(raw_end, str) or not 1 <= len(raw_end) <= 256:
+                raise Unverified("capture terminal cursor malformed")
+            try:
+                raw_end.encode("utf-8")
+            except UnicodeError as exc:
+                raise Unverified("capture terminal cursor is not UTF-8") from exc
+        collected = []
+        for node in nodes:
+            if not isinstance(node, dict) or set(node) != {"number", "createdAt"} or type(node["number"]) is not int or node["number"] <= 0:
+                raise Unverified("capture issue identity malformed")
+            created = utc(node["createdAt"])
+            if previous_time is not None and created < previous_time:
+                raise Unverified("capture issue order changed")
+            previous_time = created
+            if node["number"] in issue_numbers:
+                raise Unverified("capture issue duplicated across pages")
+            issue_numbers.add(node["number"])
+            collected.append({"number": node["number"], "created_at": node["createdAt"]})
+        # API may supply a non-null terminal endCursor. The adapter contract's
+        # cursor_out is a CONTINUATION, so normalize it to null on termination.
+        # This format does not retain the API's raw terminal endCursor; it is
+        # therefore still insufficient for independent response attestation.
+        pages.append({"cursor_in": cursor, "cursor_out": raw_end if more else None,
+                      "has_next": more, "issues": collected})
+        if not more:
+            return pages, raw_end
+        cursor = raw_end
+    raise Unverified("capture page cap reached before API termination")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--window-start", required=True)
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--key-file", required=True, type=Path)
+    parser.add_argument("--capture-output", type=Path,
+                        help="exclusive private full-terminal two-pass capture; never an atomic snapshot")
     args = parser.parse_args()
     try:
         if not REPO.fullmatch(args.repository):
@@ -217,6 +318,32 @@ def main():
             raise Unverified("observation window invalid")
         key = private_key(args.key_file)
         deadline = time.monotonic() + DEADLINE_SECONDS
+        if args.capture_output:
+            first_pages, first_terminal = scan_full_capture(args.repository, fetch, deadline)
+            first_time = datetime.now(timezone.utc)
+            second_pages, second_terminal = scan_full_capture(args.repository, fetch, deadline)
+            second_time = datetime.now(timezone.utc)
+            if first_pages != second_pages or first_terminal != second_terminal:
+                raise Unverified("full-terminal Issues captures disagree")
+            # The v1 capture schema has second-resolution timestamps. A fast
+            # pair can finish in one second, so wait (bounded by the SAME
+            # deadline) rather than fabricate an elapsed second.
+            while int(second_time.timestamp()) <= int(first_time.timestamp()):
+                if time.monotonic() >= deadline:
+                    raise Unverified("no time budget to distinguish capture passes")
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+                second_time = datetime.now(timezone.utc)
+            def stamp(moment):
+                return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+            capture = {"schema_version": 1, "repository": args.repository,
+                       "window_start": args.window_start, "as_of": args.as_of,
+                       "query_type": "graphql_issues_created_asc",
+                       "passes": [{"captured_at": stamp(first_time), "pages": first_pages},
+                                  {"captured_at": stamp(second_time), "pages": second_pages}]}
+            raw = (json.dumps(capture, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            private_capture(args.capture_output, raw)
+            print("issues observation: private full-terminal capture written; provenance/atomicity UNVERIFIED")
+            return 0
         first = scan(args.repository, start, end, fetch, deadline)
         second = scan(args.repository, start, end, fetch, deadline)
         if first != second:
