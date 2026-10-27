@@ -152,6 +152,22 @@ assert len(captured["passes"]) == 2 and all(len(p["pages"]) == 2 for p in captur
 assert all(p["pages"][0]["has_next"] and p["pages"][0]["cursor_out"] == "cursor-one" for p in captured["passes"])
 assert all(p["pages"][1]["cursor_in"] == "cursor-one" and p["pages"][1]["cursor_out"] is None for p in captured["passes"])
 assert b"987654321" not in capture_result.stdout and b"cursor-one" not in capture_result.stdout
+# The capture may be structurally adapted, but its origin is not independently
+# attested. The registry must remain partial/UNVERIFIED end to end.
+adapter_output = FIXTURE / "partial-registry.json"
+adapted = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/adapt-issues-capture.py"),
+                          "--capture", str(capture_file), "--output", str(adapter_output),
+                          "--key-file", str(KEY), "--repository", "acme/widgets",
+                          "--window-start", "2026-10-01T00:00:00Z", "--as-of", "2026-10-26T00:00:00Z"],
+                         capture_output=True, check=False, timeout=10)
+assert adapted.returncode == 0, adapted.stderr
+entry = json.loads(adapter_output.read_text(encoding="utf-8"))
+assert entry["sources"][0]["coverage"] == "partial"
+checked = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/check-intake-sources.py"),
+                          "--registry", str(adapter_output), "--required-source", "issue-feed:github_issues"],
+                         capture_output=True, check=False, timeout=10)
+assert checked.returncode == 3 and not checked.stderr, checked.stderr
+assert json.loads(checked.stdout)["status"] == "UNVERIFIED"
 repeated = subprocess.run(capture_command, env=env, capture_output=True, check=False, timeout=10)
 assert repeated.returncode == 3 and b"UNVERIFIED" in repeated.stderr and capture_file.exists()
 stub.write_text(normal_stub, encoding="utf-8")

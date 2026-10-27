@@ -50,20 +50,21 @@ change: the document is a query and requests Issues metadata only. A test
 asserts the exact query/host shape; local `gh` still inherits its credential.
 The response and diagnostics share one **combined** 64 KiB cap per call, with
 at most 10 pages per pass and one shared 60-second deadline across both passes.
-Timeout, a
-failed API call, malformed response, cursor cycle, duplicate issue number,
+Timeout, a failed API call, malformed response, cursor cycle, duplicate issue number,
 unexpected creation ordering, or a page cap before termination returns
 `UNVERIFIED` (exit 3). The second pass must see the same ordered in-window
 numbers and page grouping as the first. An empty result requires two
 successful terminal responses; no evidence is never an empty backlog.
 
-`TWO_CONSISTENT_VISIBLE_READS_NOT_ATOMIC` (exit 0) means only that two reads
+In **summary mode**, `TWO_CONSISTENT_VISIBLE_READS_NOT_ATOMIC` (exit 0) means only that two reads
 returned the same visible list under this credential. Page-number/connection
 pagination during mutations is not an atomic GitHub snapshot: transfers,
 deletions or change-and-reversal between passes may escape detection. This
 does **not** prove all historical issues were visible at the declared `as_of`,
-nor include PR review requests, Project items or direct requests. The tool
-does not produce a `source-capture.json` accepted by `check-intake-sources.py`
-yet; a later adapter must preserve per-page provenance and reconcile stable
-issue IDs to opaque case IDs. Do not use its HMAC or count as a verified intake
+nor include PR review requests, Project items or direct requests. **Capture
+mode** emits a private JSON artifact accepted by `adapt-issues-capture.py`;
+the adapter deliberately emits `coverage: partial`, and
+`check-intake-sources.py` returns `UNVERIFIED` for it. A future provenance
+design must corroborate source/API evidence and reconcile stable issue IDs to
+opaque case IDs. Do not use the HMAC or counts as a verified intake
 denominator or as authorization for a remote write.
