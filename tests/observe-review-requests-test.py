@@ -127,14 +127,20 @@ env.pop("GH_HOST")
 # An issue number that has no Pulls API resource is not a PR. The observer
 # must refuse before it requests event history.
 stub.write_text(
-    "#!/usr/bin/env python3\nimport sys\n"
-    "assert sys.argv[5].endswith('/pulls/7'), 'event scan ran for an ordinary issue'\n"
-    "sys.stdout.buffer.write(b'HTTP/2.0 404 Not Found\\r\\n\\r\\n{}')\n",
+    "#!/usr/bin/env python3\nimport json,sys,pathlib\n"
+    "calls=pathlib.Path(" + repr(str(FIXTURE / "ordinary-calls.txt")) + ")\n"
+    "with calls.open('a') as log: log.write(sys.argv[5]+'\\n')\n"
+    "if sys.argv[5].endswith('/pulls/7'):\n"
+    "  sys.stdout.buffer.write(b'HTTP/2.0 404 Not Found\\r\\n\\r\\n{}')\n"
+    "else:\n"
+    "  sys.stdout.buffer.write(b'HTTP/2.0 200 OK\\r\\n\\r\\n'+json.dumps(" + repr(two) + ").encode())\n",
     encoding="utf-8",
 )
 stub.chmod(0o700)
 ordinary = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=10)
 assert ordinary.returncode == 3 and b"UNVERIFIED" in ordinary.stderr and not ordinary.stdout
+assert (FIXTURE / "ordinary-calls.txt").read_text(encoding="utf-8").splitlines() == [
+    "https://api.github.com/repos/acme/widgets/pulls/7"]
 
 # Both complete event passes must traverse Link page 2 and compare target
 # identity. A missing next Link on a full page or a target changed on pass 2
@@ -159,7 +165,7 @@ def paged_stub(*, changed=False, missing_link=False):
         "elif url.endswith('page=1'):\n"
         "  sys.stdout.buffer.write(" + repr(first_page if not missing_link else b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps(page1).encode()) + ")\n"
         "elif url.endswith('page=2'):\n"
-        "  payload=" + repr(second_page if not changed else b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps([dict(page2[0], requested_team={"slug": "other-team"})]).encode()) + "\n"
+        "  payload=" + repr(second_page) + " if (not " + repr(changed) + " or calls < 4) else " + repr(b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps([dict(page2[0], requested_team={"slug": "other-team"})]).encode()) + "\n"
         "  sys.stdout.buffer.write(payload)\n"
         "else: sys.exit(9)\n"
     )
@@ -173,6 +179,12 @@ multi = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=1
 assert multi.returncode == 0 and not multi.stderr, multi.stderr
 assert json.loads(multi.stdout)["page_count"] == 2 and json.loads(multi.stdout)["event_count"] == 2
 assert counter.read_text(encoding="utf-8") == "5"  # identity GET + two pages per pass
+counter.write_text("0", encoding="utf-8")
+paged_stub(changed=True)
+changed_target = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=10)
+assert changed_target.returncode == 3 and b"UNVERIFIED" in changed_target.stderr and not changed_target.stdout
+assert b"private-team" not in changed_target.stderr and b"other-team" not in changed_target.stderr
+assert counter.read_text(encoding="utf-8") == "5"
 counter.write_text("0", encoding="utf-8")
 paged_stub(missing_link=True)
 unbounded = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=10)
