@@ -82,6 +82,7 @@ action("HUMAN_TRIAGE", blocker="CODE_BUG", evidence_coverage="complete", task_he
 action("HUMAN_TRIAGE", blocker="CODE_BUG", evidence_coverage="complete", evidence_head_sha=None)
 
 refuses(snapshot(schema_version=True))
+refuses(snapshot(task_id="invalid/identifier"))
 refuses(snapshot(blocker=[]))
 refuses(snapshot(operation=[]))
 refuses(snapshot(write_settlement=[]))
@@ -107,6 +108,15 @@ fresh = run(snapshot(measurement="check_status"))
 assert fresh.returncode == 0 and json.loads(fresh.stdout)["attempts_for_head_from_private_ledger"] == 0
 write_attempts([attempt(1), attempt(1)])
 assert run(snapshot()).returncode == 3
+for invalid in (dict(attempt(1), attempt_id="bad/id"),
+                dict(attempt(1), task_id="bad/id"),
+                dict(attempt(1), recorded_at="2019-99-99T99:99:99Z")):
+    write_attempts([invalid])
+    response = run(snapshot(measurement="check_status"))
+    assert response.returncode == 3 and b"UNVERIFIED" in response.stderr and not response.stdout
+write_attempts([attempt(1, when="2019-12-31T00:00:00Z"), attempt(2, when="2019-12-30T00:00:00Z")])
+reordered = run(snapshot(measurement="check_status"))
+assert reordered.returncode == 3 and b"UNVERIFIED" in reordered.stderr and not reordered.stdout
 write_attempts([attempt(1, task="unrelated"), dict(attempt(2, task="unrelated"), measurement=[])])
 bad_other = run(snapshot(measurement="check_status"))
 assert bad_other.returncode == 3 and b"UNVERIFIED" in bad_other.stderr and not bad_other.stdout
