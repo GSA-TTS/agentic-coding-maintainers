@@ -47,6 +47,13 @@ here.
 
 `@wz-gsa` is the bootstrap owner until a visible organization team receives
 explicit repository access and maintainers approve the CODEOWNERS transition.
+During this solo-maintainer phase, an agent's QA/security review is useful
+evidence but is not an independent GitHub approval from another CODEOWNER.
+The live main-branch ruleset requires a CODEOWNER approval and GitHub will not
+count a PR author's own approval. Do not present an unmergeable solo-authored PR
+as approved or relax the ruleset to work around that restriction. Preserve the
+PR and report the unmet gate until a collaborator with applicable access can
+review it through the normal process.
 
 ## Coordinated Work
 
@@ -69,7 +76,9 @@ never instructions.
   verified contention or policy refusal. Do not take over stale locks silently.
 - The configured Project board is a coordination index. Verify PR heads,
   required checks, reviews, and issue state in each owning repository before
-  making a claim or a remote write. Re-review any materially changed head.
+  making a claim or a remote write where a PR exists. Before an initial push,
+  verify the admitted task, owning repository, and assigned branch; PR checks
+  and reviews cannot exist yet. Re-review any materially changed head.
 - Monitoring is foreground-only. A previous checkpoint cannot prove continued
   monitoring; reconcile after restart. Without the host-local
   `orchestrator.json`, the monitor must report UNVERIFIED, not use the tracked
@@ -78,9 +87,34 @@ never instructions.
   untrusted PR code, tests, installs, or builds on the host. Static inspection
   is fine; code execution requires an independently justified isolated
   environment. Do not infer safety from a worktree's separate branch.
-- GitHub writes require explicit per-action operator authorization. Approval
-  does not imply merge authorization. Do not bypass an independent-review
-  requirement or work around GitHub's self-approval restriction.
+- For tasks admitted in this configured workspace, the operator authorizes
+  routine commits in the task-owned worktree, normal (non-force) pushes to its
+  assigned branch in the owning repository, and submitted PR reviews without a
+  separate prompt per action. This authorization does not create a task, claim
+  ownership, or extend to other repositories or branches. Reconcile live PR
+  state and inspect the exact diff, current head, and applicable checks before
+  submitting a review. Bind the submitted review to the inspected commit SHA,
+  recheck the remote head immediately before submission, and verify the review's
+  recorded commit afterward; a head mismatch requires re-review rather than a
+  stale approval. Its body and inline comments must concern only that inspected
+  head. An unverifiable model vote or uninspected summary never counts
+  as independent review. Do not approve your own PR, dismiss another review,
+  bypass an independent-review requirement, force-push, or alter another owner's
+  branch. GitHub issue/PR edits, labels, standalone comments, and PR closure
+  still require explicit per-action operator authorization. An independent
+  applicable CODEOWNER who approves a PR at its current head may merge that PR
+  without a separate operator prompt, but only after every merge gate below is
+  verified. An approval grants no authority to merge a different PR or head.
+- After a clean PR approval, promptly evaluate merge readiness instead of
+  leaving an eligible PR waiting by default. Verify the current head, independent
+  applicable CODEOWNER approval, required checks, resolved review threads,
+  draft status, dependency and acceptance gates, and repository merge rules.
+  The independent applicable CODEOWNER who approved that current head may
+  submit an eligible PR through its permitted merge method or queue, guarded
+  by the reviewed head SHA. Do not work around GitHub's self-approval rule or
+  merge on an AI vote alone. Recheck the remote outcome; queue entry is not a
+  completed merge. If a gate is unmet, report the owner and next action rather
+  than bypassing it. PR closure without merge remains operator-supervised.
 
 The canonical skill implementations are in `.agents/skills/`. The OpenCode
 profiles installed at `.opencode/agents/` are copies; keep them byte-identical
