@@ -121,6 +121,58 @@ proxy_refusal = subprocess.run(command, env=env, capture_output=True, check=Fals
 assert proxy_refusal.returncode == 3 and b"UNVERIFIED" in proxy_refusal.stderr and not proxy_refusal.stdout
 assert b"987654321" not in proxy_refusal.stderr
 env.pop("HTTPS_PROXY")
+# Capture mode is different from summary mode: it MUST continue after an
+# as-of boundary page if the API still advertises a successor. GitHub may
+# include a non-null terminal endCursor, normalized to null for the adapter's
+# continuation-only cursor_out contract.
+capture_file = FIXTURE / "full-capture.json"
+normal_stub = stub.read_text(encoding="utf-8")
+stub.write_text(
+    "#!/usr/bin/env python3\n"
+    "import json,sys\n"
+    "assert sys.argv[1:5] == ['api','--method','POST','https://api.github.com/graphql']\n"
+    "query=next(arg for arg in sys.argv if arg.startswith('query='))[6:]\n"
+    "assert query == " + repr(observer.QUERY) + "\n"
+    "after=next((arg[6:] for arg in sys.argv if arg.startswith('after=')),None)\n"
+    "if after is None:\n"
+    "  payload=" + repr(response([node(987654321, "2026-10-26T00:00:00Z")], True, "cursor-one")) + "\n"
+    "elif after=='cursor-one':\n"
+    "  payload=" + repr(response([node(987654322, "2026-10-27T00:00:00Z")], False, "api-terminal-cursor")) + "\n"
+    "else: sys.exit(9)\n"
+    "print(json.dumps(payload))\n",
+    encoding="utf-8",
+)
+stub.chmod(0o700)
+capture_command = command + ["--capture-output", str(capture_file)]
+capture_result = subprocess.run(capture_command, env=env, capture_output=True, check=False, timeout=10)
+assert capture_result.returncode == 0 and b"UNVERIFIED" in capture_result.stdout, capture_result.stderr
+assert capture_file.stat().st_mode & 0o777 == 0o600
+captured = json.loads(capture_file.read_text(encoding="utf-8"))
+assert len(captured["passes"]) == 2 and all(len(p["pages"]) == 2 for p in captured["passes"])
+assert all(p["pages"][0]["has_next"] and p["pages"][0]["cursor_out"] == "cursor-one" for p in captured["passes"])
+assert all(p["pages"][1]["cursor_in"] == "cursor-one" and p["pages"][1]["cursor_out"] is None for p in captured["passes"])
+assert b"987654321" not in capture_result.stdout and b"cursor-one" not in capture_result.stdout
+repeated = subprocess.run(capture_command, env=env, capture_output=True, check=False, timeout=10)
+assert repeated.returncode == 3 and b"UNVERIFIED" in repeated.stderr and capture_file.exists()
+stub.write_text(normal_stub, encoding="utf-8")
+
+# Duplicate JSON keys can overwrite pageInfo flags before scan() sees them;
+# a contradictory true/false hasNextPage must refuse rather than publish a
+# purported full-terminal capture. Terminal cursor values must be validated
+# BEFORE normalization to null in the v1 continuation-only format.
+for raw in (
+    b'{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":true,"hasNextPage":false,"endCursor":null},"nodes":[]}}}}',
+    json.dumps(response([node(987654321)], False, "x" * 257)).encode(),
+    json.dumps(response([node(987654321)], False, "\ud800")).encode(),
+):
+    stub.write_text("#!/usr/bin/env python3\nimport sys\nsys.stdout.buffer.write(" + repr(raw) + ")\n", encoding="utf-8")
+    stub.chmod(0o700)
+    bad_capture = FIXTURE / f"bad-capture-{len(list(FIXTURE.glob('bad-capture-*')))}.json"
+    failed = subprocess.run(command + ["--capture-output", str(bad_capture)], env=env,
+                            capture_output=True, check=False, timeout=10)
+    assert failed.returncode == 3 and b"UNVERIFIED" in failed.stderr and not failed.stdout
+    assert not bad_capture.exists()
+stub.write_text(normal_stub, encoding="utf-8")
 for body in ("import sys; sys.stdout.write('x'*70000)\n",
              "import sys; sys.stderr.write('x'*70000)\n",
              "import sys; sys.stdout.write('x'*35000); sys.stderr.write('y'*35000)\n",

@@ -21,6 +21,24 @@ does not create or publish a key. It emits the number of Issues visible to the
 current GitHub credential, page count, and a keyed HMAC of the repository,
 window and observed issue numbers—no issue titles, raw issue numbers,
 repository name or GraphQL response are printed.
+
+For an opt-in **private full-terminal capture**, add `--capture-output
+/absolute/private/issues-capture.json`. The destination must be absent and its
+parent current-user-owned mode `0700`; it is created exclusively at `0600`.
+The mode uses the same bounded query, but unlike summary mode it continues to
+the API's real terminal page even if an `as_of` boundary appears earlier. It
+retains each request's input cursor, validated page continuation and only
+`number`/`created_at` Issue nodes, compares both complete passes, then writes
+the bounded private artifact. A non-null API terminal endCursor is normalized
+to null *as a continuation* in this v1 capture; raw terminal cursor bytes are
+not retained. An interrupted exclusive write can leave an incomplete file:
+inspect it before retrying, never overwrite or silently repair it. This mode
+prints no raw issue identifiers, but its private output contains them and must
+not be committed or shared. It can be fed to `adapt-issues-capture.py`, whose
+registry entry deliberately remains `coverage: partial` until independent API
+provenance is established. Captured timestamps and two matching passes do not
+create an atomic historical GitHub snapshot.
+
 The tool refuses inherited proxy variables and GitHub host overrides; it
 assumes direct GitHub API routing. A managed endpoint requiring a corporate
 proxy remains UNVERIFIED until that transport is explicitly reviewed. Do not
