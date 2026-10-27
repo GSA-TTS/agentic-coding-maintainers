@@ -20,6 +20,7 @@ test:
 	python3 -I -B tests/merge-evidence-test.py
 	python3 -I -B tests/observe-merge-test.py
 	python3 -I -B tests/plan-exception-test.py
+	python3 -I -B tests/evaluate-exception-replay-test.py
 	bash tests/operating-surface-test.sh
 
 check: test
