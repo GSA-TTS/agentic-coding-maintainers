@@ -33,6 +33,15 @@ class Unverified(Exception):
     pass
 
 
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Unverified("duplicate event response field")
+        result[key] = value
+    return result
+
+
 def utc(raw):
     if not isinstance(raw, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", raw):
         raise Unverified("event/window time malformed")
@@ -82,9 +91,16 @@ def read_get(repository, number, page, deadline):
     if any(os.environ.get(key) for key in ("GH_HOST", "GITHUB_HOST", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")):
         raise Unverified("GitHub host/proxy override is not supported")
     url = f"https://api.github.com/repos/{repository}/issues/{number}/events?per_page=100&page={page}"
+    return bounded_get(url, deadline, include=True, projection=None, page=page)
+
+
+def bounded_get(url, deadline, *, include, projection, page):
     process = None
     try:
-        process = subprocess.Popen(["gh", "api", "--method", "GET", "--include", url],
+        argv = ["gh", "api", "--method", "GET", "--include", url]
+        if projection is not None:
+            argv += ["--jq", projection]
+        process = subprocess.Popen(argv,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         stdout, stderr = bytearray(), bytearray()
         with selectors.DefaultSelector() as selector:
@@ -107,7 +123,7 @@ def read_get(repository, number, page, deadline):
                         raise Unverified("GitHub event response exceeds byte bound")
         if process.wait(timeout=max(0.0, deadline - time.monotonic())) != 0 or not stdout:
             raise Unverified("GitHub event read unavailable")
-        return parse_http(bytes(stdout), url, page)
+        return parse_http(bytes(stdout), url, page) if include else parse_identity_http(bytes(stdout))
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Unverified("GitHub event transport unavailable") from exc
     finally:
@@ -148,7 +164,7 @@ def parse_http(raw, url, page):
             prefix = url.rsplit("page=", 1)[0] + "page="
             if not next_url.startswith(prefix) or not PAGE.fullmatch(next_url[len(prefix):]) or int(next_url[len(prefix):]) != page + 1:
                 raise Unverified("pagination successor is not the next approved page")
-        records = json.loads(body)
+        records = json.loads(body, object_pairs_hook=unique_fields)
     except (ValueError, UnicodeError, RecursionError, IndexError) as exc:
         raise Unverified("HTTP event response malformed") from exc
     if not isinstance(records, list):
@@ -158,26 +174,27 @@ def parse_http(raw, url, page):
     return records, next_url
 
 
+def parse_identity_http(raw):
+    header, separator, body = raw.partition(b"\r\n\r\n")
+    if not separator:
+        header, separator, body = raw.partition(b"\n\n")
+    if not separator:
+        raise Unverified("PR identity response has no HTTP metadata")
+    try:
+        lines = header.decode("ascii").splitlines()
+        if not re.fullmatch(r"HTTP/[0-9.]+ 200(?: .*)?", lines[0]):
+            raise Unverified("PR identity HTTP response not successful")
+        return json.loads(body, object_pairs_hook=unique_fields)
+    except (ValueError, UnicodeError, RecursionError, IndexError) as exc:
+        raise Unverified("PR identity response malformed") from exc
+
+
 def verify_pr(repository, number, deadline):
     """Refuse ordinary issue numbers; the Issues events URL accepts both."""
     if any(os.environ.get(key) for key in ("GH_HOST", "GITHUB_HOST", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")):
         raise Unverified("GitHub host/proxy override is not supported")
-    try:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise Unverified("PR identity check deadline exceeded")
-        result = subprocess.run(["gh", "api", "--method", "GET", "--include",
-                                 f"https://api.github.com/repos/{repository}/pulls/{number}",
-                                 "--jq", "{number,base:{repo:{full_name}}}"],
-                                capture_output=True, check=False, timeout=remaining)
-        if result.returncode or not result.stdout or len(result.stdout) + len(result.stderr) > MAX_RESPONSE_BYTES:
-            raise Unverified("PR identity could not be measured")
-        projected = result.stdout.split(b"\r\n\r\n", 1)[-1]
-        if projected == result.stdout:
-            projected = result.stdout.split(b"\n\n", 1)[-1]
-        pr = json.loads(projected)
-    except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError) as exc:
-        raise Unverified("PR identity read unavailable") from exc
+    pr = bounded_get(f"https://api.github.com/repos/{repository}/pulls/{number}", deadline,
+                     include=False, projection="{number,base:{repo:{full_name}}}", page=1)
     if not isinstance(pr, dict) or type(pr.get("number")) is not int or pr["number"] != number or not isinstance(pr.get("base"), dict) or not isinstance(pr["base"].get("repo"), dict) or pr["base"]["repo"].get("full_name") != repository:
         raise Unverified("issue number is not a verified PR in the requested repository")
 

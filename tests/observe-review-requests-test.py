@@ -54,6 +54,9 @@ rejects_http(b"HTTP/2.0 403 Forbidden\r\n\r\n[]")
 rejects_http(b"HTTP/2.0 200 OK\r\n\r\nnot-json")
 rejects_http(b"HTTP/2.0 200 OK\r\n" + link.replace(b"page=2", b"page=9") + b"\r\n[]")
 rejects_http(b"HTTP/2.0 200 OK\r\n" + link + link + b"\r\n[]")
+rejects_http(b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps([event(n) for n in range(1, 101)]).encode())
+rejects_http(b"HTTP/2.0 200 OK\r\n\r\n" + b'{"id":1,"id":2}')
+rejects_http(b"HTTP/2.0 200 OK\r\n\r\n" + b'[{"id":1,"id":2,"event":"review_requested"}]')
 
 
 def scans(pages):
@@ -120,5 +123,59 @@ assert all(secret not in result.stdout + result.stderr for secret in (b"acme/wid
 env["GH_HOST"] = "other.example"
 bad_host = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=10)
 assert bad_host.returncode == 3 and b"UNVERIFIED" in bad_host.stderr and not bad_host.stdout
+env.pop("GH_HOST")
+# An issue number that has no Pulls API resource is not a PR. The observer
+# must refuse before it requests event history.
+stub.write_text(
+    "#!/usr/bin/env python3\nimport sys\n"
+    "assert sys.argv[5].endswith('/pulls/7'), 'event scan ran for an ordinary issue'\n"
+    "sys.stdout.buffer.write(b'HTTP/2.0 404 Not Found\\r\\n\\r\\n{}')\n",
+    encoding="utf-8",
+)
+stub.chmod(0o700)
+ordinary = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=10)
+assert ordinary.returncode == 3 and b"UNVERIFIED" in ordinary.stderr and not ordinary.stdout
+
+# Both complete event passes must traverse Link page 2 and compare target
+# identity. A missing next Link on a full page or a target changed on pass 2
+# cannot report a historical request observation.
+page1 = [event(n, "labeled") for n in range(1, 101)]
+page1[0] = event(1)
+page2 = [event(101, "review_request_removed", target="team")]
+first_page = b"HTTP/2.0 200 OK\r\n" + link + b"\r\n" + json.dumps(page1).encode()
+second_page = b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps(page2).encode()
+counter = FIXTURE / "event-calls.txt"
+
+
+def paged_stub(*, changed=False, missing_link=False):
+    source = (
+        "#!/usr/bin/env python3\nimport json,sys,pathlib\n"
+        "counter=pathlib.Path(" + repr(str(counter)) + ")\n"
+        "calls=int(counter.read_text()) if counter.exists() else 0\n"
+        "counter.write_text(str(calls+1))\n"
+        "url=sys.argv[5]\n"
+        "if url.endswith('/pulls/7'):\n"
+        "  sys.stdout.buffer.write(b'HTTP/2.0 200 OK\\r\\n\\r\\n'+json.dumps({'number':7,'base':{'repo':{'full_name':'acme/widgets'}}}).encode())\n"
+        "elif url.endswith('page=1'):\n"
+        "  sys.stdout.buffer.write(" + repr(first_page if not missing_link else b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps(page1).encode()) + ")\n"
+        "elif url.endswith('page=2'):\n"
+        "  payload=" + repr(second_page if not changed else b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps([dict(page2[0], requested_team={"slug": "other-team"})]).encode()) + "\n"
+        "  sys.stdout.buffer.write(payload)\n"
+        "else: sys.exit(9)\n"
+    )
+    stub.write_text(source, encoding="utf-8")
+    stub.chmod(0o700)
+
+
+counter.write_text("0", encoding="utf-8")
+paged_stub()
+multi = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=10)
+assert multi.returncode == 0 and not multi.stderr, multi.stderr
+assert json.loads(multi.stdout)["page_count"] == 2 and json.loads(multi.stdout)["event_count"] == 2
+assert counter.read_text(encoding="utf-8") == "5"  # identity GET + two pages per pass
+counter.write_text("0", encoding="utf-8")
+paged_stub(missing_link=True)
+unbounded = subprocess.run(cmd, env=env, capture_output=True, check=False, timeout=10)
+assert unbounded.returncode == 3 and b"UNVERIFIED" in unbounded.stderr and not unbounded.stdout
 print("observe-review-requests tests: PASS")
 print("review_requests_fixture=" + str(FIXTURE), file=sys.stderr)
