@@ -84,6 +84,8 @@ refuses(sample(sources=[source(pages=[page(exit_cursor="cursor-1", has_next=True
                                      page(entry="cursor-1", exit_cursor="cursor-1", has_next=True)])]))
 refuses(sample(sources=[source(pages=[page(exit_cursor="cursor-1", has_next=True),
                                      page(entry="cursor-1", exit_cursor="cursor-1", has_next=False)])]))
+refuses(sample(sources=[source(pages=[page(exit_cursor="cursor-1", has_next=True),
+                                     page(entry="cursor-1", exit_cursor="cursor-2", has_next=False)])]))
 refuses(sample(sources=[source(pages=[])]))
 refuses(sample(sources=[source(pages=[dict(page(), has_next="false")])]))
 refuses(dict(sample(), schema_version=True))

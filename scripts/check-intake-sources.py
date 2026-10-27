@@ -135,6 +135,8 @@ def evaluate(value, start, end, required):
                 raise Unverified("page cursor repeats an earlier output")
             if page["has_next"] and out is None:
                 raise Unverified("page declares another page without new cursor")
+            if not page["has_next"] and out is not None:
+                raise Unverified("terminal page must not advertise a continuation cursor")
             if out is not None:
                 cursors.add(out)
             if not page["has_next"] and page is not pages[-1]:

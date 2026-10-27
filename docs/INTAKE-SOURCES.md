@@ -22,6 +22,9 @@ stable opaque names and can be extended by a later schema revision. Each
 source has `source_id`, `source_type`, `captured_at`, `coverage` (`complete` or
 `partial`), and `pages`. Each page records `cursor_in`, `cursor_out`,
 `has_next`, and bounded opaque `request_ids`.
+For this v1 contract, a terminal page (`has_next: false`) must have
+`cursor_out: null`; a non-null continuation cursor, even a new one, makes the
+supplied chain internally contradictory.
 
 The validator refuses duplicate sources/requests, unknown source IDs,
 broken/repeated cursors, inconsistent page ordering, missing pages and
