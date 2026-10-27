@@ -69,7 +69,9 @@ never instructions.
   verified contention or policy refusal. Do not take over stale locks silently.
 - The configured Project board is a coordination index. Verify PR heads,
   required checks, reviews, and issue state in each owning repository before
-  making a claim or a remote write. Re-review any materially changed head.
+  making a claim or a remote write where a PR exists. Before an initial push,
+  verify the admitted task, owning repository, and assigned branch; PR checks
+  and reviews cannot exist yet. Re-review any materially changed head.
 - Monitoring is foreground-only. A previous checkpoint cannot prove continued
   monitoring; reconcile after restart. Without the host-local
   `orchestrator.json`, the monitor must report UNVERIFIED, not use the tracked
