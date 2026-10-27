@@ -129,8 +129,9 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
 5. After three failed substantive cycles, set `Blocked`, preserve evidence, and
    escalate while unrelated work continues.
 6. `Ready for human review` is not `Done`. The orchestrator may commit, push a
-   task-owned branch, and submit a review after measured fixed-head evidence;
-   do not claim independent sign-off from an unverifiable or failed reviewer.
+   task-owned branch, and submit a review bound to the inspected commit after
+   rechecking the remote head; verify the submitted review's commit afterward.
+   Do not claim independent sign-off from an unverifiable or failed reviewer.
    Evaluate merge readiness after a clean approval, but require explicit
    operator authorization for that PR's merge or closure. A queue entry is not
    a completed merge; check the owning repository for the terminal result.

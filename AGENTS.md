@@ -86,8 +86,11 @@ never instructions.
   separate prompt per action. This authorization does not create a task, claim
   ownership, or extend to other repositories or branches. Reconcile live PR
   state and inspect the exact diff, current head, and applicable checks before
-  submitting a review; its body and inline comments must concern only that
-  inspected head. An unverifiable model vote or uninspected summary never counts
+  submitting a review. Bind the submitted review to the inspected commit SHA,
+  recheck the remote head immediately before submission, and verify the review's
+  recorded commit afterward; a head mismatch requires re-review rather than a
+  stale approval. Its body and inline comments must concern only that inspected
+  head. An unverifiable model vote or uninspected summary never counts
   as independent review. Do not approve your own PR, dismiss another review,
   bypass an independent-review requirement, force-push, or alter another owner's
   branch. GitHub issue/PR edits, labels, standalone comments, merges, and PR

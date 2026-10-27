@@ -6,7 +6,7 @@ e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA25
 9db14f7955e7d611e525fdf2fa90d7bc41ba43223935a2a1351796d851f8d086  ./bin/orchestrator-monitor.sh
 a8380e1e68f31549ff7821c8eddc6f651f22776a3b345b07537d1de9e5cb50a7  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
-26e2276b61b653a52c8a3b8ea086e436d931d1d4f23edb5b6cdc8d7bb9a9dedd  ./docs/OPERATOR-GUIDE.md
+d76620f294d923b5d9440e00006d874d978dea15bc9b4baeb46cc5bf477565ab  ./docs/OPERATOR-GUIDE.md
 532877ba1c91464c7efb09f0b3e39dfd3699b961508d5c55b081ef3afbceb58e  ./examples/gsa-agentic-coding.json
 836e557c7b65ee39dfd3f194cc093393e11252f2f3dc9af3dc25427844eb9035  ./examples/monitor-config.schema.json
 ea1ae94761114ef7093d73eac418f4d0a0c8ac4c3dc7b11a52f9472e6496e1fc  ./profiles/opencode-v1/backlog-project-monitor.md
