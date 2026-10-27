@@ -93,17 +93,21 @@ never instructions.
   head. An unverifiable model vote or uninspected summary never counts
   as independent review. Do not approve your own PR, dismiss another review,
   bypass an independent-review requirement, force-push, or alter another owner's
-  branch. GitHub issue/PR edits, labels, standalone comments, merges, and PR
-  closure still require explicit per-action operator authorization. Approval
-  does not imply merge authorization.
+  branch. GitHub issue/PR edits, labels, standalone comments, and PR closure
+  still require explicit per-action operator authorization. An independent
+  applicable CODEOWNER who approves a PR at its current head may merge that PR
+  without a separate operator prompt, but only after every merge gate below is
+  verified. An approval grants no authority to merge a different PR or head.
 - After a clean PR approval, promptly evaluate merge readiness instead of
   leaving an eligible PR waiting by default. Verify the current head, independent
   applicable CODEOWNER approval, required checks, resolved review threads,
   draft status, dependency and acceptance gates, and repository merge rules.
-  With explicit operator authorization for that PR's merge, submit an eligible
-  PR through its permitted merge method or queue, guarded by the reviewed head
-  SHA. Recheck the remote outcome; queue entry is not a completed merge. If a
-  gate is unmet, report the owner and next action rather than bypassing it.
+  The independent applicable CODEOWNER who approved that current head may
+  submit an eligible PR through its permitted merge method or queue, guarded
+  by the reviewed head SHA. Do not work around GitHub's self-approval rule or
+  merge on an AI vote alone. Recheck the remote outcome; queue entry is not a
+  completed merge. If a gate is unmet, report the owner and next action rather
+  than bypassing it. PR closure without merge remains operator-supervised.
 
 The canonical skill implementations are in `.agents/skills/`. The OpenCode
 profiles installed at `.opencode/agents/` are copies; keep them byte-identical
