@@ -93,7 +93,10 @@ def fetch(owner, repo, after, deadline):
     proxy_vars = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
     if any(os.environ.get(name) for name in proxy_vars):
         raise Unverified("proxy routing needs an explicitly reviewed transport")
-    argv = ["gh", "api", "graphql", "-f", f"query={QUERY}", "-f", f"owner={owner}", "-f", f"repo={repo}"]
+    # Absolute public API URL pins the request host even if gh's config or
+    # current-repository context names an enterprise/default host.
+    argv = ["gh", "api", "--method", "POST", "https://api.github.com/graphql",
+            "-f", f"query={QUERY}", "-f", f"owner={owner}", "-f", f"repo={repo}"]
     if after is not None:
         argv.extend(["-f", f"after={after}"])
     process = None
@@ -116,8 +119,8 @@ def fetch(owner, repo, after, deadline):
                         selector.unregister(stream)
                         continue
                     key.data.extend(chunk)
-                    if len(key.data) > MAX_BYTES:
-                        raise Unverified("GitHub issues response exceeds byte bound")
+                    if len(output) + len(diagnostic) > MAX_BYTES:
+                        raise Unverified("GitHub issues response and diagnostics exceed combined byte bound")
         if process.wait(timeout=max(0.0, deadline - time.monotonic())) != 0 or not output:
             raise Unverified("GitHub issues response unavailable")
         try:
@@ -179,6 +182,12 @@ def scan(repository, start, end, get, deadline):
                 boundary = True
             if start <= created < end:
                 page_ids.append(number)
+        next_cursor = info.get("endCursor")
+        if info["hasNextPage"]:
+            if not isinstance(next_cursor, str) or not 1 <= len(next_cursor) <= 256 or next_cursor in cursors:
+                raise Unverified("issue cursor absent or repeated")
+        elif next_cursor is not None and not isinstance(next_cursor, str):
+            raise Unverified("terminal issue cursor malformed")
         if boundary:
             # Stop only after consuming the entire page, including all entries
             # that share a boundary second. Later pages cannot have an older
@@ -187,12 +196,7 @@ def scan(repository, start, end, get, deadline):
             return pages
         pages.append(tuple(page_ids))
         if not info["hasNextPage"]:
-            if info.get("endCursor") is not None and not isinstance(info["endCursor"], str):
-                raise Unverified("terminal issue cursor malformed")
             return pages
-        next_cursor = info.get("endCursor")
-        if not isinstance(next_cursor, str) or not 1 <= len(next_cursor) <= 256 or next_cursor in cursors:
-            raise Unverified("issue cursor absent or repeated")
         cursors.add(next_cursor)
         cursor = next_cursor
     raise Unverified("issue page limit reached before termination")

@@ -26,8 +26,13 @@ assumes direct GitHub API routing. A managed endpoint requiring a corporate
 proxy remains UNVERIFIED until that transport is explicitly reviewed. Do not
 disable TLS verification to force a run.
 
-Each page response and its diagnostics are capped at 64 KiB, at most 10 pages
-per pass and one shared 60-second deadline across both passes. Timeout, a
+The GitHub GraphQL query uses the absolute `https://api.github.com/graphql`
+endpoint. POST is the GraphQL transport operation, **not** a GitHub state
+change: the document is a query and requests Issues metadata only. A test
+asserts the exact query/host shape; local `gh` still inherits its credential.
+The response and diagnostics share one **combined** 64 KiB cap per call, with
+at most 10 pages per pass and one shared 60-second deadline across both passes.
+Timeout, a
 failed API call, malformed response, cursor cycle, duplicate issue number,
 unexpected creation ordering, or a page cap before termination returns
 `UNVERIFIED` (exit 3). The second pass must see the same ordered in-window

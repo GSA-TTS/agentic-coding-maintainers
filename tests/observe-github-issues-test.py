@@ -71,6 +71,12 @@ rejects([response([node(1), node(1)])])
 rejects([{"errors": [{"message": "rate limit"}], "data": None}])
 rejects([response([{"number": True, "createdAt": "2026-10-05T00:00:00Z"}])])
 rejects([response([node(1)], True, None)])
+rejects([response([node(1, "2026-10-26T00:00:00Z")], True, None)])
+for invalid in ({}, {"data": None}, {"data": {}}, {"data": {"repository": None}},
+                {"data": {"repository": {}}},
+                {"data": {"repository": {"issues": {"nodes": []}}}},
+                {"data": {"repository": {"issues": {"pageInfo": {"hasNextPage": False}}}}}):
+    rejects([invalid])
 
 # Real CLI path: a local gh stub emits two small responses and refuses any
 # command other than the allowlisted GraphQL read. No title/body is emitted.
@@ -78,11 +84,12 @@ stub = FIXTURE / "gh"
 stub.write_text(
     "#!/usr/bin/env python3\n"
     "import json,sys\n"
-    "assert sys.argv[1:3] == ['api','graphql']\n"
+    "assert sys.argv[1:4] == ['api','--method','POST']\n"
+    "assert sys.argv[4] == 'https://api.github.com/graphql'\n"
     "query=next(arg for arg in sys.argv if arg.startswith('query='))[6:]\n"
     "assert query == " + repr(observer.QUERY) + " and query.lstrip().startswith('query(')\n"
     "assert 'mutation' not in query.lower()\n"
-    "assert all(arg.startswith(('query=','owner=','repo=','after=')) for arg in sys.argv[3:] if not arg.startswith('-'))\n"
+    "assert all(arg in ('https://api.github.com/graphql','-f') or arg.startswith(('query=','owner=','repo=','after=')) for arg in sys.argv[4:])\n"
     "assert any(arg=='owner=acme' for arg in sys.argv) and any(arg=='repo=widgets' for arg in sys.argv)\n"
     "print(json.dumps(" + repr(response([node(7)])) + "))\n",
     encoding="utf-8",
@@ -111,5 +118,15 @@ env.pop("GH_HOST")
 env["HTTPS_PROXY"] = "http://invalid.example"
 proxy_refusal = subprocess.run(command, env=env, capture_output=True, check=False, timeout=10)
 assert proxy_refusal.returncode == 3 and b"UNVERIFIED" in proxy_refusal.stderr and not proxy_refusal.stdout
+env.pop("HTTPS_PROXY")
+for body in ("import sys; sys.stdout.write('x'*70000)\n",
+             "import sys; sys.stderr.write('x'*70000)\n",
+             "import sys; sys.stdout.write('x'*35000); sys.stderr.write('y'*35000)\n",
+             "import sys; sys.exit(9)\n",
+             "print('not-json')\n"):
+    stub.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+    stub.chmod(0o700)
+    failed = subprocess.run(command, env=env, capture_output=True, check=False, timeout=10)
+    assert failed.returncode == 3 and b"UNVERIFIED" in failed.stderr and not failed.stdout
 print("observe-github-issues tests: PASS")
 print("github_issues_fixture=" + str(FIXTURE), file=sys.stderr)
