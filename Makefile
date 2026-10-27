@@ -22,6 +22,7 @@ test:
 	python3 -I -B tests/plan-exception-test.py
 	python3 -I -B tests/evaluate-exception-replay-test.py
 	python3 -I -B tests/check-intake-sources-test.py
+	python3 -I -B tests/observe-github-issues-test.py
 	bash tests/operating-surface-test.sh
 
 check: test
