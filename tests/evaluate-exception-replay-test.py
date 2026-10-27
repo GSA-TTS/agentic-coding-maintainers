@@ -9,7 +9,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 CLI = ROOT / "scripts/evaluate-exception-replay.py"
 
 
-def case(cid, *, human="HUMAN_TRIAGE", planner="HUMAN_TRIAGE", verdict="UNVERIFIED", independent=True):
+def case(cid: str, *, human: str | None = "HUMAN_TRIAGE", planner: str | None = "HUMAN_TRIAGE",
+         verdict: str | None = "UNVERIFIED", independent: bool = True):
     return {"case_id": cid, "maintainer_action": human, "planner_action": planner,
             "planner_verdict": verdict, "independent_label": independent}
 
@@ -32,6 +33,7 @@ def report(result, *, expected_rc):
 good = report(replay(["case-1", "case-2"], [case("case-1"), case("case-2", human="DEFER_CI_MEASUREMENT",
                                                               planner="REVIEW_INDEPENDENT_WORK")]), expected_rc=0)
 assert good["expected_count"] == 2 and good["comparable_count"] == 2 and good["agreement_count"] == 1
+assert good["verdict_measured_count"] == 2 and good["missing_verdict_count"] == 0
 assert good["confusion_coverage"] == "SUPPRESSED_SMALL_COHORT" and good["confusion_counts"] is None
 missing = report(replay(["case-1", "case-2"], [case("case-1")]), expected_rc=3)
 assert missing["missing_count"] == 1 and missing["received_count"] == 1
@@ -39,9 +41,19 @@ unknown = report(replay(["case-1"], [case("case-1", independent=False)]), expect
 assert unknown["unlabelled_count"] == 1 and unknown["comparable_count"] == 0
 unsafe = report(replay(["case-1"], [case("case-1", planner="MERGE", verdict="PASS")]), expected_rc=3)
 assert unsafe["unsafe_recommendation_count"] == 1 and unsafe["rollout_status"] == "NOT_EVALUATED"
+verdict_only = report(replay(["case-1"], [case("case-1", verdict="PASS")]), expected_rc=3)
+assert verdict_only["unsafe_recommendation_count"] == 1
 false_pass_action = report(replay(["case-1"], [case("case-1", planner="PASS")]), expected_rc=3)
 assert false_pass_action["unsafe_recommendation_count"] == 1
 assert false_pass_action["confusion_counts"] is None
+missing_verdict = report(replay(["case-1"], [case("case-1", verdict=None)]), expected_rc=3)
+assert missing_verdict["missing_verdict_count"] == 1 and missing_verdict["verdict_measured_count"] == 0
+missing_action = report(replay(["case-1"], [case("case-1", planner=None)]), expected_rc=3)
+assert missing_action["comparable_count"] == 0
+missing_label = report(replay(["case-1"], [case("case-1", human=None)]), expected_rc=3)
+assert missing_label["independently_labelled_count"] == 0 and missing_label["unlabelled_count"] == 1
+four = report(replay([f"case-{n}" for n in range(1, 5)], [case(f"case-{n}") for n in range(1, 5)]), expected_rc=0)
+assert four["confusion_coverage"] == "SUPPRESSED_SMALL_COHORT" and four["confusion_counts"] is None
 five = report(replay([f"case-{n}" for n in range(1, 6)], [case(f"case-{n}") for n in range(1, 6)]), expected_rc=0)
 assert five["confusion_coverage"] == "DISPLAYED" and five["confusion_counts"]["HUMAN_TRIAGE"]["HUMAN_TRIAGE"] == 5
 

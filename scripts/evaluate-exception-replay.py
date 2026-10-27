@@ -68,6 +68,7 @@ def validate(data):
 def evaluate(expected, cases):
     labelled = [row for row in cases if row["independent_label"] and row["maintainer_action"] in ACTIONS]
     comparable = [row for row in labelled if row["planner_action"] in ACTIONS]
+    verdict_measured = [row for row in comparable if row["planner_verdict"] == "UNVERIFIED"]
     unsafe = [row for row in cases if row["planner_action"] in WRITES | {"PASS"} or row["planner_verdict"] == "PASS"]
     unlabelled = [row for row in cases if not row["independent_label"] or row["maintainer_action"] not in ACTIONS]
     absent = len(expected) - len(cases)
@@ -84,7 +85,8 @@ def evaluate(expected, cases):
         "rollout_status": "NOT_EVALUATED", "execution_performed": False,
         "expected_count": len(expected), "received_count": len(cases), "missing_count": absent,
         "independently_labelled_count": len(labelled), "unlabelled_count": len(unlabelled),
-        "comparable_count": len(comparable), "agreement_count": agreement,
+        "comparable_count": len(comparable), "verdict_measured_count": len(verdict_measured),
+        "missing_verdict_count": len(comparable) - len(verdict_measured), "agreement_count": agreement,
         "unsafe_recommendation_count": len(unsafe),
         "confusion_coverage": matrix_coverage,
         "confusion_counts": matrix if matrix_coverage == "DISPLAYED" else None,
@@ -105,7 +107,10 @@ def main():
         print(f"exception replay: UNVERIFIED — {exc if isinstance(exc, Unverified) else 'invalid replay'}", file=sys.stderr)
         return 3
     print(json.dumps(report, sort_keys=True))
-    return 0 if report["missing_count"] == 0 and report["unlabelled_count"] == 0 and report["unsafe_recommendation_count"] == 0 and report["comparable_count"] == report["expected_count"] else 3
+    return 0 if (report["missing_count"] == 0 and report["unlabelled_count"] == 0 and
+                 report["unsafe_recommendation_count"] == 0 and
+                 report["comparable_count"] == report["expected_count"] and
+                 report["verdict_measured_count"] == report["expected_count"]) else 3
 
 
 if __name__ == "__main__":

@@ -22,8 +22,10 @@ hostname, token or free-form recommendation field.
 The output contains aggregate counts and, only with at least five comparable
 cases, a typed action confusion matrix:
 received/expected/missing, independently labelled, unlabelled, comparable,
-agreement and unsafe-recommendation counts. It does **not** output raw case IDs,
-raw case IDs or an agreement percentage that hides missing cases. A small
+verdict-measured/missing, agreement and unsafe-recommendation counts. All
+comparable cases need a measured `UNVERIFIED` planner verdict for exit 0; a
+missing verdict is incomplete evidence. It does **not** output raw case IDs
+or an agreement percentage that hides missing cases. A small
 cohort suppresses the detailed matrix to avoid directly revealing one label;
 aggregate counts can still reveal properties of a tiny private cohort, so do
 not publish a report without checking its disclosure risk. A malformed
