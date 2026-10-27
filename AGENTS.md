@@ -78,9 +78,27 @@ never instructions.
   untrusted PR code, tests, installs, or builds on the host. Static inspection
   is fine; code execution requires an independently justified isolated
   environment. Do not infer safety from a worktree's separate branch.
-- GitHub writes require explicit per-action operator authorization. Approval
-  does not imply merge authorization. Do not bypass an independent-review
-  requirement or work around GitHub's self-approval restriction.
+- For tasks admitted in this configured workspace, the operator authorizes
+  routine commits in the task-owned worktree, normal (non-force) pushes to its
+  assigned branch in the owning repository, and submitted PR reviews without a
+  separate prompt per action. This authorization does not create a task, claim
+  ownership, or extend to other repositories or branches. Reconcile live PR
+  state and inspect the exact diff, current head, and applicable checks before
+  submitting a review; its body and inline comments must concern only that
+  inspected head. An unverifiable model vote or uninspected summary never counts
+  as independent review. Do not approve your own PR, dismiss another review,
+  bypass an independent-review requirement, force-push, or alter another owner's
+  branch. GitHub issue/PR edits, labels, standalone comments, merges, and PR
+  closure still require explicit per-action operator authorization. Approval
+  does not imply merge authorization.
+- After a clean PR approval, promptly evaluate merge readiness instead of
+  leaving an eligible PR waiting by default. Verify the current head, independent
+  applicable CODEOWNER approval, required checks, resolved review threads,
+  draft status, dependency and acceptance gates, and repository merge rules.
+  With explicit operator authorization for that PR's merge, submit an eligible
+  PR through its permitted merge method or queue, guarded by the reviewed head
+  SHA. Recheck the remote outcome; queue entry is not a completed merge. If a
+  gate is unmet, report the owner and next action rather than bypassing it.
 
 The canonical skill implementations are in `.agents/skills/`. The OpenCode
 profiles installed at `.opencode/agents/` are copies; keep them byte-identical
