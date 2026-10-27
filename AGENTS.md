@@ -47,6 +47,13 @@ here.
 
 `@wz-gsa` is the bootstrap owner until a visible organization team receives
 explicit repository access and maintainers approve the CODEOWNERS transition.
+During this solo-maintainer phase, an agent's QA/security review is useful
+evidence but is not an independent GitHub approval from another CODEOWNER.
+The live main-branch ruleset requires a CODEOWNER approval and GitHub will not
+count a PR author's own approval. Do not present an unmergeable solo-authored PR
+as approved or relax the ruleset to work around that restriction. Preserve the
+PR and report the unmet gate until a collaborator with applicable access can
+review it through the normal process.
 
 ## Coordinated Work
 
