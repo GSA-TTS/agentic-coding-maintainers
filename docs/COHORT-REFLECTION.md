@@ -35,12 +35,17 @@ access to the mapping changes:
 | `handoff` | `review_event_id`; matching `head_sha`; `checks`: passing/failing/unavailable/unknown/not_applicable |
 | `outcome` | `handoff_event_id`; matching `head_sha`; opaque `repository_event_id` |
 | `eligibility_correction` | earlier same-case `intake_event_id`; `replacement`: eligible/excluded/unknown; `reason_code`: duplicate_review/spam_review/external_pr_review/eligibility_review/clerical_error |
+| `pr_association` | earlier same-case `intake_event_id`; `repository` (`owner/repo`); `pr_number`; full `head_sha`; `provenance: agent_recorded` |
 
 The parser rejects missing intake, orphan/cross-case/wrong-type references,
 duplicate IDs or intakes, invalid or unexpected fields, contradictory head
 references, out-of-order recorded timestamps, and incomplete final lines. It
 limits total bytes and event count; any failure is `UNVERIFIED` (exit 3), not a
-partial clean report. The cohort is the 28-day window of **first intake** events
+partial clean report. It admits at most one `pr_association` per case in this first schema. A changed
+PR head or association requires a separately reviewed append-only correction
+design. Recording an association proves only that the agent wrote it, not
+that a maintainer confirmed it or that it warrants cohort delivery credit. The
+cohort is the 28-day window of **first intake** events
 before `--as-of`. Eligible blocked and cancelled cases stay in the denominator;
 excluded and unknown eligibility cases are disclosed separately. Report IDs
 are keyed pseudonyms, not raw case IDs; preserve the private key to reconcile
@@ -103,8 +108,10 @@ attestation. Therefore **all** documented outcomes remain
 `documented_outcome_ids_unverified`, `verified_completion_ids` is empty, and
 every eligible case remains in `unfinished_for_verified_throughput`. This is
 intentional: no count of verified throughput is manufactured from operator
-input. A later, separately reviewed attestation step must bind current PR
-head, required checks, independent approval and repository outcome together.
+input. A later, separately reviewed attestation step must bind the applicable
+**delivery event** to repository evidence. Review/check compliance is measured
+separately: see [`VERIFIED-OUTCOMES.md`](VERIFIED-OUTCOMES.md). For old merges,
+present-day GitHub state is a labelled historical proxy, not at-merge proof.
 
 Use the recorded-case IDs behind each bucket when reflecting, not a composite
 productivity score. Recommendations are advisory and capped to two fixed

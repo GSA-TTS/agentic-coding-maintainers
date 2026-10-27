@@ -1,6 +1,6 @@
 # Workflow evaluation: measured state first
 
-The aim is to improve **verified maintainer outcomes**, not maximize agent
+The aim is to improve **evidenced maintainer delivery and quality**, not maximize agent
 activity. This is a small, operator-invoked, read-only evaluation loop. It
 creates no GitHub issues, PRs, reviews, or state changes, and sends no evidence
 or repository content to a model. The operator decides which recommendations to
@@ -9,7 +9,13 @@ adopt.
 The initial intake sources and eligibility policy are recorded in
 [`INTAKE-INVENTORY.md`](INTAKE-INVENTORY.md). Routine dependencies are in scope;
 duplicates, suspected spam and external PRs await maintainer disposition.
-Verified-outcome criteria are deliberately a separate decision. An eligibility
+Delivery criteria were decided in [`VERIFIED-OUTCOMES.md`](VERIFIED-OUTCOMES.md):
+implementation, routine dependency work and docs use a repository merge or
+publication event; submitted reviews and authorized private security assessments
+have their own delivery evidence. Compliance, finding disposition and 30-day
+follow-up are **separate axes**. A merged change with a failing required check
+is delivered but noncompliant; missing check evidence is UNVERIFIED compliance.
+An eligibility
 correction now preserves the original intake decision as an append-only event;
 source, duplicate-map and rework corrections remain follow-up work under issue
 #30. The reader now reports recorded unknown-disposition delay for cases in the
@@ -51,22 +57,27 @@ ledger. Optional, **operator-asserted** reconciliation against a separately
 captured request inventory is documented in `INTAKE-INVENTORY.md`. Its source
 completeness flag is not an independently verified collection record. Before
 adding a dashboard or automated issue filing, implement collection provenance
-and current-head repository-outcome attestations.
+and per-type delivery attestation. Historical present-day checks are labelled
+proxies, not proof of at-merge compliance.
 Freeze the intake cohort and report numerator/denominator IDs, exclusions,
 unknown coverage and snapshot time. Cases still open, blocked, cancelled or
-abandoned remain in the denominator. Link a verified outcome to current-head
-review, checks and a repository event; do not count PR creation, commits or
-`Ready for human review` as completion. Classify substantive post-review rework
+abandoned remain in the denominator. Link attested delivery to its category's
+repository merge/publication or submitted-review/private-assessment evidence;
+measure head-bound review and checks on a **separate compliance axis**. Do not
+count PR creation, commits or `Ready for human review` as delivery. Classify substantive post-review rework
 by reviewed SHA and changed SHA; preserve older review events when head changes.
 
 For a four-week rolling intake cohort, consider these **paired** measures:
 
 1. Intake coverage = eligible observed requests recorded / eligible observed
    requests (show all exclusions and missing sources).
-2. Verified completions **and** still-open/blocked cases, by case type and
-   intake cohort. Count only outcomes with current-head evidence.
-3. Age from frozen intake to verified handoff, with unfinished ages beside
-   completed-case latency; no completed-only average.
+2. Attested delivery **and** still-open/blocked cases, by case type and intake
+   cohort. Show separately whether applicable checks/review were compliant,
+   failed, missing, or historical proxies. The attestor is not implemented yet.
+3. Age from frozen intake to the category-specific attested **delivery event**,
+   with unfinished ages beside completed-case latency. If handoff latency is
+   useful, report it separately; a handoff is not delivery. Never show only a
+   completed-case average.
 4. Cases needing substantive rework after independent review / cases receiving
    such a review. Show the three-cycle escalation count separately.
 5. Evidence coverage = attempted handoffs with applicable checks, reviewed

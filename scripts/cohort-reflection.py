@@ -24,11 +24,12 @@ MAX_SOURCES = 20
 MAX_REQUESTS = 2000
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
-TYPES = {"intake", "transition", "review", "rework", "handoff", "outcome", "eligibility_correction"}
+TYPES = {"intake", "transition", "review", "rework", "handoff", "outcome", "eligibility_correction", "pr_association"}
 STATES = {"open", "blocked", "cancelled", "abandoned", "ready_for_human_review"}
 ELIGIBILITY = {"eligible", "excluded", "unknown"}
 CORRECTION_REASONS = {"duplicate_review", "spam_review", "external_pr_review", "eligibility_review", "clerical_error"}
 CASE_TYPES = {"implementation", "review", "security", "documentation", "other"}
+REPO_ID = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CHECKS = {"passing", "failing", "unavailable", "unknown", "not_applicable"}
 SHARED = {"schema_version", "event_id", "case_id", "event_type", "occurred_at", "recorded_at"}
 FIELDS = {
@@ -39,6 +40,7 @@ FIELDS = {
     "handoff": {"head_sha", "review_event_id", "checks"},
     "outcome": {"head_sha", "handoff_event_id", "repository_event_id"},
     "eligibility_correction": {"intake_event_id", "replacement", "reason_code"},
+    "pr_association": {"intake_event_id", "repository", "pr_number", "head_sha", "provenance"},
 }
 
 
@@ -124,6 +126,7 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
     intake: dict[str, datetime] = {}
     prior_recorded: datetime | None = None
     corrected: set[str] = set()
+    associated: set[str] = set()
     for line in lines:
         try:
             event = json.loads(line, object_pairs_hook=unique_fields)
@@ -160,7 +163,7 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
             raise Unverified("event predates case intake")
         elif kind == "transition" and (not isinstance(event["state"], str) or event["state"] not in STATES):
             raise Unverified("transition state is invalid")
-        elif kind in {"review", "handoff", "outcome"} and (not isinstance(event["head_sha"], str) or not SHA.fullmatch(event["head_sha"])):
+        elif kind in {"review", "handoff", "outcome", "pr_association"} and (not isinstance(event["head_sha"], str) or not SHA.fullmatch(event["head_sha"])):
             raise Unverified("head SHA is invalid")
         elif kind == "review" and (not isinstance(event["independent"], str) or event["independent"] not in {"yes", "no", "unknown"}):
             raise Unverified("review independence is invalid")
@@ -174,6 +177,22 @@ def events_from(data: bytes, as_of: datetime) -> list[dict]:
                     not isinstance(event["reason_code"], str) or event["reason_code"] not in CORRECTION_REASONS):
                 raise Unverified("eligibility correction is invalid, duplicate or cross-case")
             corrected.add(event["case_id"])
+        elif kind == "pr_association":
+            reference = event["intake_event_id"]
+            target = seen.get(reference) if isinstance(reference, str) else None
+            eligibility_at_association = next((prior["replacement"] for prior in reversed(events)
+                                              if prior["case_id"] == event["case_id"] and
+                                              prior["event_type"] == "eligibility_correction"),
+                                              target["eligibility"] if target is not None else None)
+            if (target is None or target["event_type"] != "intake" or target["case_id"] != event["case_id"] or
+                    event["case_id"] in associated or occurred < timestamp(target["recorded_at"]) or
+                    eligibility_at_association != "eligible" or
+                    target["case_type"] not in {"implementation", "documentation"} or
+                    not isinstance(event["repository"], str) or not REPO_ID.fullmatch(event["repository"]) or
+                    type(event["pr_number"]) is not int or not 1 <= event["pr_number"] <= 2147483647 or
+                    event["provenance"] != "agent_recorded"):
+                raise Unverified("PR association is invalid, duplicate or cross-case")
+            associated.add(event["case_id"])
         elif kind in {"handoff", "rework", "outcome"}:
             ref_field = "handoff_event_id" if kind == "outcome" else "review_event_id"
             referenced = seen.get(event[ref_field])
@@ -261,7 +280,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         if any(row["event_type"] == "outcome" for row in rows):
             documented_outcomes.append(case_id)
         # Recorded outcomes remain unfinished for VERIFIED throughput until a
-        # separate repository/head/check attestation has been established.
+        # separate category-specific delivery attestation has been established.
         unfinished.append((case_id, latest,
                            round((as_of - timestamp(rows[0]["occurred_at"])).total_seconds() / 86400, 2)))
         if any(row["event_type"] == "review" and row["independent"] == "yes" for row in rows):
@@ -323,7 +342,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "needs_maintainer_disposition": disposition_queue,
         "disposition_policy": "manual review; review_due after 7 days since recording; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
-        "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: no live GitHub/head/check attestation",
+        "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: category-specific delivery attestation not implemented; compliance separately unmeasured",
         "unfinished_for_verified_throughput": sorted(
             ({"case_id": label[cid], "state": state, "age_days": age} for cid, state, age in unfinished),
             key=lambda row: (-row["age_days"], row["case_id"]),
@@ -332,7 +351,7 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
         "post_review_substantive_rework_ids": sorted(label[cid] for cid in reworked),
         "recommendations": [
             "Reconcile the intake cohort against an independently defined request inventory.",
-            "Verify outcome head, checks and repository event before counting any completion.",
+            "Verify category-specific delivery evidence before counting completion; report applicable check/review compliance separately.",
         ][:3],
     }
 

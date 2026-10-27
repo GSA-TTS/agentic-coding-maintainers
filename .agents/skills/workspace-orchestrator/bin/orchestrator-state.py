@@ -111,11 +111,22 @@ def verify_clean_checkout(worktree: str) -> None:
             mode, oid, stage = metadata.split(" ")
         except ValueError as exc:
             raise UnknownError("tracked checkout index is malformed") from exc
-        if stage != "0" or mode not in {"100644", "100755", "120000"} or not re.fullmatch(r"[0-9a-f]{40,64}", oid):
+        if stage != "0" or mode not in {"100644", "100755", "120000", "160000"} or not re.fullmatch(r"[0-9a-f]{40,64}", oid):
             raise UnknownError("cannot compare non-regular or conflicted checkout entry")
         file = root / name
         if not file.parent.resolve().is_relative_to(root):
             raise UnknownError("tracked checkout path escapes worktree")
+        if mode == "160000":
+            # An uninitialized gitlink is safe to inspect without invoking the
+            # nested repository's configuration or fetching its commit.
+            try:
+                if file.is_symlink() or (file.exists() and not file.is_dir()):
+                    raise BusyError("tracked gitlink changed type")
+                if file.is_dir() and any(file.iterdir()):
+                    raise BusyError("tracked gitlink is initialized or modified")
+            except OSError as exc:
+                raise UnknownError("cannot read tracked gitlink") from exc
+            continue
         # `git hash-object --no-filters` reads the bytes directly. Do not use
         # Git's normal diff/status comparisons, which may invoke filters.
         try:

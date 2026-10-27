@@ -88,6 +88,16 @@ refuses([rows[0], rows[1], dict(row("complete", 32, "handoff", head_sha=sha_a, r
 refuses([rows[0], rows[1], row("complete", 22, "handoff", head_sha=sha_b, review_event_id="e2", checks="passing")])
 refuses([rows[0], rows[1], rows[2], row("complete", 23, "outcome", head_sha=sha_b, handoff_event_id="e3", repository_event_id="merge3")])
 refuses([rows[0], rows[1], row("complete", 24, "outcome", head_sha=sha_a, handoff_event_id="e2", repository_event_id="merge4")])
+association = dict(row("complete", 42, "pr_association", intake_event_id="e1",
+                       repository="acme/widgets", pr_number=7, head_sha=sha_a,
+                       provenance="agent_recorded"),
+                   occurred_at="2026-10-12T00:00:00Z", recorded_at="2026-10-12T01:00:00Z")
+assert module.reflect(read([rows[0], association]), as_of, key)["verified_completion_ids"] == []
+refuses([rows[0], dict(association, repository="invalid/repo/path")])
+refuses([rows[0], dict(association, provenance="signed")])
+refuses([rows[0], association, dict(association, event_id="e43")])
+refuses([rows[0], dict(association, intake_event_id="missing")])
+refuses([rows[0], dict(association, occurred_at="2026-10-10T00:00:00Z")])
 refuses([rows[0], rows[1], row("othercase", 25, "intake", case_type="review", eligibility="eligible"),
          row("othercase", 26, "handoff", head_sha=sha_a, review_event_id="e2", checks="passing")])
 # A late-recorded earlier transition cannot overwrite a later-occurring state.
