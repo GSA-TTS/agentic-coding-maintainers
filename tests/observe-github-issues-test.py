@@ -91,7 +91,7 @@ stub.write_text(
     "assert 'mutation' not in query.lower()\n"
     "assert all(arg in ('https://api.github.com/graphql','-f') or arg.startswith(('query=','owner=','repo=','after=')) for arg in sys.argv[4:])\n"
     "assert any(arg=='owner=acme' for arg in sys.argv) and any(arg=='repo=widgets' for arg in sys.argv)\n"
-    "print(json.dumps(" + repr(response([node(7)])) + "))\n",
+    "print(json.dumps(" + repr(response([node(987654321)])) + "))\n",
     encoding="utf-8",
 )
 stub.chmod(0o700)
@@ -111,6 +111,7 @@ assert output["issue_count"] == 1 and output["page_count"] == 1 and len(output["
 assert set(output) == {"schema_version", "mode", "coverage", "page_count", "issue_count",
                        "observation_identity_hmac", "limitation"}
 assert type(output["issue_count"]) is int and "acme/widgets" not in success.stdout.decode()
+assert b"987654321" not in success.stdout and b"987654321" not in success.stderr
 env["GH_HOST"] = "other.example"
 wrong_host = subprocess.run(command, env=env, capture_output=True, check=False, timeout=10)
 assert wrong_host.returncode == 3 and b"UNVERIFIED" in wrong_host.stderr and not wrong_host.stdout
@@ -118,6 +119,7 @@ env.pop("GH_HOST")
 env["HTTPS_PROXY"] = "http://invalid.example"
 proxy_refusal = subprocess.run(command, env=env, capture_output=True, check=False, timeout=10)
 assert proxy_refusal.returncode == 3 and b"UNVERIFIED" in proxy_refusal.stderr and not proxy_refusal.stdout
+assert b"987654321" not in proxy_refusal.stderr
 env.pop("HTTPS_PROXY")
 for body in ("import sys; sys.stdout.write('x'*70000)\n",
              "import sys; sys.stderr.write('x'*70000)\n",
@@ -128,5 +130,6 @@ for body in ("import sys; sys.stdout.write('x'*70000)\n",
     stub.chmod(0o700)
     failed = subprocess.run(command, env=env, capture_output=True, check=False, timeout=10)
     assert failed.returncode == 3 and b"UNVERIFIED" in failed.stderr and not failed.stdout
+    assert b"987654321" not in failed.stderr
 print("observe-github-issues tests: PASS")
 print("github_issues_fixture=" + str(FIXTURE), file=sys.stderr)
