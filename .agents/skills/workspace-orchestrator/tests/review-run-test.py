@@ -116,6 +116,19 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(runner.guest_path("../source.py", alias), str(root / "source.py"))
         self.assertEqual(runner.guest_path("/tmp/source.py", Path("/review")), "/tmp/source.py")
 
+    def test_context_reader_bounds_and_refuses_replacement_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            path=root/"context.json"
+            path.write_bytes(b"{}")
+            self.assertEqual(runner.context_read(path),b"{}")
+            path.write_bytes(b"x"*50001)
+            with self.assertRaises(runner.Unverified): runner.context_read(path)
+            fifo=root/"fifo"; os.mkfifo(fifo)
+            with self.assertRaises(runner.Unverified): runner.context_read(fifo)
+            link=root/"alias"; link.symlink_to(path)
+            with self.assertRaises(runner.Unverified): runner.context_read(link)
+
 
 if __name__ == "__main__":
     unittest.main()

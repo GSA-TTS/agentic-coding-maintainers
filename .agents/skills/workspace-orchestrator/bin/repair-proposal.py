@@ -35,6 +35,13 @@ def owner_context(record, correction_id, sources, c, repair):
             or type(record["leases"].get("implementation_lane")) is not int
             or type(record["leases"].get("global_slot")) is not int or record.get("transition_intent")):
         raise ValueError("original owner must hold prepared rework lease")
+    for field in ("repo", "branch", "worktree", "owned_paths", "restricted_paths", "acceptance_criteria"):
+        if record[field] != correction[field]:
+            raise ValueError("prepared proposal scope changed")
+    coordinator = load("orchestrator-state")
+    coordinator.require_execution_stopped(record)
+    coordinator.verify_worktree_identity(record, require_head=True)
+    coordinator.verify_clean_checkout(record["worktree"])
     if not isinstance(sources, dict) or not 1 <= len(sources) <= 2:
         raise ValueError("one or two explicit source mappings required")
     hashes = {}
@@ -111,10 +118,34 @@ def validate(record, root):
     state = record.get("repair_proposals", {})
     if not isinstance(state, dict) or len(state) > 6:
         raise ValueError("proposal budget exceeded")
+    operations, revisions, sessions = set(), set(), set()
+    external_ids = set(record.get("review_protocol", {}).get("operations", {})) | set(record.get("runtime_collections", {}).get("operations", {})) | set(record.get("repair_protocol", {}).get("operations", {}))
+    external_revisions = {item["result"]["resulting_revision"] for group in (record.get("review_protocol", {}).get("operations", {}), record.get("runtime_collections", {}).get("operations", {})) for item in group.values()}
+    reviewer_sessions = {assignment["session"] for generation in record.get("review_protocol", {}).get("generations", []) for assignment in generation["assignments"].values()}
+    def check_request(request, resulting, expected_action, request_sha):
+        c.fields(request, {"schema_version","operation_id","expected_revision","action","payload"})
+        load("review-evidence").token(request["operation_id"])
+        if (type(request["schema_version"]) is not int or request["schema_version"] != 1 or request["action"] != expected_action
+                or type(request["expected_revision"]) is not int or request["expected_revision"] < 0
+                or c.digest(c.canonical(request)) != request_sha
+                or request["operation_id"] in operations or request["operation_id"] in external_ids
+                or resulting in revisions or resulting in external_revisions):
+            raise ValueError("proposal operation identity/revision corruption")
+        operations.add(request["operation_id"])
+        revisions.add(resulting)
     for key, item in state.items():
-        c.fields(item, {"admission", "request", "resulting_revision", "collection"})
+        c.fields(item, {"admission", "request", "request_sha256", "resulting_revision", "collection"})
         admitted = item["admission"]
+        c.fields(admitted, {"correction_id","session","model","agent","binary_sha256","profile_sha256","cwd","sources","task_id","worker","context","source_sha256"})
+        c.fields(admitted["context"], {"correction_id","correction","source_paths"})
+        if admitted["sources"] != admitted["context"]["source_paths"] or admitted["correction_id"] != admitted["context"]["correction_id"]:
+            raise ValueError("proposal source/context mapping differs")
+        if set(admitted["source_sha256"]) != set(admitted["sources"]):
+            raise ValueError("proposal source inventory incomplete")
+        for sha in admitted["source_sha256"].values():
+            load("review-evidence").hash_value(sha)
         request = item["request"]
+        check_request(request,item["resulting_revision"],"admit",item["request_sha256"])
         if (type(item["resulting_revision"]) is not int or item["resulting_revision"] != request["expected_revision"] + 1
                 or item["resulting_revision"] > record["revision"]):
             raise ValueError("proposal admission chronology invalid")
@@ -126,16 +157,28 @@ def validate(record, root):
         correction_id = admitted["context"]["correction_id"]
         if record.get("repair_protocol", {}).get("corrections", {}).get(correction_id) != admitted["context"]["correction"]:
             raise ValueError("prepared correction differs from proposal")
+        correction = admitted["context"]["correction"]
+        if not isinstance(admitted["worker"],dict) or admitted["worker"].get("owner") != correction["owner"]:
+            raise ValueError("proposal original worker ownership differs")
+        if request["expected_revision"] <= correction["expected_revision"]:
+            raise ValueError("proposal admission predates prepared correction")
+        if admitted["session"] in sessions or admitted["session"] in reviewer_sessions:
+            raise ValueError("owner and reviewer sessions must be distinct")
+        sessions.add(admitted["session"])
         collection = item["collection"]
         if collection is not None:
-            c.fields(collection, {"request", "artifacts", "bundle_sha256", "status", "resulting_revision"})
+            c.fields(collection, {"request", "request_sha256", "artifacts", "bundle_sha256", "status", "resulting_revision"})
             c.fields(collection["artifacts"], set(c.ARTIFACTS))
             request = collection["request"]
+            check_request(request,collection["resulting_revision"],"collect",collection["request_sha256"])
             if (request["action"] != "collect" or request["payload"] != {"admission_id":key,"artifact_sha256":collection["artifacts"]}
                     or type(collection["resulting_revision"]) is not int
                     or collection["resulting_revision"] != request["expected_revision"]+1
                     or not item["resulting_revision"] < collection["resulting_revision"] <= record["revision"]):
                 raise ValueError("proposal collection chronology invalid")
+            for applied in record.get("repair_protocol", {}).get("operations", {}).values():
+                if applied["correction_id"] == correction_id and applied["request"]["expected_revision"] < collection["resulting_revision"]:
+                    raise ValueError("proposal collection postdates repair application")
             artifacts = {}
             for name, sha in collection["artifacts"].items():
                 load("review-evidence").hash_value(sha)
@@ -178,12 +221,14 @@ def apply(record, request, root, artifacts=None):
         e.text(payload["model"], 200)
         c.absolute_guest_path(payload["cwd"])
         context, sources = owner_context(record, payload["correction_id"], payload["sources"], c, repair)
+        if any(assignment["session"] == payload["session"] for generation in record.get("review_protocol", {}).get("generations", []) for assignment in generation["assignments"].values()):
+            raise ValueError("reviewer session cannot become an owner proposal session")
         admitted = {**copy.deepcopy(payload), "task_id": record["task_id"], "worker": copy.deepcopy(record["worker"]),
                     "context": context, "source_sha256": sources}
         key = c.digest(c.canonical(admitted))
         if key in updated.get("repair_proposals", {}) or any(item["admission"]["session"] == payload["session"] for item in updated.get("repair_proposals", {}).values()):
             raise ValueError("proposal session already admitted")
-        updated.setdefault("repair_proposals", {})[key] = {"admission": admitted, "request": request, "resulting_revision": record["revision"]+1, "collection": None}
+        updated.setdefault("repair_proposals", {})[key] = {"admission": admitted, "request": request, "request_sha256":c.digest(c.canonical(request)), "resulting_revision": record["revision"]+1, "collection": None}
         result = {"status": "PROPOSAL_ADMITTED", "admission_id": key, "context": context}
     else:
         c.fields(payload, {"admission_id", "artifact_sha256"})
@@ -207,7 +252,7 @@ def apply(record, request, root, artifacts=None):
             os.fsync(fd)
         finally:
             os.close(fd)
-        item["collection"] = {"request": request, "artifacts": actual, "bundle_sha256": sha,
+        item["collection"] = {"request": request, "request_sha256":c.digest(c.canonical(request)), "artifacts": actual, "bundle_sha256": sha,
                               "status": "PROPOSAL_COLLECTED" if raw is not None else "UNABLE_OBSERVED", "resulting_revision": record["revision"]+1}
         result = {"status": item["collection"]["status"], "admission_id": payload["admission_id"], "bundle_sha256": sha}
     if len(c.canonical(updated)) > 900_000:

@@ -85,6 +85,19 @@ def source_manifest(paths: list[Path]) -> dict[str, str]:
     return manifest
 
 
+def context_read(path: Path) -> bytes:
+    if not path.is_absolute() or any(part.is_symlink() for part in (path, *path.parents)):
+        raise Unverified("context path must be absolute and contain no symlinks")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise Unverified("context must be a regular file")
+        data = handle.read(50_001)
+    if len(data) > 50_000:
+        raise Unverified("review context exceeds bound")
+    return data
+
+
 def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result = {}
     for key, value in pairs:
@@ -271,11 +284,7 @@ def main() -> int:
         manifest = source_manifest(args.source)
         context_bytes = b""
         if args.context is not None:
-            source_manifest([args.context])
-            with args.context.open("rb") as handle:
-                context_bytes = handle.read(50_001)
-            if len(context_bytes) > 50_000:
-                raise Unverified("review context exceeds bound")
+            context_bytes = context_read(args.context)
             context_data = json.loads(context_bytes, object_pairs_hook=unique)
             if not isinstance(context_data, dict):
                 raise Unverified("review context must be an object")
@@ -328,7 +337,7 @@ def main() -> int:
                 [str(args.binary.resolve()), "session", "export", "--standalone", receipt["sessions"][0]],
                 args.cwd.resolve(), 30)
         receipt = corroborate(data, code, manifest, args.cwd.resolve(), exported, export_code, export_failure)
-        if args.context is not None and args.context.read_bytes() != context_bytes:
+        if args.context is not None and context_read(args.context) != context_bytes:
             receipt.update(status="UNVERIFIED", reason="context changed during invocation")
         if args.session is not None and receipt["sessions"] != [args.session]:
             receipt.update(status="UNVERIFIED", reason="runtime session differs from controller assignment")

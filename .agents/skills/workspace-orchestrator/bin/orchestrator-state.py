@@ -583,6 +583,13 @@ def require_repair_settled(record: dict[str, Any], new_review: bool = False, roo
         spec.loader.exec_module(module)
         try:
             module.validate_retained(record, root)
+            if "repair_proposals" in record:
+                proposal_spec = importlib.util.spec_from_file_location("installed_proposal", Path(__file__).resolve().with_name("repair-proposal.py"))
+                if proposal_spec is None or proposal_spec.loader is None:
+                    raise UnknownError("proposal validator unavailable")
+                proposal_module = importlib.util.module_from_spec(proposal_spec)
+                proposal_spec.loader.exec_module(proposal_module)
+                proposal_module.validate(record, root)
         except Exception as exc:
             raise UnknownError("retained repair evidence unavailable") from exc
     if not isinstance(ledger, dict) or not isinstance(ledger.get("operations"), dict):

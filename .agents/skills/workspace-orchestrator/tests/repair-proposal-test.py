@@ -71,4 +71,34 @@ class ProposalTests(fixture.RepairTests):
             payload={name:generation[name] for name in ("packet","policy","base","head","obligations")})
         with self.assertRaisesRegex(Exception,"prepared repair must"): fixture.e.apply(self.record,request)
 
+    def test_owner_and_reviewer_session_overlap_refused(self):
+        request,result=self.admit_proposal()
+        before=copy.deepcopy(self.record)
+        attempted=copy.deepcopy(request)
+        attempted.update(operation_id="second",expected_revision=self.record["revision"])
+        attempted["payload"]["session"]="ses_review"
+        with self.assertRaises(ValueError): p.apply(self.record,attempted,self.state)
+        assignment=dict(generation=1,run_id="owner-as-reviewer",reviewer="different-label",profile="c"*64,session="ses_owner",adapter="native-session",obligations=sorted(fixture.e.BASELINE))
+        with self.assertRaisesRegex(Exception,"owner proposal session"):
+            fixture.e.assign(self.record,assignment)
+        self.assertEqual(self.record,before)
+
+    def test_retained_request_corruption_refuses_replay(self):
+        request,result=self.admit_proposal()
+        admitted=self.record["repair_proposals"][result["admission_id"]]
+        admitted["request"]["operation_id"]="changed"
+        with self.assertRaises(ValueError): p.apply(self.record,request,self.state)
+
+    def test_owner_artifact_loss_is_checked_after_application(self):
+        request,result=self.admit_proposal(); key=result["admission_id"]
+        artifacts=self.artifacts(self.record["repair_proposals"][key]["admission"])
+        request=dict(schema_version=1,operation_id="collect-owner",expected_revision=self.record["revision"],action="collect",payload=dict(admission_id=key,artifact_sha256={name:c.digest(data) for name,data in artifacts.items()}))
+        self.record,collected,_=p.apply(self.record,request,self.state,artifacts); self.record["revision"]+=1
+        raw=(self.state/"review-artifacts"/collected["bundle_sha256"]).read_bytes()
+        apply_request=dict(schema_version=1,operation_id="apply-owner",expected_revision=self.record["revision"],correction_id=self.correction_id,bundle_sha256=collected["bundle_sha256"])
+        fixture.repair.apply_repair(self.record,self.state,apply_request,raw,self.persist)
+        path=self.state/"review-artifacts"/c.digest(artifacts["transcript.jsonl"])
+        path.chmod(0o600); path.write_bytes(b"lost")
+        with self.assertRaises(Exception): fixture.e.validate_collected_retention(self.record,self.state)
+
 if __name__=="__main__": unittest.main()

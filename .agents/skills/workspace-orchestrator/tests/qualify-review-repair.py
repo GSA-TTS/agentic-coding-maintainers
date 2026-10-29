@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import subprocess
+import uuid
 from pathlib import Path
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
@@ -26,6 +27,26 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def retain_request(path, request):
+    if path.exists():
+        prior = json.loads(path.read_bytes())
+        if {key:value for key,value in prior.items() if key != "expected_revision"} != {key:value for key,value in request.items() if key != "expected_revision"}:
+            raise ValueError("phase retry changed request content")
+        return prior
+    path.write_bytes(canonical(request))
+    return request
+
+
+def require_seeded_baseline(baseline):
+    if baseline["returncode"] != 0 or baseline["stderr"] or baseline["stdout"] != "[4, -1, 1, 12]\n":
+        raise ValueError("baseline execution did not measure the seeded defect")
+
+
+def require_adjudication(finding_id, assessment):
+    if finding_id not in assessment.get("unresolved_findings", []):
+        raise ValueError("operator must adjudicate a retained finding against the seeded arithmetic invariant; no nonempty-finding shortcut")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("init", "review", "proposal", "rereview"))
@@ -36,6 +57,7 @@ def main():
     parser.add_argument("--model", default="usai/gpt-6-astra")
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--isolated-guest", action="store_true")
+    parser.add_argument("--finding-id", help="operator-adjudicated initial finding matching the seeded invariant")
     args = parser.parse_args()
     if not args.isolated_guest:
         raise ValueError("operator must provide an isolated qualification guest")
@@ -45,6 +67,19 @@ def main():
     evidence = root / "evidence"
     evidence.mkdir(mode=0o700, exist_ok=True)
     env = {**os.environ, "WORKSPACE_ORCHESTRATOR_ROOT": str(root)}
+    phase_receipt = evidence / ("phase-" + args.phase + ".json")
+    phase_input = {"phase":args.phase, "finding_id":args.finding_id,
+                   "bundle":{name:sha((args.bundle/name).read_bytes()) for name in ("receipt.json","transcript.jsonl","session-export.json","stderr.txt","export-stderr.txt")} if args.bundle else None}
+    if phase_receipt.exists():
+        prior = json.loads(phase_receipt.read_bytes())
+        if prior["input"] != phase_input:
+            raise ValueError("completed phase replay changed inputs")
+        print(json.dumps(prior["result"], sort_keys=True))
+        return
+    session_file = evidence / "sessions.json"
+    if not session_file.exists():
+        session_file.write_bytes(canonical({role:"ses_qualification_"+uuid.uuid4().hex for role in ("before","owner","after")}))
+    sessions = json.loads(session_file.read_bytes())
 
     def tool(name, *arguments, accepted=(0,)):
         result = subprocess.run(["python3", "-I", "-B", str(BIN / name), *map(str, arguments)],
@@ -59,7 +94,7 @@ def main():
     def change(name, action, payload, operation):
         request = dict(schema_version=1, operation_id=operation, expected_revision=state()["revision"], action=action, payload=payload)
         path = evidence / f"{operation}.json"
-        path.write_bytes(canonical(request))
+        retain_request(path, request)
         return tool(name, "qualification", "--request", path)
 
     def git(*arguments):
@@ -88,7 +123,7 @@ def main():
         generation = record["review_protocol"]["generations"][-1]
         context = dict(acceptance=record["acceptance_criteria"], prior_findings=[finding for gen in record["review_protocol"]["generations"] for report in gen["reports"].values() for finding in report["findings"]],
                        oracle=json.loads((evidence / f"oracle-{label}.json").read_bytes()))
-        session = "ses_qualification_" + label
+        session = sessions[label]
         profile = sha(args.profile.read_bytes())
         change("review-evidence.py", "assign", dict(generation=generation["number"], run_id=label, reviewer="independent-reviewer", profile=profile,
             obligations=OBLIGATIONS, adapter="native-session", session=session), "assign-"+label)
@@ -109,7 +144,8 @@ def main():
         admitted=json.loads((evidence/f"admission-{label}.json").read_bytes())["admission_id"]
         request=dict(schema_version=1,operation_id="collect-"+label,expected_revision=state()["revision"],action="collect",
                      payload=dict(admission_id=admitted,artifact_sha256={name:sha((args.bundle/name).read_bytes()) for name in files}))
-        path=evidence/f"collect-{label}.json"; path.write_bytes(canonical(request))
+        path=evidence/f"collect-{label}.json"
+        retain_request(path, request)
         tool("review-collect.py","qualification","--request",path,"--bundle",args.bundle)
         change("review-accept.py","accept-collected",dict(admission_id=admitted),"accept-"+label)
 
@@ -128,20 +164,30 @@ def main():
         tool("orchestrator-state.py","claim","qualification","--owner","implementation-owner","--pid",args.owner_pid)
         tool("orchestrator-state.py","transition","qualification","Implementing")
         tool("orchestrator-state.py","transition","qualification","Reviewing")
-        if oracle("before")["passed"]: raise ValueError("fixture did not demonstrate expected defect")
+        baseline = oracle("before")
+        require_seeded_baseline(baseline)
         result=stage_review("before")
     elif args.phase == "review":
         ingest_review("before")
         assessment=tool("review-evidence.py","qualification",accepted=(3,))
-        if not assessment.get("unresolved_findings"): raise ValueError("real reviewer missed known defect; no synthetic fallback")
-        tool("orchestrator-state.py","transition","qualification","Rework")
-        correction=tool("repair-apply.py","qualification","prepare","--expected-revision",state()["revision"])
-        tool("orchestrator-state.py","claim","qualification","--owner","implementation-owner","--pid",args.owner_pid)
-        tool("orchestrator-state.py","transition","qualification","Implementing")
-        admission=change("repair-proposal.py","admit",dict(correction_id=correction["correction_id"],session="ses_qualification_owner",model=args.model,agent="bounded-worker",
+        require_adjudication(args.finding_id, assessment)
+        (evidence/"finding-adjudication.json").write_bytes(canonical({"finding_id":args.finding_id,"decision":"operator supplied semantic match to double(x)==2*x", "source":"explicit --finding-id, not automatic classification"}))
+        if state()["state"] == "Reviewing":
+            tool("orchestrator-state.py","transition","qualification","Rework")
+        prepared_path = evidence/"prepared-correction.json"
+        if not prepared_path.exists():
+            correction=tool("repair-apply.py","qualification","prepare","--expected-revision",state()["revision"])
+            prepared_path.write_bytes(canonical(correction))
+        else:
+            correction=json.loads(prepared_path.read_bytes())
+        if state()["state"] == "Rework":
+            tool("orchestrator-state.py","claim","qualification","--owner","implementation-owner","--pid",args.owner_pid)
+        if state()["state"] == "Claimed":
+            tool("orchestrator-state.py","transition","qualification","Implementing")
+        admission=change("repair-proposal.py","admit",dict(correction_id=correction["correction_id"],session=sessions["owner"],model=args.model,agent="bounded-worker",
             binary_sha256=args.binary_sha256,profile_sha256=sha(args.profile.read_bytes()),cwd="/home/node/review",sources={"/candidate/"+name:name for name in ("calc.py","test_calc.py")}),"owner-admission")
         (evidence/"owner-admission.json").write_bytes(canonical(admission)); (evidence/"context-owner.json").write_bytes(canonical(admission["context"]))
-        result=dict(phase="owner",session="ses_qualification_owner",role="owner-proposal",context_path=str(evidence/"context-owner.json"),source_path=str(source))
+        result=dict(phase="owner",session=sessions["owner"],role="owner-proposal",context_path=str(evidence/"context-owner.json"),source_path=str(source))
     elif args.phase == "proposal":
         if args.bundle is None: raise ValueError("actual owner bundle required")
         admission=json.loads((evidence/"owner-admission.json").read_bytes())
@@ -183,6 +229,7 @@ def main():
         result=dict(status="LIVE_LOOP_OBSERVED",review=assessment,head=record["head_sha"],original_findings=[finding for generation in record["review_protocol"]["generations"] for report in generation["reports"].values() for finding in report["findings"]],
                     candidate_ready=False,qualification="real reviewer/owner/rereviewer; independently fixed behavioral oracle; controlled isolated fixture, not production PR automation")
         (evidence/"outcome.json").write_bytes(canonical(result))
+    phase_receipt.write_bytes(canonical({"input":phase_input,"result":result}))
     print(json.dumps(result,sort_keys=True))
 
 
