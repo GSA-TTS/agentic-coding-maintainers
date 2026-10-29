@@ -552,12 +552,22 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     return record
 
 
+def require_execution_stopped(record: dict[str, Any]) -> None:
+    attempts = record.get("execution_observations", {})
+    if not isinstance(attempts, dict):
+        raise UnknownError("malformed execution observations")
+    for attempt in attempts.values():
+        if not isinstance(attempt, dict) or attempt.get("termination") != "STOPPED_OBSERVED":
+            raise UnknownError("execution may still be active; reconcile exact sandbox stop before lifecycle changes")
+
+
 def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     with CoordinatorLock(root):
         validate_admission_reservations(root)
         record = read_task(root, args.task_id)
         if record["state"] not in {"Ready", "Rework"}:
             raise BusyError(f"task is not claimable from state {record['state']!r}")
+        require_execution_stopped(record)
         owner = safe_scope(args.owner)
         worker = worker_metadata(record["task_id"], owner, args.pid)
         slot = reserve_first(root, "slots", MAX_WORKERS, worker)
@@ -611,6 +621,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         verify_reservations(root, record)
         if args.state not in TRANSITIONS[record["state"]]:
             raise InputError(f"transition {record['state']!r} -> {args.state!r} is not allowed")
+        require_execution_stopped(record)
         if args.state == "Implementing" and (record["kind"] != "implementation" or not record.get("worker")):
             raise InputError("only a claimed implementation task can enter Implementing")
         if args.state == "Implementing" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
@@ -842,6 +853,7 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     target = record["transition_intent"]
     if not target:
         return record
+    require_execution_stopped(record)
     if target == "Ready for human review":
         if "review_protocol" in record:
             raise UnknownError("cannot recover readiness from uncorroborated review protocol claims")
@@ -908,6 +920,7 @@ def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], b
     missing_worktree = bool(worktree) and not Path(worktree).exists()
     if not interrupted and not missing_worktree:
         return record, False
+    require_execution_stopped(record)
     release_capacity(root, record)
     record["state"] = "Blocked"
     record["next_action"] = "interrupted worker" if interrupted else "worktree missing"
