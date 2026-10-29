@@ -229,7 +229,7 @@ def validate_attempts(record: dict[str, Any], root: Path, c, check_streams: bool
     for key, attempt in attempts.items():
         required = {"request", "definition", "phase", "termination", "owner", "head", "base",
                     "controller_sha256", "cases", "launchers"}
-        optional = {"result", "stop_observation", "evidence_loss"}
+        optional = {"result", "stop_observation", "evidence_loss", "execution_plan"}
         if not isinstance(attempt, dict) or not required <= set(attempt) or set(attempt) - required - optional:
             raise Unverified("malformed retained attempt")
         request = attempt["request"]
@@ -250,6 +250,8 @@ def validate_attempts(record: dict[str, Any], root: Path, c, check_streams: bool
             raise Unverified("invalid attempt phase")
         if (attempt["phase"] in {"SETTLED", "UNKNOWN_STOPPED", "EVIDENCE_LOST_STOPPED"}) != (attempt["termination"] == "STOPPED_OBSERVED"):
             raise Unverified("termination phase mismatch")
+        if "evidence_loss" in attempt and (attempt["phase"] != "EVIDENCE_LOST_STOPPED" or not isinstance(attempt["evidence_loss"], str) or not attempt["evidence_loss"]):
+            raise Unverified("recorded integrity loss cannot be cleared by changing lifecycle phase")
         if attempt["termination"] == "STOPPED_OBSERVED":
             stop = attempt.get("stop_observation")
             if stop != {"container_id": attempt["definition"]["container_id"], "created": attempt["definition"]["created"], "running": False}:
@@ -330,6 +332,12 @@ def reconcile_stop(record: dict[str, Any], attempt: dict[str, Any], item: dict[s
     definition = attempt["definition"]
     if item.get("Id") != definition["container_id"] or item.get("Created") != definition["created"] or item.get("State", {}).get("Running") is not False:
         raise Unverified("exact container stop is not observed")
+    if attempt["termination"] == "STOPPED_OBSERVED" and attempt["phase"] == "SETTLED":
+        try:
+            validate_attempts({"execution_observations": {attempt["request"]["operation_id"]: attempt}}, root, c)
+            return  # Historical settlement survives normal worker-slot release.
+        except (Unverified, OSError, c.Unverified):
+            pass  # Newly discovered loss must still degrade historical evidence.
     evidence_lost = attempt["phase"] == "EVIDENCE_LOST_STOPPED"
     try:
         validate_attempts({"execution_observations": {attempt["request"]["operation_id"]: attempt}}, root, c)
@@ -405,6 +413,7 @@ def main() -> int:
                 raise Unverified("unsettled execution or execution budget exhausted")
             coordinator.verify_reservations(root, record)
             source_binding(record, definition, c)
+            plan_id = dependency("execution-plan").dispatch_plan(record, root, args.operation_id, args.definition_sha256)
             inspect_guest(definition, inspect_backend(definition, prefix, env))
             for task_path in (root / "tasks").glob("*/task.json"):
                 other = coordinator.read_task(root, task_path.parent.name)
@@ -421,6 +430,8 @@ def main() -> int:
             attempt = {"request": request, "definition": definition, "phase": "DISPATCHING", "termination": "UNVERIFIED",
                        "owner": record["owner"], "head": record["head_sha"], "base": record["base_sha"],
                        "controller_sha256": digest(Path(__file__).read_bytes()), "cases": [], "launchers": []}
+            if plan_id is not None:
+                attempt["execution_plan"] = plan_id
             record.setdefault("execution_observations", {})[args.operation_id] = attempt
             coordinator.write_task(root, record)
         # No successful preflight can prove a future backend call succeeded.
@@ -438,6 +449,8 @@ def main() -> int:
                             or not active_execution_owner(active)):
                         raise Unverified("task changed before dispatch; execution remains unsettled")
                     source_binding(active, definition, c)
+                    if attempt.get("execution_plan") != dependency("execution-plan").dispatch_plan(active, root, args.operation_id, args.definition_sha256):
+                        raise Unverified("execution plan changed before dispatch")
                     inspect_guest(definition, inspect_backend(definition, prefix, env))
                     yield
             def started(pid):
