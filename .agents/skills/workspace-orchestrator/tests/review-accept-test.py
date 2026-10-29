@@ -122,6 +122,21 @@ class AcceptanceTests(fixtures.CollectionTests):
         with self.assertRaises(Exception):
             self.accept_final(request)
 
+    def test_deleted_link_and_deleted_table_are_not_legacy_claims(self):
+        request = self.collect_final(self.structured())
+        self.accept_final(request)
+        saved = copy.deepcopy(self.record)
+        for remove_table in (False, True):
+            self.record = copy.deepcopy(saved)
+            if remove_table:
+                del self.record["collected_review_acceptances"]
+            else:
+                self.record["collected_review_acceptances"].clear()
+            with self.assertRaises(Exception):
+                acceptance.validate_retained(self.record, self.state_root)
+            with self.assertRaises(Exception):
+                self.accept_final(request)
+
     def test_detached_claim_and_tampered_link_refused(self):
         request = self.collect_final(self.structured())
         report = acceptance.final_report(self.record, request["payload"]["admission_id"], self.state_root / "review-artifacts", c, e)
@@ -155,6 +170,19 @@ class AcceptanceTests(fixtures.CollectionTests):
         self.assertEqual(replay.stdout, first.stdout)
         self.assertEqual(path.read_bytes(), before)
         task = json.loads(path.read_bytes())
+        accepted_task = copy.deepcopy(task)
+        for remove_table in (False, True):
+            damaged = copy.deepcopy(accepted_task)
+            if remove_table:
+                del damaged["collected_review_acceptances"]
+            else:
+                damaged["collected_review_acceptances"].clear()
+            path.write_bytes(c.canonical(damaged))
+            assessment = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "bin" / "review-evidence.py"), "fixture"],
+                                        env=env, capture_output=True, text=True)
+            self.assertEqual(assessment.returncode, 3)
+            self.assertEqual(json.loads(assessment.stdout)["status"], "UNVERIFIED")
+        path.write_bytes(c.canonical(accepted_task))
         collected = next(iter(task["runtime_collections"]["collections"].values()))
         artifact = self.state_root / "review-artifacts" / collected["artifacts"]["receipt.json"]
         artifact.chmod(0o600)

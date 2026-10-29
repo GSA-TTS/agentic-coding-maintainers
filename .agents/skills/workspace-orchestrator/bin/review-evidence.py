@@ -158,7 +158,13 @@ def validate_finding(finding: Any) -> None:
 
 
 def accept(record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    fields(payload, {"generation", "run_id", "packet", "policy", "profile", "session", "coverage", "findings", "dispositions", "limitations"})
+    expected = {"generation", "run_id", "packet", "policy", "profile", "session", "coverage", "findings", "dispositions", "limitations"}
+    if "collection_origin" in payload:
+        fields(payload["collection_origin"], {"admission_id", "operation_id"})
+        hash_value(payload["collection_origin"]["admission_id"])
+        token(payload["collection_origin"]["operation_id"])
+        expected.add("collection_origin")
+    fields(payload, expected)
     generation = current(record)
     if type(payload["generation"]) is not int or payload["generation"] != generation["number"]:
         raise Unverified("superseded result generation")
@@ -476,7 +482,10 @@ def main() -> int:
         root = coordinator.state_root(create=args.request is not None)
         if args.request is None:
             record = coordinator.read_task(root, args.task_id)
-            if "collected_review_acceptances" in record:
+            has_collected_reports = any("collection_origin" in report
+                                        for generation in record.get("review_protocol", {}).get("generations", [])
+                                        for report in generation["reports"].values())
+            if "collected_review_acceptances" in record or has_collected_reports:
                 source = Path(__file__).resolve().with_name("review-accept.py")
                 spec = importlib.util.spec_from_file_location("installed_review_acceptance", source)
                 if spec is None or spec.loader is None:

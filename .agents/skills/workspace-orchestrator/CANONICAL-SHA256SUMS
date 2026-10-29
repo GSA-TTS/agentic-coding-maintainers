@@ -6,11 +6,11 @@ e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA25
 9db14f7955e7d611e525fdf2fa90d7bc41ba43223935a2a1351796d851f8d086  ./bin/orchestrator-monitor.sh
 e275d1be7fa6118fda9dda8851c9bd623be6cd315c6bd004ab16052991d0862f  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
-914a5156c78ed412dbab52d4b2ba744e8fba69596c410dccfe669bd8b4d08802  ./bin/review-accept.py
+2623eb440db785e2be60b1b2fa5bc6f0e2c6ca4d0df7b5ab11e9a41d5aaf1e40  ./bin/review-accept.py
 b147c1910af4ea4ce84a707e58ed86897ae9036e520ba662b1632457348e5768  ./bin/review-collect.py
-0ec2850b2d85a363a17873cbc9f5b7f953bbf3f4fa3db11d30d80e3cb30dbaef  ./bin/review-evidence.py
+6872624e3553ecb4700703616b4707ec2df6e3fcdffea2a5454890b7119cb466  ./bin/review-evidence.py
 eb60ebeac23bf003c39f7650fc9d784909f3424c6fec76d2504ccb4d744c9c20  ./bin/review-packet.py
-5652cabfed15b8bf548a9b5a1a95517616c2079bcc10e506ffecf8482d348ea8  ./bin/review-run.py
+d16f72a60c543ad6018b82c0b32afceab2ca6c4b27c19660ea22243fef0518fd  ./bin/review-run.py
 4b40433713073a75f9ed4539e91a2704e2f0f8d055af31c0f9db4a533de521e0  ./docs/MAINTAINER-SERVICE.md
 22e436522aef3c2135281aabc038eb550bec290482f75e89a98d2ef3cc80e614  ./docs/OPERATOR-GUIDE.md
 353a1e25f31e484253ccaceedfa72f5c6284156f9f9c0f380a664961b7a11a74  ./docs/REVIEW-ACCEPTANCE.md
@@ -31,7 +31,7 @@ da22255cf7ecf7fe73af425f999e9818bd82e6900db27cf494ad78bbdf6286f7  ./tests/fixtur
 b87b1459c7f3bd39366bd2df59b6ba825826da956a48ca931cc4077a7354f9de  ./tests/orchestrator-monitor-test.sh
 ddb038285f9ba72ebd65f8e25f0f1e861611ce09607c1cbb36597c715f2a99ce  ./tests/orchestrator-production-worktree-test.sh
 e5b97e220f20c8ecb0a1209860ede2c52f95e03dd211be1774f33cc78cfe55f8  ./tests/orchestrator-state-test.sh
-e93474e118c0b22ff45a3822f018d3254834766b9ed2e3773d16cef33c9aa8fa  ./tests/review-accept-test.py
+7e8b72deeca2764a82bb4142e1b27b7c151f38bd427439db8274f1c9171e39eb  ./tests/review-accept-test.py
 c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review-baseline.json
 12f8512512fe95fbacf3c621bcfd5d4a7dbf80f0a526d84743c243f589443a4f  ./tests/review-collect-test.py
 4c5c11f8190942963cc2995b1e91e400ed19f6006860f9f312a8bf7e0452742c  ./tests/review-evidence-test.py

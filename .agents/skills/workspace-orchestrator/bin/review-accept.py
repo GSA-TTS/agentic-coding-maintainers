@@ -62,6 +62,16 @@ def validate_links(record: dict[str, Any], store: Path, c, e) -> None:
     if not isinstance(links, dict) or len(links) > c.MAX_OPERATIONS:
         raise c.Unverified("invalid acceptance link table")
     admissions_seen = set()
+    origins = {}
+    for generation in record["review_protocol"]["generations"]:
+        for report in generation["reports"].values():
+            if "collection_origin" in report:
+                origin = report["collection_origin"]
+                if origin["operation_id"] in origins:
+                    raise c.Unverified("duplicate collection-origin operation")
+                origins[origin["operation_id"]] = origin["admission_id"]
+    if set(origins) != set(links):
+        raise c.Unverified("collected reports and acceptance links disagree")
     for operation_id, link in links.items():
         e.fields(link, {"request", "request_sha256", "report_sha256"})
         request = link["request"]
@@ -69,10 +79,13 @@ def validate_links(record: dict[str, Any], store: Path, c, e) -> None:
         if request["operation_id"] != operation_id or c.digest(c.canonical(request)) != link["request_sha256"]:
             raise c.Unverified("acceptance request binding mismatch")
         admission_id = request["payload"]["admission_id"]
+        if origins[operation_id] != admission_id:
+            raise c.Unverified("report provenance differs from acceptance link")
         if admission_id in admissions_seen:
             raise c.Unverified("collection accepted more than once")
         admissions_seen.add(admission_id)
         report = final_report(record, admission_id, store, c, e)
+        report["collection_origin"] = {"admission_id": admission_id, "operation_id": operation_id}
         operation = record["review_protocol"]["operations"].get(operation_id)
         expected = {**request, "action": "accept", "payload": report}
         if operation is None or operation["request"] != expected or operation["result"].get("report_sha256") != link["report_sha256"]:
@@ -124,6 +137,7 @@ def apply(record: dict[str, Any], request: dict[str, Any], root: Path) -> tuple[
         raise c.Unverified("task revision changed")
     admission_id = request["payload"]["admission_id"]
     report = final_report(record, admission_id, store, c, e)
+    report["collection_origin"] = {"admission_id": admission_id, "operation_id": operation_id}
     generation = e.current(record)
     admitted = state["admissions"][admission_id]
     if (admitted["generation"] != generation["number"] or admitted["material_epoch"] != generation["material_epoch"]
