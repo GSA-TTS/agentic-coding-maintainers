@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import selectors
 import signal
 import stat
@@ -235,6 +236,7 @@ def main() -> int:
     parser.add_argument("--source", action="append", type=Path, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--agent", default="bounded-reviewer")
+    parser.add_argument("--session", help="controller-assigned OpenCode session ID")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=300, choices=range(1, 601))
     parser.add_argument("--isolated-guest", action="store_true", help="operator declaration, not an isolation proof")
@@ -242,6 +244,8 @@ def main() -> int:
     try:
         if not sys.flags.isolated or not sys.dont_write_bytecode or not args.isolated_guest:
             raise Unverified("requires python3 -I -B and externally qualified isolated guest")
+        if args.session is not None and not re.fullmatch(r"ses_[A-Za-z0-9_-]{1,100}", args.session):
+            raise Unverified("invalid controller-assigned session")
         manifest = source_manifest(args.source)
         if binary_digest(args.binary) != args.binary_sha256:
             raise Unverified("runtime binary digest mismatch")
@@ -252,6 +256,8 @@ def main() -> int:
                   "Do not execute code or edit files. Sources: " + json.dumps(list(manifest)))
         command = [str(args.binary.resolve()), "run", "--standalone", "--agent", args.agent,
                    "--model", args.model, "--format", "json", prompt]
+        if args.session is not None:
+            command[2:2] = ["--session", args.session]
         started = time.time()
         data, stderr, code, failure = execute(command, args.cwd.resolve(), args.timeout)
         receipt = summarize(data, code, manifest, args.cwd.resolve())
@@ -264,6 +270,8 @@ def main() -> int:
                 [str(args.binary.resolve()), "session", "export", "--standalone", receipt["sessions"][0]],
                 args.cwd.resolve(), 30)
         receipt = corroborate(data, code, manifest, args.cwd.resolve(), exported, export_code, export_failure)
+        if args.session is not None and receipt["sessions"] != [args.session]:
+            receipt.update(status="UNVERIFIED", reason="runtime session differs from controller assignment")
         if failure or source_manifest(args.source) != manifest:
             receipt.update(status="UNVERIFIED", reason=failure or "source changed during review")
         receipt.update(schema_version=1, binary_sha256=args.binary_sha256, model=args.model, agent=args.agent,
