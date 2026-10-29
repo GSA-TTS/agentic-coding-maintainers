@@ -39,7 +39,10 @@ collector does not independently fetch GitHub.
 
 The result includes `admission_id`. Invoke the guest runner using the assigned
 `--session ses_…`, exact binary digest, model, agent, working directory and
-source paths. An observed different session fails closed. The adapter alone does
+source paths and `--profile` pointing at the installed guest configuration. The
+profile bytes are hashed before/after execution and must match the assigned
+profile digest. This records supplied bytes, not proof of effective merged
+configuration. An observed different session fails closed. The adapter alone does
 not guarantee a session is new: the controller must use fresh attempt IDs and
 private guest state. Do not pre-admit a run by guessing a later generated ID.
 
@@ -71,11 +74,13 @@ claim reports; that semantic normalization remains a controller responsibility.
 ## Persistence and recovery
 
 Private, content-addressed bytes live at `.orchestrator/review-artifacts/`,
-outside the candidate worktree. Artifacts are exclusively created and fsynced,
+outside the candidate worktree. Artifacts are written/fsynced to exclusive
+temporary files, then atomically linked at their content address without replacement,
 then task JSON atomically stores their addresses, admission and operation result.
 The task remains authoritative. If a crash occurs before the task write, leftover
-unreferenced objects grant nothing. Retry may reuse identical bytes. A partial
-object at its content address is refused rather than silently overwritten.
+unreferenced objects grant nothing. Interrupted temporary files do not block
+retry. Retry may reuse identical complete bytes. A changed object at its content
+address is refused rather than silently overwritten.
 
 The exact same operation ID/request returns its prior result without advancing
 the task revision. Changed reuse is refused. Retained references and receipts

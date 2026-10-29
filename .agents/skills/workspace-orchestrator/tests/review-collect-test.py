@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / "bin" / "review-collect.py"
@@ -77,6 +78,7 @@ class CollectionTests(unittest.TestCase):
             "model": {"providerID": "fixture", "id": "model"}, "tokens": {"input": 100, "output": 10}},
             "messages": [{"type": "assistant", "finish": "stop", "content": [{"type": "text", "text": final}]}]})
         receipt = {"binary_sha256": "f" * 64, "model": "fixture/model", "agent": "reviewer",
+                   "profile_sha256": "e" * 64,
                    "source_sha256": {"/candidate/source.py": collector.digest(self.source)},
                    "sessions": ["ses_fixed"], "transcript_sha256": collector.digest(transcript),
                    "stderr_sha256": collector.digest(b""), "returncode": 0, "status": "REVIEW_OBSERVED",
@@ -107,7 +109,8 @@ class CollectionTests(unittest.TestCase):
     def test_substitution_and_cancelled_attempt_refused(self):
         admitted = self.apply(self.admit, packet=self.packet)
         bundle = self.bundle()
-        for field, value in (("sessions", ["ses_other"]), ("binary_sha256", "0" * 64), ("model", "other/model")):
+        for field, value in (("sessions", ["ses_other"]), ("binary_sha256", "0" * 64),
+                             ("model", "other/model"), ("profile_sha256", "1" * 64)):
             changed = dict(bundle)
             receipt = collector.decode(changed["receipt.json"])
             receipt[field] = value
@@ -191,6 +194,35 @@ class CollectionTests(unittest.TestCase):
         bundle["stderr.txt"] = b"changed after request"
         with self.assertRaises(collector.Unverified):
             self.apply(request, artifacts=bundle)
+
+    def test_assignment_admission_share_one_revision_timeline(self):
+        admitted = self.apply(self.admit, packet=self.packet)
+        bundle = self.bundle()
+        request = self.collection(admitted, bundle)
+        self.apply(request, artifacts=bundle)
+        for resulting_revision in (4, 5):
+            damaged = copy.deepcopy(self.record)
+            damaged["revision"] = 6
+            operation = damaged["review_protocol"]["operations"]["e-1"]
+            operation["result"]["resulting_revision"] = resulting_revision
+            operation["request"]["expected_revision"] = resulting_revision - 1
+            operation["request_sha256"] = collector.hashlib.sha256(evidence.canonical(operation["request"])).hexdigest()
+            with self.subTest(revision=resulting_revision), self.assertRaises(collector.Unverified):
+                collector.apply(damaged, request, self.state_root)
+
+    def test_interrupted_publication_leaves_no_partial_final_address(self):
+        store = collector.ensure_store(self.state_root, Path(self.record["worktree"]))
+        data = b"complete evidence"
+        with mock.patch.object(collector.os, "fsync", side_effect=OSError("interrupted")):
+            with self.assertRaises(OSError):
+                collector.publish(store, data)
+        self.assertFalse((store / collector.digest(data)).exists())
+        # A process death can retain a temporary file, which is never interpreted
+        # as a content address and cannot prevent the same artifact retry.
+        (store / ".pending-orphan").write_bytes(b"partial")
+        key = collector.publish(store, data)
+        self.assertEqual((store / key).read_bytes(), data)
+        self.assertEqual(collector.publish(store, data), key)
 
     def test_cli_collects_and_replays_authoritative_task_revision(self):
         Path(self.record["worktree"]).mkdir()

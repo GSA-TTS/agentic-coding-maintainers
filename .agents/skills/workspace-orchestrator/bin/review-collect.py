@@ -17,6 +17,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -189,6 +190,8 @@ def verify_bundle(admitted: dict[str, Any], artifacts: dict[str, bytes], runner)
             raise Unverified(f"runtime {field} differs from controller admission")
     if receipt.get("sessions") != [admitted["assignment"]["session"]]:
         raise Unverified("runtime session differs from assigned attempt")
+    if receipt.get("profile_sha256") != admitted["assignment"]["profile"]:
+        raise Unverified("runtime profile differs from assigned configuration")
     for name, field in (("transcript.jsonl", "transcript_sha256"), ("stderr.txt", "stderr_sha256")):
         if digest(artifacts[name]) != receipt.get(field):
             raise Unverified("runtime artifact differs from receipt")
@@ -232,16 +235,24 @@ def ensure_store(root: Path, worktree: Path) -> Path:
 def publish(store: Path, data: bytes) -> str:
     key = digest(data)
     target = store / key
-    try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-    except FileExistsError:
+    if target.exists() or target.is_symlink():
         if read_bytes(target, PACKET_LIMIT) != data:
             raise Unverified("existing content-addressed artifact is incomplete or changed")
         return key
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
+    fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=store)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o400)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            if read_bytes(target, PACKET_LIMIT) != data:
+                raise Unverified("concurrent artifact differs from its content address")
+    finally:
+        os.unlink(temporary)
     return key
 
 
@@ -284,7 +295,13 @@ def validate_retained(state: dict[str, Any], store: Path, record: dict[str, Any]
         if verify_bundle(state["admissions"][collection["admission_id"]], bundle, runner) != collection["summary"]:
             raise Unverified("retained collection verdict differs from artifacts")
     seen: dict[tuple[str, str], int] = {}
-    revisions = set()
+    protocol_operations = record["review_protocol"]["operations"].values()
+    revisions = {operation["result"]["resulting_revision"] for operation in protocol_operations}
+    assignments = {
+        (operation["result"]["generation"], operation["result"]["run_id"]): operation["result"]["resulting_revision"]
+        for operation in record["review_protocol"]["operations"].values()
+        if operation["result"]["status"] == "ASSIGNED"
+    }
     for operation_id, operation in state["operations"].items():
         fields(operation, {"request", "request_sha256", "result"})
         request = operation["request"]
@@ -303,6 +320,9 @@ def validate_retained(state: dict[str, Any], store: Path, record: dict[str, Any]
             raise Unverified("operation lacks retained admission")
         admitted = state["admissions"][key]
         if request["action"] == "admit":
+            assigned_at = assignments.get((admitted["generation"], admitted["run_id"]))
+            if assigned_at is None or assigned_at > request["expected_revision"]:
+                raise Unverified("collection admission precedes its assignment")
             payload = {name: admitted[name] for name in ("generation", "run_id", "binary_sha256", "model", "agent", "cwd", "sources")}
             expected = {"status": "COLLECTION_ADMITTED", "admission_id": key, "resulting_revision": revision}
             if request["payload"] != payload or request["expected_revision"] != admitted["admission_revision"]:

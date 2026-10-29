@@ -105,6 +105,17 @@ class RunnerTests(unittest.TestCase):
                 runner.binary_digest(regular, maximum=5)
             self.assertEqual(runner.binary_digest(regular), runner.sha256(b"123456"))
 
+    def test_guest_path_does_not_resolve_controller_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "actual"
+            target.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(target, target_is_directory=True)
+            self.assertEqual(runner.guest_path(str(alias / "source.py"), root), str(alias / "source.py"))
+            self.assertEqual(runner.guest_path("../source.py", alias), str(root / "source.py"))
+        self.assertEqual(runner.guest_path("/tmp/source.py", Path("/review")), "/tmp/source.py")
+
 
 if __name__ == "__main__":
     unittest.main()

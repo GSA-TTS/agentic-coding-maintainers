@@ -6,13 +6,13 @@ e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA25
 9db14f7955e7d611e525fdf2fa90d7bc41ba43223935a2a1351796d851f8d086  ./bin/orchestrator-monitor.sh
 e275d1be7fa6118fda9dda8851c9bd623be6cd315c6bd004ab16052991d0862f  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
-6d70f7999052b5ca2db13cf0859fab3933bb4d9230b7ea01c1bf4b3c53e468e8  ./bin/review-collect.py
+c9ecb14a66ce9ca56a4df2ca970dcc26565fe11b50ec54d758c054b2c37e3ecf  ./bin/review-collect.py
 932240798af01f0a335d3fc9b57bb48c0f59ffd15d191ca1d23e20ad57088a37  ./bin/review-evidence.py
 eb60ebeac23bf003c39f7650fc9d784909f3424c6fec76d2504ccb4d744c9c20  ./bin/review-packet.py
-f306deaca03afcdc0661dc174fb749739004343536883af23ee1055c167870db  ./bin/review-run.py
+d46a498562cb5db406fb597752e39256b703ff3d2195b85f7d23286a4320eb83  ./bin/review-run.py
 4b40433713073a75f9ed4539e91a2704e2f0f8d055af31c0f9db4a533de521e0  ./docs/MAINTAINER-SERVICE.md
 22e436522aef3c2135281aabc038eb550bec290482f75e89a98d2ef3cc80e614  ./docs/OPERATOR-GUIDE.md
-0af35a4957eda2674be062ed88f0475acf9fb86a1087406618c957defad5681a  ./docs/REVIEW-COLLECTION.md
+5da200894e5cd4544a00795f59cb559b86976607e011b10a8d8a6ef7537c0696  ./docs/REVIEW-COLLECTION.md
 2cd48d3f3fed2084fbe987070df1945ac0a99339bc0ba554e66afa23ccde5f60  ./docs/REVIEW-PROTOCOL.md
 3c7541ae5633ae03c1dc8364bd8f9c07b2eb921555be0aa8ff8d309dbb37e9bf  ./docs/REVIEW-RUNNER.md
 532877ba1c91464c7efb09f0b3e39dfd3699b961508d5c55b081ef3afbceb58e  ./examples/gsa-agentic-coding.json
@@ -30,7 +30,7 @@ b87b1459c7f3bd39366bd2df59b6ba825826da956a48ca931cc4077a7354f9de  ./tests/orches
 ddb038285f9ba72ebd65f8e25f0f1e861611ce09607c1cbb36597c715f2a99ce  ./tests/orchestrator-production-worktree-test.sh
 e5b97e220f20c8ecb0a1209860ede2c52f95e03dd211be1774f33cc78cfe55f8  ./tests/orchestrator-state-test.sh
 c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review-baseline.json
-451f0d42291224e80937eeb1805bef2060dbcb4c6c84b8b32de55ac41b51e806  ./tests/review-collect-test.py
+6ad4c525de60ac2f38bd4af38865c668ba1fff0223ccbf3fb319dee179500d40  ./tests/review-collect-test.py
 4c5c11f8190942963cc2995b1e91e400ed19f6006860f9f312a8bf7e0452742c  ./tests/review-evidence-test.py
 26ae85a438c8ba8e6ff30be79147eecc5db009ac585805f502cfdb82cd2f786b  ./tests/review-packet-test.py
-30821b353616330aa54138691618a339882dd2e1645f575c1804043700770da4  ./tests/review-run-test.py
+8f954582f8e6ff770cb54facc6221f1a3b542a78604f223763dd2dac29fb4cbc  ./tests/review-run-test.py
