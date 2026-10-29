@@ -195,6 +195,23 @@ class CollectionTests(unittest.TestCase):
         with self.assertRaises(collector.Unverified):
             self.apply(request, artifacts=bundle)
 
+    def test_review_context_is_bound_and_owner_role_refused(self):
+        self.admit["payload"]["context"] = {"prior_findings": [], "acceptance": "inspect source"}
+        admitted = self.apply(self.admit, packet=self.packet)
+        bundle = self.bundle()
+        request = self.collection(admitted, bundle)
+        with self.assertRaises(collector.Unverified):
+            self.apply(request, artifacts=bundle)
+        receipt = collector.decode(bundle["receipt.json"])
+        receipt["context_sha256"] = collector.digest(collector.canonical(self.admit["payload"]["context"]))
+        receipt["role"] = "owner-proposal"
+        bundle["receipt.json"] = collector.canonical(receipt)
+        with self.assertRaises(collector.Unverified):
+            self.apply(self.collection(admitted, bundle), artifacts=bundle)
+        receipt["role"] = "review"
+        bundle["receipt.json"] = collector.canonical(receipt)
+        self.assertEqual(self.apply(self.collection(admitted, bundle), artifacts=bundle)["status"], "OBSERVATION_COLLECTED")
+
     def test_assignment_admission_share_one_revision_timeline(self):
         admitted = self.apply(self.admit, packet=self.packet)
         bundle = self.bundle()

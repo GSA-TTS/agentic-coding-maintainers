@@ -135,6 +135,8 @@ def assign(record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     reviewer = token(payload["reviewer"])
     hash_value(payload["profile"])
     text(payload["session"], 256)
+    if any(item["admission"]["session"] == payload["session"] for item in record.get("repair_proposals", {}).values()):
+        raise Unverified("owner proposal session cannot be used for independent review")
     if reviewer == generation["owner"] or payload["adapter"] not in {"fake", "native-session"}:
         raise Unverified("reviewer must be separate from owner and use an explicit adapter")
     obligations = payload["obligations"]
@@ -298,6 +300,13 @@ def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, An
         if prior["request_sha256"] != request_digest:
             raise Unverified("operation ID reused with different content")
         return record, prior["result"], False
+    if request["action"] == "begin":
+        ledger = record.get("repair_protocol", {})
+        for correction_id, correction in ledger.get("corrections", {}).items():
+            if correction["cycle"] == record["rework_count"] and not any(
+                    item["correction_id"] == correction_id and item["phase"] in {"APPLIED_UNREVIEWED", "NOT_APPLIED_OBSERVED"}
+                    for item in ledger.get("operations", {}).values()):
+                raise Unverified("prepared repair must be applied or explicitly settled before a new review generation")
     if request["action"] in {"assign", "accept"}:
         prepared = record.get("repair_protocol", {}).get("corrections", {}).values()
         if any(item["generation"] == request["payload"].get("generation") for item in prepared):
@@ -474,6 +483,13 @@ def read_request(path: Path) -> dict[str, Any]:
 
 def validate_collected_retention(record: dict[str, Any], root: Path) -> None:
     load_coordinator().require_repair_settled(record, root=root)
+    if "repair_proposals" in record:
+        spec = importlib.util.spec_from_file_location("installed_proposal", Path(__file__).with_name("repair-proposal.py"))
+        if spec is None or spec.loader is None:
+            raise Unverified("proposal validator unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.validate(record, root)
     has_collected_reports = any("collection_origin" in report
                                 for generation in record.get("review_protocol", {}).get("generations", [])
                                 for report in generation["reports"].values())
