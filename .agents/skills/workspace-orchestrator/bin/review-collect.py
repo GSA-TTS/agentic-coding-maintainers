@@ -229,6 +229,11 @@ def ensure_store(root: Path, worktree: Path) -> Path:
     info = store.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise Unverified("artifact store must be private and current-user owned")
+    parent = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
     return store
 
 

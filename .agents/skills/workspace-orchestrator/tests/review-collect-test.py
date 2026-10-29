@@ -224,6 +224,20 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual((store / key).read_bytes(), data)
         self.assertEqual(collector.publish(store, data), key)
 
+    def test_parent_directory_sync_failure_prevents_reference(self):
+        before = copy.deepcopy(self.record)
+        with mock.patch.object(collector.os, "fsync", side_effect=OSError("directory sync failed")):
+            with self.assertRaises(OSError):
+                self.apply(self.admit, packet=self.packet)
+        self.assertEqual(self.record, before)
+        # A prior failed call may leave the directory; retry must sync its parent
+        # again rather than treating existence as proof of durability.
+        with mock.patch.object(collector.os, "fsync", side_effect=OSError("retry sync failed")):
+            with self.assertRaises(OSError):
+                self.apply(self.admit, packet=self.packet)
+        self.assertEqual(self.record, before)
+        self.assertEqual(self.apply(self.admit, packet=self.packet)["status"], "COLLECTION_ADMITTED")
+
     def test_cli_collects_and_replays_authoritative_task_revision(self):
         Path(self.record["worktree"]).mkdir()
         env = {**os.environ, "ORCHESTRATOR_TEST_MODE": "1", "ORCHESTRATOR_STATE_DIR": str(self.state_root)}
