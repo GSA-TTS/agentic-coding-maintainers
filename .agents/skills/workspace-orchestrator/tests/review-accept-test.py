@@ -161,6 +161,16 @@ class AcceptanceTests(fixtures.CollectionTests):
         path.write_bytes(c.canonical(task))
         request_path = self.root / "accept.json"
         request_path.write_bytes(c.canonical(request))
+        manual_path = self.root / "manual.json"
+        report = acceptance.final_report(self.record, request["payload"]["admission_id"], self.state_root / "review-artifacts", c, e)
+        report["collection_origin"] = {"admission_id": request["payload"]["admission_id"], "operation_id": "forged"}
+        forged = {**request, "operation_id": "forged", "action": "accept", "payload": report}
+        manual_path.write_bytes(c.canonical(forged))
+        before = path.read_bytes()
+        manual_command = [sys.executable, "-I", "-B", str(ROOT / "bin" / "review-evidence.py"), "fixture", "--request", str(manual_path)]
+        refused = subprocess.run(manual_command, env=env, capture_output=True, text=True)
+        self.assertEqual(refused.returncode, 3)
+        self.assertEqual(path.read_bytes(), before)
         command = [sys.executable, "-I", "-B", str(ROOT / "bin" / "review-accept.py"), "fixture", "--request", str(request_path)]
         first = subprocess.run(command, env=env, capture_output=True, text=True)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
@@ -192,6 +202,11 @@ class AcceptanceTests(fixtures.CollectionTests):
         self.assertEqual(assessment.returncode, 3)
         self.assertEqual(json.loads(assessment.stdout)["status"], "UNVERIFIED")
         self.assertNotIn("CLAIMS_COMPLETE", assessment.stdout)
+        # Even a legacy operation retry must validate existing collected origins.
+        legacy_retry = accepted_task["review_protocol"]["operations"]["e-0"]["request"]
+        manual_path.write_bytes(c.canonical(legacy_retry))
+        refused = subprocess.run(manual_command, env=env, capture_output=True, text=True)
+        self.assertEqual(refused.returncode, 3)
 
 
 if __name__ == "__main__":
