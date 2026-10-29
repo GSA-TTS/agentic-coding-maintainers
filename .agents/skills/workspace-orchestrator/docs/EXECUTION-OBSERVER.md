@@ -45,8 +45,10 @@ Guest PID is not claimed. A crash between spawn and recording can lose the child
 identity, but cannot authorize a duplicate launch: the intent remains unsettled.
 
 Stdout/stderr are captured concurrently with a one-MB combined bound and a
-maximum 60-second timeout per case. Exit 126/127 and transport loss are
-UNVERIFIED. Other observed output/exit mismatches fail the assertion. Empty or
+maximum 60-second timeout per case. Nonzero Docker CLI exits, including signals,
+are UNVERIFIED because guest failure and transport failure are not independently
+distinguished. Only zero-exit contracts are admitted in this slice. Observed
+output mismatches after exit zero fail the assertion. Empty or
 success-like output cannot pass a nonempty exact-output oracle. Assertions are
 defined on the controller; candidate-reported test counts confer no credit.
 Correct expected output is a black-box result, not proof of internal correctness
@@ -64,7 +66,16 @@ Stop the exact container externally, then repeat the original invocation with
 time with `Running: false`. It does not itself send a kill or remove command.
 Only that observed stop releases the execution fence. A missing container is
 UNVERIFIED; stop/reconcile before removal. A captured result becomes SETTLED;
-an interrupted launch becomes UNKNOWN_STOPPED, never invented success.
+an interrupted launch becomes UNKNOWN_STOPPED, never invented success. Stop
+observation and capture can arrive in either order without corrupting phase.
+Missing streams yield EVIDENCE_LOST_STOPPED and unverified oracle evidence while
+retaining independently observed termination. Missing original definition or
+container identity cannot be repaired by guessing.
+
+Exit status is consistently 3 while unsettled; after exact stop it is 0 for a
+settled PASS, 1 for FAIL and 3 for UNVERIFIED. Reconciliation never converts an
+oracle failure into exit-code success. Current source applicability checks the
+actual checkout HEAD as well as task and source hashes at settlement.
 
 Identical retry returns the original observation without dispatch. Changed
 operation reuse is refused. Every new case checks current source/owner, and

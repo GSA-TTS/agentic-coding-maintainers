@@ -557,8 +557,16 @@ def require_execution_stopped(record: dict[str, Any]) -> None:
     if not isinstance(attempts, dict):
         raise UnknownError("malformed execution observations")
     for attempt in attempts.values():
-        if not isinstance(attempt, dict) or attempt.get("termination") != "STOPPED_OBSERVED":
+        if (not isinstance(attempt, dict) or attempt.get("termination") != "STOPPED_OBSERVED"
+                or attempt.get("phase") not in {"SETTLED", "UNKNOWN_STOPPED", "EVIDENCE_LOST_STOPPED"}):
             raise UnknownError("execution may still be active; reconcile exact sandbox stop before lifecycle changes")
+        definition = attempt.get("definition")
+        stop = attempt.get("stop_observation")
+        if (not isinstance(definition, dict) or not isinstance(stop, dict)
+                or not isinstance(definition.get("container_id"), str) or not re.fullmatch(r"[0-9a-f]{64}", definition["container_id"])
+                or not definition.get("created")
+                or stop != {"container_id": definition["container_id"], "created": definition["created"], "running": False}):
+            raise UnknownError("execution stop observation is missing or malformed")
 
 
 def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:

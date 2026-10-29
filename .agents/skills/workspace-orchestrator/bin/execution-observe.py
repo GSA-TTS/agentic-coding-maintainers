@@ -104,8 +104,8 @@ def validate_definition(value: dict[str, Any]) -> None:
             raise Unverified("bounded explicit guest argv required")
         if not isinstance(case["expected_stdout"], str) or len(case["expected_stdout"].encode()) > 100_000:
             raise Unverified("invalid expected output")
-        if type(case["expected_exit"]) is not int or not 0 <= case["expected_exit"] <= 125:
-            raise Unverified("expected exit must exclude runtime invocation errors")
+        if type(case["expected_exit"]) is not int or case["expected_exit"] != 0:
+            raise Unverified("only zero-exit contracts supported; nonzero Docker exits are transport-ambiguous")
         if type(case["timeout"]) is not int or not 1 <= case["timeout"] <= 60:
             raise Unverified("case timeout must be 1-60 seconds")
 
@@ -126,7 +126,7 @@ def inspect_guest(definition: dict[str, Any], item: dict[str, Any]) -> None:
     if (not 0 < host.get("Memory", 0) <= 4_294_967_296 or not 0 < host.get("NanoCpus", 0) <= 4_000_000_000
             or not isinstance(host.get("PidsLimit"), int) or not 0 < host["PidsLimit"] <= 512):
         raise Unverified("guest resource bounds unavailable")
-    if (host.get("PidMode") or host.get("IpcMode") == "host" or host.get("Devices")
+    if (host.get("PidMode") or host.get("IpcMode") not in {"private", "none"} or host.get("Devices")
             or host.get("DeviceRequests") or host.get("PortBindings") or host.get("VolumesFrom")):
         raise Unverified("guest exposes extra host resources")
     actual = [{name: mount[name] for name in ("Source", "Destination", "Type", "RW")}
@@ -141,7 +141,7 @@ def inspect_guest(definition: dict[str, Any], item: dict[str, Any]) -> None:
 def evaluate(case: dict[str, Any], stdout: bytes, stderr: bytes, code: int | None, failure: str | None) -> dict[str, Any]:
     # The oracle is controller-owned expected bytes; candidate test counts/PASS
     # markers carry no authority. Transport errors cannot become assertion FAIL.
-    verdict = "UNVERIFIED" if failure or code is None or code in {126, 127} else (
+    verdict = "UNVERIFIED" if failure or type(code) is not int or code != 0 else (
         "PASS" if code == case["expected_exit"] and stdout == case["expected_stdout"].encode() and not stderr else "FAIL")
     return {"id": case["id"], "verdict": verdict, "returncode": code, "failure": failure,
             "stdout_sha256": digest(stdout), "stderr_sha256": digest(stderr),
@@ -210,6 +210,10 @@ def source_binding(record: dict[str, Any], definition: dict[str, Any], c) -> Non
     if definition["head"] != record["head_sha"] or definition["base"] != record["base_sha"]:
         raise Unverified("definition does not bind current task commits")
     root = Path(record["worktree"])
+    coordinator = dependency("orchestrator-state")
+    actual_head = coordinator.git_probe(str(root), "rev-parse", "HEAD")
+    if actual_head.returncode != 0 or actual_head.stdout.strip() != definition["head"]:
+        raise Unverified("actual checkout HEAD differs from execution definition")
     for relative, expected in definition["source_sha256"].items():
         if digest(c.read_bytes(root / relative)) != expected:
             raise Unverified("candidate source differs from approved definition")
@@ -218,14 +222,15 @@ def source_binding(record: dict[str, Any], definition: dict[str, Any], c) -> Non
             raise Unverified("source mount must be the admitted worktree")
 
 
-def validate_attempts(record: dict[str, Any], root: Path, c) -> None:
+def validate_attempts(record: dict[str, Any], root: Path, c, check_streams: bool = True) -> None:
     attempts = record.get("execution_observations", {})
     if not isinstance(attempts, dict) or len(attempts) > 12:
         raise Unverified("invalid execution ledger")
     for key, attempt in attempts.items():
         required = {"request", "definition", "phase", "termination", "owner", "head", "base",
                     "controller_sha256", "cases", "launchers"}
-        if not isinstance(attempt, dict) or set(attempt) not in (required, required | {"result"}):
+        optional = {"result", "stop_observation", "evidence_loss"}
+        if not isinstance(attempt, dict) or not required <= set(attempt) or set(attempt) - required - optional:
             raise Unverified("malformed retained attempt")
         request = attempt["request"]
         if not isinstance(request, dict) or set(request) != {"operation_id", "definition_sha256", "expected_revision"} or request["operation_id"] != key:
@@ -241,13 +246,19 @@ def validate_attempts(record: dict[str, Any], root: Path, c) -> None:
             raise Unverified("retained definition is missing or substituted")
         if attempt["head"] != attempt["definition"]["head"] or attempt["base"] != attempt["definition"]["base"]:
             raise Unverified("retained source identity differs")
-        if attempt["phase"] not in {"DISPATCHING", "CAPTURED", "SETTLED", "UNKNOWN_STOPPED"} or attempt["termination"] not in {"UNVERIFIED", "STOPPED_OBSERVED"}:
+        if attempt["phase"] not in {"DISPATCHING", "CAPTURED", "SETTLED", "UNKNOWN_STOPPED", "EVIDENCE_LOST_STOPPED"} or attempt["termination"] not in {"UNVERIFIED", "STOPPED_OBSERVED"}:
             raise Unverified("invalid attempt phase")
-        if (attempt["phase"] in {"SETTLED", "UNKNOWN_STOPPED"}) != (attempt["termination"] == "STOPPED_OBSERVED"):
+        if (attempt["phase"] in {"SETTLED", "UNKNOWN_STOPPED", "EVIDENCE_LOST_STOPPED"}) != (attempt["termination"] == "STOPPED_OBSERVED"):
             raise Unverified("termination phase mismatch")
+        if attempt["termination"] == "STOPPED_OBSERVED":
+            stop = attempt.get("stop_observation")
+            if stop != {"container_id": attempt["definition"]["container_id"], "created": attempt["definition"]["created"], "running": False}:
+                raise Unverified("termination lacks exact-container observation")
         cases = attempt["definition"]["cases"]
         if not isinstance(attempt["cases"], list) or len(attempt["cases"]) > len(cases) or not isinstance(attempt["launchers"], list) or len(attempt["launchers"]) > len(cases):
             raise Unverified("invalid observed case inventory")
+        if len(attempt["launchers"]) < len(attempt["cases"]):
+            raise Unverified("captured cases lack launch identity")
         for index, observed in enumerate(attempt["cases"]):
             if not isinstance(observed, dict):
                 raise Unverified("invalid observed case")
@@ -256,25 +267,85 @@ def validate_attempts(record: dict[str, Any], root: Path, c) -> None:
                 sha = observed.get(field + "_sha256")
                 if not isinstance(sha, str) or not HEX.fullmatch(sha):
                     raise Unverified("invalid stream reference")
+                if not check_streams or attempt["phase"] == "EVIDENCE_LOST_STOPPED":
+                    continue
                 data = c.read_bytes(root / "review-artifacts" / sha, MAX_OUTPUT)
                 if digest(data) != sha:
                     raise Unverified("observed stream changed")
                 streams.append(data)
-            if evaluate(cases[index], *streams, observed.get("returncode"), observed.get("failure")) != observed:
+            if check_streams and attempt["phase"] != "EVIDENCE_LOST_STOPPED" and evaluate(cases[index], *streams, observed.get("returncode"), observed.get("failure")) != observed:
                 raise Unverified("case verdict differs from retained stream")
         for index, launcher in enumerate(attempt["launchers"]):
-            if not isinstance(launcher, dict) or launcher.get("case") != cases[index]["id"] or type(launcher.get("pid")) is not int or launcher["pid"] <= 0:
+            if (not isinstance(launcher, dict) or set(launcher) != {"case", "pid", "process_start", "process_status", "identity"}
+                    or launcher.get("case") != cases[index]["id"] or type(launcher.get("pid")) is not int or launcher["pid"] <= 0
+                    or launcher["process_status"] not in {"alive", "absent", "unknown"}
+                    or (launcher["process_status"] == "alive" and not isinstance(launcher["process_start"], str))
+                    or launcher["identity"] != "actual Docker CLI child, not guest PID"):
                 raise Unverified("invalid launcher identity")
         if "result" in attempt:
             result = attempt["result"]
             if not isinstance(result, dict) or result.get("candidate_ready") is not False or type(result.get("applicable")) is not bool:
                 raise Unverified("invalid execution result")
-            expected = "UNVERIFIED" if not result["applicable"] or len(attempt["cases"]) != len(cases) or any(item["verdict"] == "UNVERIFIED" for item in attempt["cases"]) else (
+            expected = "UNVERIFIED" if not result["applicable"] or attempt["phase"] == "EVIDENCE_LOST_STOPPED" or len(attempt["cases"]) != len(cases) or any(item["verdict"] == "UNVERIFIED" for item in attempt["cases"]) else (
                 "FAIL" if any(item["verdict"] == "FAIL" for item in attempt["cases"]) else "PASS")
-            if result.get("oracle_verdict") != expected or attempt["phase"] not in {"CAPTURED", "SETTLED"}:
+            if result.get("oracle_verdict") != expected or attempt["phase"] not in {"CAPTURED", "SETTLED", "EVIDENCE_LOST_STOPPED"}:
                 raise Unverified("execution result contradicts observed assertions")
         elif attempt["phase"] not in {"DISPATCHING", "UNKNOWN_STOPPED"}:
             raise Unverified("terminal execution lacks a result")
+
+
+def active_execution_owner(record: dict[str, Any]) -> bool:
+    return (record["state"] in {"Claimed", "Implementing", "Reviewing"}
+            and isinstance(record.get("worker"), dict)
+            and type(record.get("leases", {}).get("global_slot")) is int)
+
+
+def applicability(record: dict[str, Any], attempt: dict[str, Any], c) -> bool:
+    if (not active_execution_owner(record) or record["owner"] != attempt["owner"] or record.get("transition_intent")):
+        return False
+    try:
+        source_binding(record, attempt["definition"], c)
+    except (Unverified, OSError):
+        return False
+    return True
+
+
+def finalize(attempt: dict[str, Any], observations: list[dict[str, Any]], applicable: bool) -> None:
+    if attempt["phase"] not in {"DISPATCHING", "UNKNOWN_STOPPED"}:
+        raise Unverified("attempt no longer permits capture settlement")
+    verdict = "UNVERIFIED" if not applicable or len(observations) != len(attempt["definition"]["cases"]) or any(item["verdict"] == "UNVERIFIED" for item in observations) else (
+        "FAIL" if any(item["verdict"] == "FAIL" for item in observations) else "PASS")
+    attempt.update(phase="SETTLED" if attempt["termination"] == "STOPPED_OBSERVED" else "CAPTURED", cases=observations,
+                   result={"oracle_verdict": verdict, "applicable": applicable, "candidate_ready": False,
+                           "transport": "controller-captured Docker exec", "guest_descendants": attempt["termination"]})
+
+
+def exit_code(attempt: dict[str, Any]) -> int:
+    if attempt["phase"] != "SETTLED":
+        return 3
+    return {"PASS": 0, "FAIL": 1}.get(attempt.get("result", {}).get("oracle_verdict"), 3)
+
+
+def reconcile_stop(record: dict[str, Any], attempt: dict[str, Any], item: dict[str, Any], root: Path, c) -> None:
+    definition = attempt["definition"]
+    if item.get("Id") != definition["container_id"] or item.get("Created") != definition["created"] or item.get("State", {}).get("Running") is not False:
+        raise Unverified("exact container stop is not observed")
+    evidence_lost = False
+    try:
+        validate_attempts({"execution_observations": {attempt["request"]["operation_id"]: attempt}}, root, c)
+    except (Unverified, OSError):
+        evidence_lost = True
+    attempt["termination"] = "STOPPED_OBSERVED"
+    attempt["stop_observation"] = {"container_id": definition["container_id"], "created": definition["created"], "running": False}
+    if "result" in attempt:
+        attempt["phase"] = "DISPATCHING"
+        finalize(attempt, attempt["cases"], applicability(record, attempt, c))
+        if evidence_lost:
+            attempt["phase"] = "EVIDENCE_LOST_STOPPED"
+            attempt["evidence_loss"] = "Referenced stream missing or corrupt; stop observation retained separately"
+            attempt["result"].update(oracle_verdict="UNVERIFIED", applicable=False)
+    else:
+        attempt["phase"] = "UNKNOWN_STOPPED"
 
 
 def main() -> int:
@@ -313,23 +384,22 @@ def main() -> int:
             if args.definition.resolve().is_relative_to(Path(record["worktree"]).resolve()):
                 raise Unverified("approved definition must be outside candidate checkout")
             attempts = record.get("execution_observations", {})
-            validate_attempts(record, root, c)
+            # Reconciliation can release an actually stopped guest after stream
+            # loss, but never after loss of its identity/definition binding.
+            validate_attempts(record, root, c, check_streams=not args.reconcile_stopped)
             prior = attempts.get(args.operation_id)
             if prior:
                 if prior["request"] != request:
                     raise Unverified("operation ID reused with changed request")
                 if args.reconcile_stopped:
                     item = inspect_backend(definition, prefix, env)
-                    if item.get("Id") != definition["container_id"] or item.get("Created") != definition["created"] or item["State"].get("Running") is not False:
-                        raise Unverified("exact container stop is not observed")
-                    prior["termination"] = "STOPPED_OBSERVED"
-                    prior["phase"] = "SETTLED" if "result" in prior else "UNKNOWN_STOPPED"
+                    reconcile_stop(record, prior, item, root, c)
                     coordinator.write_task(root, record)
                 print(json.dumps(prior, sort_keys=True))
-                return 0 if prior["phase"] == "SETTLED" else 3
+                return exit_code(prior)
             if args.reconcile_stopped:
                 raise Unverified("no original execution to reconcile")
-            if record["revision"] != args.expected_revision or record["state"] not in {"Claimed", "Implementing", "Reviewing", "Rework"}:
+            if record["revision"] != args.expected_revision or not active_execution_owner(record):
                 raise Unverified("task revision or admission changed")
             if record.get("transition_intent") or any(item.get("termination") != "STOPPED_OBSERVED" for item in attempts.values()) or len(attempts) >= 12:
                 raise Unverified("unsettled execution or execution budget exhausted")
@@ -365,7 +435,7 @@ def main() -> int:
                     active = coordinator.read_task(root, args.task_id)
                     if (active["owner"] != attempt["owner"] or active["head_sha"] != attempt["head"]
                             or active["base_sha"] != attempt["base"] or active.get("transition_intent")
-                            or active["state"] not in {"Claimed", "Implementing", "Reviewing", "Rework"}):
+                            or not active_execution_owner(active)):
                         raise Unverified("task changed before dispatch; execution remains unsettled")
                     source_binding(active, definition, c)
                     inspect_guest(definition, inspect_backend(definition, prefix, env))
@@ -392,21 +462,13 @@ def main() -> int:
             os.close(folder)
         with coordinator.CoordinatorLock(root):
             current = coordinator.read_task(root, args.task_id)
-            applicable = (current["head_sha"] == attempt["head"] and current["base_sha"] == attempt["base"]
-                          and current["owner"] == attempt["owner"] and current["state"] in {"Claimed", "Implementing", "Reviewing", "Rework"})
-            try:
-                source_binding(current, definition, c)
-            except Unverified:
-                applicable = False
-            verdict = "UNVERIFIED" if not applicable or len(observations) != len(definition["cases"]) or any(item["verdict"] == "UNVERIFIED" for item in observations) else (
-                "FAIL" if any(item["verdict"] == "FAIL" for item in observations) else "PASS")
             retained = current["execution_observations"][args.operation_id]
-            retained.update(phase="CAPTURED", cases=observations,
-                            result={"oracle_verdict": verdict, "applicable": applicable, "candidate_ready": False,
-                                    "transport": "controller-captured Docker exec", "guest_descendants": "UNVERIFIED until exact container stop"})
+            if retained["request"] != request:
+                raise Unverified("attempt identity changed during capture")
+            finalize(retained, observations, applicability(current, retained, c))
             coordinator.write_task(root, current)
             print(json.dumps(retained, sort_keys=True))
-        return 0 if verdict == "PASS" else 1 if verdict == "FAIL" else 3
+        return exit_code(retained)
     except Exception as exc:
         print(json.dumps({"status": "UNVERIFIED", "reason": str(exc) if isinstance(exc, Unverified) else "execution observation unavailable"}))
         return 3
