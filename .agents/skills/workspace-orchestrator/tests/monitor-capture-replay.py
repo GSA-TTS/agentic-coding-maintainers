@@ -17,6 +17,7 @@ def main():
     parser.add_argument("capture", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
+    args.output = args.output.absolute()
     args.output.mkdir(mode=0o700, exist_ok=False)
     path = Path(__file__).resolve().parents[1] / "bin" / "monitor-journal.py"
     spec = importlib.util.spec_from_file_location("journal", path)

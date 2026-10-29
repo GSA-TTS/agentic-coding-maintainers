@@ -253,10 +253,21 @@ def pr_snapshot(repositories: list[str], fetch=run) -> list[dict[str, Any]]:
             for check in checks:
                 if not isinstance(check, dict):
                     raise MonitorError(f"{repo}#{pr['number']} check is malformed")
-                if (not any(field in check for field in ("conclusion", "state", "status"))
-                        or any(check.get(field) is not None and not isinstance(check[field], str) for field in ("conclusion", "state", "status"))):
+                if any(check.get(field) is not None and not isinstance(check[field], str) for field in ("conclusion", "state", "status")):
                     raise MonitorError("check rollup has invalid status fields")
-                conclusions.append(check.get("conclusion") or check.get("state") or "ABSENT")
+                if "status" in check:
+                    if check["status"] not in {"QUEUED", "IN_PROGRESS", "COMPLETED", "WAITING", "PENDING", "REQUESTED"}:
+                        raise MonitorError("check run status unavailable")
+                    conclusion = check.get("conclusion")
+                    if conclusion not in {None, "", "SUCCESS", "FAILURE", "NEUTRAL", "CANCELLED", "SKIPPED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}:
+                        raise MonitorError("invalid check conclusion")
+                    if check["status"] == "COMPLETED" and not conclusion:
+                        raise MonitorError("completed check conclusion unavailable")
+                    conclusions.append(conclusion or check["status"])
+                elif check.get("state") in {"ERROR", "FAILURE", "PENDING", "SUCCESS", "EXPECTED"}:
+                    conclusions.append(check["state"])
+                else:
+                    raise MonitorError("check rollup variant unavailable")
             result.append({
                 "repo": repo, "number": pr["number"], "head": pr["headRefOid"],
                 "title": safe_text(pr.get("title", "")), "draft": pr["isDraft"],

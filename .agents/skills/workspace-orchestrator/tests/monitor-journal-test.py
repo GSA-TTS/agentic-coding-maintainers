@@ -190,11 +190,47 @@ class JournalTests(unittest.TestCase):
         spec.loader.exec_module(module)
         good = {"number":1,"headRefOid":"a"*40,"isDraft":False,"state":"OPEN",
                 "reviewDecision":None,"mergeStateStatus":"UNKNOWN","statusCheckRollup":[]}
-        for changed in ({"reviewDecision":False},{"mergeStateStatus":[]},{"statusCheckRollup":[{}]}):
+        for changed in ({"reviewDecision":False},{"mergeStateStatus":[]},{"statusCheckRollup":[{}]},
+                        {"statusCheckRollup":[{"status":None}]},{"statusCheckRollup":[{"conclusion":None}]},
+                        {"statusCheckRollup":[{"status":"COMPLETED","conclusion":None}]}):
             with self.subTest(changed=changed), self.assertRaises(module.MonitorError):
                 module.pr_snapshot(["fixture/project"], lambda _: json.dumps([{**good,**changed}]))
         with self.assertRaises(module.MonitorError):
             module.project_snapshot({"number":1,"owner":"fixture"}, lambda _: '{"items":[null],"totalCount":1}')
+
+    def test_open_validation_uses_one_snapshot(self):
+        journal.finish(self.db, self.start(), self.observed([self.pr()]), "done")
+        self.db.execute("PRAGMA journal_mode=WAL")
+        actual_connect = journal.sqlite3.connect
+        writer = actual_connect(self.root / "history.sqlite3")
+        writer.row_factory = journal.sqlite3.Row
+        fired = False
+        def connect(*args, **kwargs):
+            connection = actual_connect(*args, **kwargs)
+            def interleave(sql):
+                nonlocal fired
+                if not fired and sql == "SELECT * FROM polls ORDER BY seq":
+                    fired = True
+                    seq = journal.begin(writer, "during-open", "a" * 64, "monitor", self.sources, "now")
+                    journal.finish(writer, seq, self.observed([self.pr("b" * 40)]), "done")
+            connection.set_trace_callback(interleave)
+            return connection
+        try:
+            with mock.patch.object(journal.sqlite3, "connect", side_effect=connect):
+                reader = journal.open_store(self.root)
+                reader.close()
+            self.assertTrue(fired)
+            self.assertEqual(self.snapshot()["poll_seq"], 2)
+        finally:
+            writer.close()
+
+    def test_replay_utility_accepts_relative_output(self):
+        capture = self.root / "capture.json"
+        capture.write_text(json.dumps({"fixture/project":[self.pr()]}))
+        result = subprocess.run([sys.executable, "-I", "-B", str(SOURCE.parent.parent/"tests/monitor-capture-replay.py"), str(capture), "relative-output"],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.root/"relative-output/outcome.json").is_file())
 
     def test_busy_writer_cannot_commit_partial_poll(self):
         second = journal.open_store(self.root, writable=True)

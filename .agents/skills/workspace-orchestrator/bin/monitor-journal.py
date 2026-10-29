@@ -94,7 +94,11 @@ def open_store(root: Path, writable: bool = False) -> sqlite3.Connection:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        validate_store(connection)
+        connection.execute("BEGIN")
+        try:
+            validate_store(connection)
+        finally:
+            connection.rollback()
         return connection
     except Exception:
         connection.close()
