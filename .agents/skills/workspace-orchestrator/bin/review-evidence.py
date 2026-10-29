@@ -476,6 +476,14 @@ def main() -> int:
         root = coordinator.state_root(create=args.request is not None)
         if args.request is None:
             record = coordinator.read_task(root, args.task_id)
+            if "collected_review_acceptances" in record:
+                source = Path(__file__).resolve().with_name("review-accept.py")
+                spec = importlib.util.spec_from_file_location("installed_review_acceptance", source)
+                if spec is None or spec.loader is None:
+                    raise Unverified("installed collected-review validator unavailable")
+                validator = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(validator)
+                validator.validate_retained(record, root)
             result = correction_request(record) if args.correction else assess(record)
         else:
             request = read_request(args.request)
