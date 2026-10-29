@@ -168,7 +168,7 @@ def workspace_root() -> Path:
     return root
 
 
-def state_root() -> Path:
+def state_root(create: bool = True) -> Path:
     test_mode = os.environ.get("ORCHESTRATOR_TEST_MODE") == "1"
     raw = os.environ.get("ORCHESTRATOR_STATE_DIR") if test_mode else None
     root = Path(raw).expanduser() if raw else workspace_root() / ".orchestrator"
@@ -179,7 +179,10 @@ def state_root() -> Path:
             raise UnknownError("test state root must stay under the system temporary directory") from exc
     if root.exists() and root.is_symlink():
         raise UnknownError("state root is a symlink")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if create:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    elif not root.is_dir():
+        raise UnknownError("coordinator state is not initialized")
     st = root.stat()
     if st.st_uid != os.getuid() or st.st_mode & 0o022:
         raise UnknownError("state root must be current-user owned and not group/world writable")
@@ -187,7 +190,10 @@ def state_root() -> Path:
         path = root / name
         if path.exists() and path.is_symlink():
             raise UnknownError(f"state component {name!r} is a symlink")
-        path.mkdir(mode=0o700, exist_ok=True)
+        if create:
+            path.mkdir(mode=0o700, exist_ok=True)
+        elif not path.is_dir():
+            raise UnknownError(f"state component {name!r} is missing")
         pst = path.stat()
         if not path.is_dir() or pst.st_uid != os.getuid() or pst.st_mode & 0o022:
             raise UnknownError(f"state component {name!r} must be a private current-user directory")
@@ -614,6 +620,8 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         if args.reason:
             safe_scope(args.reason)
         if args.state == "Ready for human review":
+            if "review_protocol" in record:
+                raise BusyError("review protocol claims require corroborated runtime evidence; readiness is UNVERIFIED")
             if not record["head_sha"]:
                 raise BusyError("readiness requires a fixed head SHA")
             if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
@@ -746,6 +754,11 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             raise BusyError("requested head is not the assigned worktree HEAD")
         if ancestor.returncode != 0:
             raise BusyError("requested head does not descend from the recorded base")
+        if record["head_sha"] != args.head_sha and "review_protocol" in record:
+            protocol = record["review_protocol"]
+            if not isinstance(protocol, dict) or type(protocol.get("material_epoch")) is not int:
+                raise UnknownError("review protocol material epoch is malformed")
+            protocol["material_epoch"] += 1
         record["head_sha"] = args.head_sha
         record["reviewed_sha"] = ""
         record["reviewers"] = []
@@ -830,6 +843,8 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     if not target:
         return record
     if target == "Ready for human review":
+        if "review_protocol" in record:
+            raise UnknownError("cannot recover readiness from uncorroborated review protocol claims")
         # The earlier readiness check was performed before writing intent.
         # The worktree may have changed during a crash: never publish ready
         # solely by replaying the intent.

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "status": "frozen-before-implementation",
+  "cases": [
+    {"id": "clean", "oracle": "complete required review coverage with zero findings is valid"},
+    {"id": "repair", "oracle": "retain original finding and independently verify new-head repair"},
+    {"id": "refutation", "oracle": "retain counterevidence and disposition without a finding quota"},
+    {"id": "head-change", "oracle": "old-head evidence cannot establish current readiness"},
+    {"id": "comparison-change", "oracle": "same head with changed base or policy requires reassessment"},
+    {"id": "incomplete-source", "oracle": "missing object or bounded-output overflow is UNVERIFIED"},
+    {"id": "unusual-path", "oracle": "NUL-safe inventory preserves exact path bytes"},
+    {"id": "candidate-config", "oracle": "Git hooks, filters, textconv and replacement objects cannot execute or change comparison"},
+    {"id": "evidence-substitution", "oracle": "altered packet, assignment, policy or attempt is refused"},
+    {"id": "vacuous-test", "oracle": "worker claims and skipped tests receive no execution credit"},
+    {"id": "concurrent-reviews", "oracle": "accepting one applicable report does not invalidate a second"},
+    {"id": "acceptance-crash", "oracle": "same operation returns original result without duplicate disposition"},
+    {"id": "late-worker", "oracle": "superseded generation is rejected without claiming worker termination"},
+    {"id": "scope-escape", "oracle": "repair outside admitted scope or through symlinks is refused"},
+    {"id": "self-maintenance", "oracle": "candidate edits succeed while installed authority remains inaccessible"}
+  ],
+  "protocol_tests_are_runtime_qualification": false,
+  "semantic_baseline": "UNMEASURED: matched real harness runs and independent labels required"
+}
