@@ -298,6 +298,10 @@ def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, An
         if prior["request_sha256"] != request_digest:
             raise Unverified("operation ID reused with different content")
         return record, prior["result"], False
+    if request["action"] in {"assign", "accept"}:
+        prepared = record.get("repair_protocol", {}).get("corrections", {}).values()
+        if any(item["generation"] == request["payload"].get("generation") for item in prepared):
+            raise Unverified("prepared correction freezes this generation; use a fresh review generation")
     if request["expected_revision"] != record["revision"]:
         raise Unverified("task revision changed")
     if record["state"] not in {"Claimed", "Implementing", "Reviewing", "Rework"}:

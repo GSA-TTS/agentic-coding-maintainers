@@ -56,9 +56,10 @@ def relative_path(value: Any) -> str:
     return value
 
 
-def in_scope(path: str, scopes: list[str]) -> bool:
-    path = path.casefold()
-    return any(scope in {".", ""} or path == scope.rstrip("/").casefold() or path.startswith(scope.rstrip("/").casefold() + "/") for scope in scopes)
+def in_scope(path: str, scopes: list[str], restrictive: bool = False) -> bool:
+    if restrictive:
+        path, scopes = path.casefold(), [scope.casefold() for scope in scopes]
+    return any(scope in {".", ""} or path == scope.rstrip("/") or path.startswith(scope.rstrip("/") + "/") for scope in scopes)
 
 
 def bundle(raw: bytes, correction: dict[str, Any]) -> list[dict[str, Any]]:
@@ -76,7 +77,7 @@ def bundle(raw: bytes, correction: dict[str, Any]) -> list[dict[str, Any]]:
     for entry in entries:
         e.fields(entry, {"path", "before_sha256", "after_base64"})
         path = relative_path(entry["path"])
-        if path.casefold() in seen or not in_scope(path, correction["owned_paths"]) or in_scope(path, correction["restricted_paths"]):
+        if path.casefold() in seen or not in_scope(path, correction["owned_paths"]) or in_scope(path, correction["restricted_paths"], restrictive=True):
             raise Unverified("duplicate, unowned or restricted repair path")
         if any(path.casefold().startswith(other + "/") or other.startswith(path.casefold() + "/") for other in seen):
             raise Unverified("repair paths overlap")

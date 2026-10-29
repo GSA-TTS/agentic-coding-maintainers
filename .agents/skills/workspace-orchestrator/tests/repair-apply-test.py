@@ -124,7 +124,8 @@ class RepairTests(unittest.TestCase):
         for path in ("../source.py", "/source.py", "a//b", ".git/config", "src/AGENTS.md", "a\\b", "a/../b", "opencode.json", "OpenCode.JSONC"):
             with self.subTest(path=path), self.assertRaises(repair.Unverified):
                 repair.relative_path(path)
-        self.assertTrue(repair.in_scope("src/PROTECTED.py", ["src/protected.py"]))
+        self.assertTrue(repair.in_scope("src/PROTECTED.py", ["src/protected.py"], restrictive=True))
+        self.assertFalse(repair.in_scope("src/config.py", ["src/Config.py"]))
         self.assertFalse(repair.in_scope("src-other/file.py", ["src"]))
         os.link(self.repo / "source.py", self.root / "alias")
         with self.assertRaises(repair.Unverified):
@@ -182,6 +183,14 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(state("transition", "task", "Implementing").returncode, 0)
         self.record = json.loads(state("show", "task").stdout)
         self.correction_id = json.loads(prepared.stdout)["correction_id"]
+        late = dict(schema_version=1, operation_id="late", expected_revision=self.record["revision"], action="assign",
+                    payload=dict(generation=1, run_id="late", reviewer="qa2", profile="d" * 64, session="late", adapter="fake", obligations=sorted(e.BASELINE)))
+        late_path = self.root / "late.json"
+        late_path.write_bytes(repair.canonical(late))
+        before_late = task_path.read_bytes()
+        refused = command("review-evidence.py", "task", "--request", str(late_path))
+        self.assertEqual(refused.returncode, 3)
+        self.assertEqual(task_path.read_bytes(), before_late)
         request, raw = self.request(two=True)
         request_path, bundle_path = self.root / "request.json", self.root / "bundle.json"
         request_path.write_bytes(repair.canonical(request))
@@ -240,6 +249,17 @@ class RepairTests(unittest.TestCase):
             repair.load("orchestrator-state").require_repair_settled(self.record, root=self.state)
         with self.assertRaises(Exception):
             e.validate_collected_retention(self.record, self.state)
+
+    def test_prepared_generation_refuses_late_assignment_without_poisoning(self):
+        before = copy.deepcopy(self.record)
+        request = dict(schema_version=1, operation_id="late", expected_revision=self.record["revision"], action="assign",
+                       payload=dict(generation=1, run_id="late", reviewer="other", profile="d" * 64,
+                                    session="late-session", adapter="fake", obligations=sorted(e.BASELINE)))
+        with self.assertRaisesRegex(Exception, "freezes this generation"):
+            e.apply(self.record, request)
+        self.assertEqual(self.record, before)
+        repair.validate_retained(self.record, self.state)
+        repair.load("orchestrator-state").require_repair_settled(self.record, root=self.state)
 
 
 if __name__ == "__main__":
