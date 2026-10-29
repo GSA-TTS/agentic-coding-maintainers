@@ -614,6 +614,8 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         if args.reason:
             safe_scope(args.reason)
         if args.state == "Ready for human review":
+            if "review_protocol" in record:
+                raise BusyError("review protocol claims require corroborated runtime evidence; readiness is UNVERIFIED")
             if not record["head_sha"]:
                 raise BusyError("readiness requires a fixed head SHA")
             if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
@@ -746,6 +748,11 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             raise BusyError("requested head is not the assigned worktree HEAD")
         if ancestor.returncode != 0:
             raise BusyError("requested head does not descend from the recorded base")
+        if record["head_sha"] != args.head_sha and "review_protocol" in record:
+            protocol = record["review_protocol"]
+            if not isinstance(protocol, dict) or type(protocol.get("material_epoch")) is not int:
+                raise UnknownError("review protocol material epoch is malformed")
+            protocol["material_epoch"] += 1
         record["head_sha"] = args.head_sha
         record["reviewed_sha"] = ""
         record["reviewers"] = []
@@ -830,6 +837,8 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     if not target:
         return record
     if target == "Ready for human review":
+        if "review_protocol" in record:
+            raise UnknownError("cannot recover readiness from uncorroborated review protocol claims")
         # The earlier readiness check was performed before writing intent.
         # The worktree may have changed during a crash: never publish ready
         # solely by replaying the intent.

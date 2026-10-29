@@ -64,6 +64,11 @@ sh -c '
 
 No process means no monitoring. Checkpoints prove only the last successful poll.
 
+Committed source capture is available through `run.sh review-packet`. It retains
+bounded before/after Git objects and a full change inventory without executing
+candidate code. See `docs/REVIEW-PROTOCOL.md` for comparison semantics, limits and
+the private-store contract. Capture is not a completed review or test receipt.
+
 ## Consumer Installation
 
 Copy or sync the complete skill directory. Do not copy only `bin/`: the role
@@ -85,6 +90,7 @@ bash "$SKILL_DIR/tests/orchestrator-state-test.sh"
 bash "$SKILL_DIR/tests/orchestrator-monitor-test.sh"
 bash "$SKILL_DIR/tests/orchestrator-demo.sh"
 bash "$SKILL_DIR/tests/orchestrator-production-worktree-test.sh"
+python3 -I -B "$SKILL_DIR/tests/review-packet-test.py"
 ```
 
 See `docs/OPERATOR-GUIDE.md` for startup, ownership, review, recovery, shutdown,
