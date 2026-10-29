@@ -3,6 +3,70 @@
 AI-assisted qualification checkpoint. This is not full automated-maintainer
 completion or an activated unattended service.
 
+**Update:** the clean hardened repeat described below supersedes this document's
+earlier open qualification gates. The earlier trial and its limitations remain
+historical evidence, not erased failures.
+
+## Clean hardened repeat and independent audit
+
+The operator authorized renewed independent QA and three new bounded model
+calls. Independent QA reviewed `a36b9addd1b91d4c7ee7328f3da2c38e7b5d8738`
+and confirmed the final same-head replay correction resolved the outstanding
+finding. The complete repeat ran that revision with the Docker controller from
+the outset, using persistent task-local storage, and MSB read-only model workers.
+There was no controller relocation or proposal rewriting.
+
+The real reviewer identified `double-increments-instead-of-doubling`. The operator
+explicitly confirmed that finding matched the seeded arithmetic invariant before
+the driver continued. The original-owner model proposed only:
+
+```python
+def double(x):
+    return 2 * x
+```
+
+The rendered bundle, applied bytes and fixture commit matched that proposal.
+The original test file was unchanged. The independent fixed oracle observed
+`[4, -1, 1, 12]` before and `[6, -4, 0, 22]` after, each with exit zero and empty
+stderr. Repair commit `dc7075994980395d43e41a4303238b1a5cb8d5f7` directly followed
+`92c4cdcd770ef8df0478aacba8ac39cb19ff4da7`. A fresh reviewer resolved the retained
+finding against the new head with all five obligations covered and no new findings.
+
+| Phase | Distinct session | Input tokens | Output tokens |
+|---|---|---:|---:|
+| Review | `ses_qualification_cbf7a3180e684304814fd98f39053986` | 2,574 | 501 |
+| Owner proposal | `ses_qualification_2420fea3a2494130980ba7271cbad26d` | 3,837 | 114 |
+| Re-review | `ses_qualification_7a21ffe16c754c80a5a2434b581c2e1b` | 3,117 | 297 |
+
+Before teardown, the controller validated retained proposal/review artifacts,
+compared model content with rendered/applied bytes and Git history, and repeated
+the final phase with unchanged complete file inventory. It exported its entire
+qualification root, including hidden task state/artifacts and `.git`, plus a
+SHA-256 manifest. All 100 manifest entries matched after transfer. An independent
+evidence reviewer repeated the hash verification and inspected the three model
+bundles, finding adjudication, oracle results, repair commit and final state.
+The audit found no blocking contradiction in this bounded live-loop evidence.
+
+**Qualified limitations:** controller timestamps and model timestamps disagree
+(controller October 26, models October 29). Cross-runtime wall-clock ordering is
+unverified; revisions, hashes, session identities and Git parentage are consistent.
+The export retains the final inventory and the controller's replay-audit result,
+not paired pre/post inventories independently rerun by the evidence reviewer.
+Runtime isolation and the pinned installation remain operator-established
+provenance, not independent hardware/process attestation.
+
+The result is **LIVE_LOOP_OBSERVED for a controlled ordinary-code fixture**.
+Candidate readiness, execution credit and delivery credit remain false. The
+driver still requires operator provisioning, transfers and semantic finding
+adjudication; it is not an unattended maintainer service. Multipass hosted this
+machine's Docker controller only and is not a dependency of the skill.
+
+The final full Docker suite and hosted Repository checks passed at `a36b9ad`.
+This report-only update requires normal CI and review, but changes no code used
+in the repeat. The bounded integration gate is met; general runtime rollout,
+broader acceptance cases, durable PR monitoring, remote effects and polyrepo
+delivery remain subsequent work.
+
 ## Actual three-model sequence
 
 Using OpenCode2.0.32 and the authorized USAi route, three distinct sessions ran:
