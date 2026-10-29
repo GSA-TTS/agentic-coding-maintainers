@@ -305,7 +305,7 @@ def applicability(record: dict[str, Any], attempt: dict[str, Any], c) -> bool:
         return False
     try:
         source_binding(record, attempt["definition"], c)
-    except (Unverified, OSError):
+    except (Unverified, OSError, c.Unverified):
         return False
     return True
 
@@ -330,10 +330,10 @@ def reconcile_stop(record: dict[str, Any], attempt: dict[str, Any], item: dict[s
     definition = attempt["definition"]
     if item.get("Id") != definition["container_id"] or item.get("Created") != definition["created"] or item.get("State", {}).get("Running") is not False:
         raise Unverified("exact container stop is not observed")
-    evidence_lost = False
+    evidence_lost = attempt["phase"] == "EVIDENCE_LOST_STOPPED"
     try:
         validate_attempts({"execution_observations": {attempt["request"]["operation_id"]: attempt}}, root, c)
-    except (Unverified, OSError):
+    except (Unverified, OSError, c.Unverified):
         evidence_lost = True
     attempt["termination"] = "STOPPED_OBSERVED"
     attempt["stop_observation"] = {"container_id": definition["container_id"], "created": definition["created"], "running": False}

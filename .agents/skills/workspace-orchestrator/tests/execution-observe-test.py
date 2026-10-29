@@ -139,6 +139,19 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(attempt["phase"], "EVIDENCE_LOST_STOPPED")
             self.assertEqual(attempt["result"]["oracle_verdict"], "UNVERIFIED")
             observer.validate_attempts(record, root, c)
+            with mock.patch.object(observer, "applicability", return_value=True):
+                observer.reconcile_stop(record, attempt, stopped, root, c)
+            self.assertEqual(attempt["phase"], "EVIDENCE_LOST_STOPPED")
+            self.assertEqual(attempt["result"]["oracle_verdict"], "UNVERIFIED")
+            self.assertEqual(observer.exit_code(attempt), 3)
+            attempt["phase"] = "CAPTURED"
+            attempt["termination"] = "UNVERIFIED"
+            attempt["result"].update(oracle_verdict="PASS", applicable=True)
+            path.write_bytes(b"x" * (observer.MAX_OUTPUT + 1))
+            observer.reconcile_stop(record, attempt, stopped, root, c)
+            self.assertEqual(attempt["phase"], "EVIDENCE_LOST_STOPPED")
+            with mock.patch.object(observer, "source_binding", side_effect=c.Unverified("invalid source")):
+                self.assertFalse(observer.applicability(record, attempt, c))
 
     def test_stop_before_finalization_and_consistent_exit_mapping(self):
         attempt = {"phase": "UNKNOWN_STOPPED", "termination": "STOPPED_OBSERVED", "definition": self.definition()}

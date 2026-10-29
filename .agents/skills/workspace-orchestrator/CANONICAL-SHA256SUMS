@@ -2,7 +2,7 @@ be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METAD
 c4b7230239fea3efb5cccaba2bc5be629d0b909b2fec1018d7c4094244611eef  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
-474fd34594780d6b31c161282ee864693350217aae49ebf7ec020ec72be0f170  ./bin/execution-observe.py
+84411fb96d7f028db0a6d5f90d76ceff5990db666be9344e509fed1cdb32d77f  ./bin/execution-observe.py
 17ddcb478d99792ce3c443eefa164b5c86efa5de9e88d9b216c8b41dcab1cfbd  ./bin/orchestrator-monitor.py
 9db14f7955e7d611e525fdf2fa90d7bc41ba43223935a2a1351796d851f8d086  ./bin/orchestrator-monitor.sh
 2e87fd54b8f3d9dff1d71130f6cd35eabaff850c98007eb5b837b559da6acc30  ./bin/orchestrator-state.py
@@ -28,7 +28,7 @@ e7f90569dd687d1e874ba8ca450318cb428d0e15192f36611a29aea2916a9d84  ./profiles/ope
 a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/opencode-v1/qa-reviewer.md
 636adbe9ffaf013d25cabcc6fc19fbc217a6082babd8ff2b2bac5c415ba04609  ./profiles/opencode-v1/security-reviewer.md
 813c00947983e7ad2072a2da3569e3b409f889fa13c83fbc033ce261ee938923  ./run.sh
-ca97a763be9b4cf70eb7879cf4e64266e9e98f0d37b05d7166793a3ea6267d2f  ./tests/execution-observe-test.py
+1d11ec71771ac03225f77b7fc030a9d1ebfaad15eb7691a15609b1ed890b50f3  ./tests/execution-observe-test.py
 da22255cf7ecf7fe73af425f999e9818bd82e6900db27cf494ad78bbdf6286f7  ./tests/fixtures/orchestrator-monitor-bin/gh
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh
 b87b1459c7f3bd39366bd2df59b6ba825826da956a48ca931cc4077a7354f9de  ./tests/orchestrator-monitor-test.sh
