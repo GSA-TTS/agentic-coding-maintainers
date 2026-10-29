@@ -146,6 +146,56 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(journal.JournalError):
             self.snapshot()
 
+    def test_deleted_candidate_and_altered_coverage_are_unverified(self):
+        journal.finish(self.db, self.start(), self.observed([self.pr()]), "done")
+        self.db.execute("UPDATE coverage SET count=99")
+        self.db.commit()
+        with self.assertRaises(journal.JournalError):
+            self.snapshot()
+        self.db.execute("UPDATE coverage SET count=1")
+        self.db.execute("DELETE FROM candidates")
+        self.db.commit()
+        with self.assertRaises(journal.JournalError):
+            self.snapshot()
+
+    def test_status_read_transaction_retains_single_snapshot(self):
+        journal.finish(self.db, self.start(), self.observed([self.pr()]), "done")
+        # WAL is test-only to force a writer commit between reader SELECTs.
+        # Production uses DELETE, where the same read transaction blocks commit.
+        self.db.execute("PRAGMA journal_mode=WAL")
+        writer = journal.sqlite3.connect(self.root / "history.sqlite3", timeout=2)
+        writer.row_factory = journal.sqlite3.Row
+        fired = False
+        def interleave(sql):
+            nonlocal fired
+            if not fired and sql == "SELECT * FROM polls ORDER BY seq DESC LIMIT 1":
+                fired = True
+                seq = journal.begin(writer, "concurrent", "a"*64, "monitor", self.sources, "now")
+                journal.finish(writer, seq, self.observed([self.pr("b"*40)]), "done")
+        self.db.set_trace_callback(interleave)
+        try:
+            result = self.snapshot()
+        finally:
+            self.db.set_trace_callback(None)
+            writer.close()
+        self.assertTrue(fired)
+        self.assertEqual(result["poll_seq"], 1)
+        self.assertEqual(result["candidates"][0]["generation"], 1)
+        self.assertEqual(self.snapshot()["poll_seq"], 2)
+
+    def test_raw_github_malformed_types_never_normalize_clean(self):
+        path = SOURCE.with_name("orchestrator-monitor.py")
+        spec = importlib.util.spec_from_file_location("monitor", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        good = {"number":1,"headRefOid":"a"*40,"isDraft":False,"state":"OPEN",
+                "reviewDecision":None,"mergeStateStatus":"UNKNOWN","statusCheckRollup":[]}
+        for changed in ({"reviewDecision":False},{"mergeStateStatus":[]},{"statusCheckRollup":[{}]}):
+            with self.subTest(changed=changed), self.assertRaises(module.MonitorError):
+                module.pr_snapshot(["fixture/project"], lambda _: json.dumps([{**good,**changed}]))
+        with self.assertRaises(module.MonitorError):
+            module.project_snapshot({"number":1,"owner":"fixture"}, lambda _: '{"items":[null],"totalCount":1}')
+
     def test_busy_writer_cannot_commit_partial_poll(self):
         second = journal.open_store(self.root, writable=True)
         try:

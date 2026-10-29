@@ -117,6 +117,8 @@ def validate_store(db: sqlite3.Connection) -> None:
         raise JournalError("candidate identity disagrees with observation")
     if db.execute("SELECT 1 FROM candidates c JOIN events e ON c.event_id=e.id WHERE e.generation!=(SELECT max(generation) FROM events x WHERE x.repo=c.repo AND x.number=c.number) LIMIT 1").fetchone():
         raise JournalError("candidate points to superseded observation")
+    if db.execute("SELECT 1 FROM events e LEFT JOIN candidates c ON c.repo=e.repo AND c.number=e.number WHERE c.repo IS NULL LIMIT 1").fetchone():
+        raise JournalError("observation history lost its candidate projection")
     for row in db.execute("SELECT * FROM polls"):
         if row["status"] not in {"STARTED", "INTERRUPTED", "CHANGED", "CURRENT", "UNVERIFIED"}:
             raise JournalError("invalid retained poll state")
@@ -148,6 +150,34 @@ def validate_store(db: sqlite3.Connection) -> None:
             raise JournalError("retained observation differs from fingerprint")
     if db.execute("SELECT 1 FROM sources s LEFT JOIN coverage c ON s.source=c.source AND s.applied_seq=c.seq WHERE c.status IS NULL OR c.status!='OBSERVED' LIMIT 1").fetchone():
         raise JournalError("source watermark lacks observed coverage")
+    # Reconstruct each visible set from append-only transitions; a count/digest
+    # cannot certify coverage independently of the observations it summarizes.
+    views: dict[str, dict[int, Any]] = {}
+    generations: dict[tuple[str, int], int] = {}
+    events_by_seq: dict[int, list[Any]] = {}
+    for event in db.execute("SELECT * FROM events ORDER BY seq,id"):
+        events_by_seq.setdefault(event["seq"], []).append(event)
+    last_seen: dict[tuple[str, int], int] = {}
+    for poll in db.execute("SELECT * FROM polls ORDER BY seq"):
+        for event in events_by_seq.get(poll["seq"], []):
+            identity = (event["repo"], event["number"])
+            if event["generation"] != generations.get(identity, 0) + 1:
+                raise JournalError("nonconsecutive observation generation")
+            generations[identity] = event["generation"]
+            views.setdefault(event["repo"], {})[event["number"]] = json.loads(event["payload"])
+        for coverage in db.execute("SELECT * FROM coverage WHERE seq=?", (poll["seq"],)):
+            if coverage["status"] != "OBSERVED" or not coverage["source"].startswith("repo:"):
+                continue
+            repo = coverage["source"][5:]
+            visible = [{"repo":repo, "number":number, **value} for number,value in sorted(views.get(repo, {}).items()) if value["presence"] == "OPEN_SET"]
+            if coverage["count"] != len(visible) or coverage["digest"] != fingerprint(visible):
+                raise JournalError("source coverage differs from reconstructed observations")
+            for item in visible:
+                last_seen[(repo,item["number"])] = poll["seq"]
+    for candidate in db.execute("SELECT * FROM candidates"):
+        first = db.execute("SELECT min(seq) FROM events WHERE repo=? AND number=?", (candidate["repo"], candidate["number"])).fetchone()[0]
+        if candidate["first_seq"] != first or candidate["last_seen_seq"] != last_seen.get((candidate["repo"],candidate["number"])):
+            raise JournalError("candidate observation sequence mismatch")
 
 
 def begin(db: sqlite3.Connection, attempt: str, config: str, task: str, sources: list[str], started: str) -> int:
@@ -276,6 +306,16 @@ def finish(db: sqlite3.Connection, seq: int, results: dict[str, Any], finished: 
 
 
 def status(db: sqlite3.Connection, configured: list[str]) -> dict[str, Any]:
+    if db.in_transaction:
+        raise JournalError("status requires an independent read snapshot")
+    db.execute("BEGIN")
+    try:
+        return snapshot_status(db, configured)
+    finally:
+        db.rollback()
+
+
+def snapshot_status(db: sqlite3.Connection, configured: list[str]) -> dict[str, Any]:
     validate_store(db)
     latest = db.execute("SELECT * FROM polls ORDER BY seq DESC LIMIT 1").fetchone()
     if latest is None:

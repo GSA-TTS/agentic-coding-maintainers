@@ -243,6 +243,9 @@ def pr_snapshot(repositories: list[str], fetch=run) -> list[dict[str, Any]]:
                 raise MonitorError(f"{repo} PR response has an invalid shape")
             if type(pr.get("isDraft")) is not bool:
                 raise MonitorError(f"{repo}#{pr['number']} draft state is unavailable")
+            for field in ("reviewDecision", "mergeStateStatus"):
+                if field not in pr or (pr[field] is not None and not isinstance(pr[field], str)):
+                    raise MonitorError("PR review/merge status has invalid type")
             checks = pr.get("statusCheckRollup")
             if not isinstance(checks, list):
                 raise MonitorError(f"{repo}#{pr.get('number')} checks are unavailable")
@@ -250,6 +253,9 @@ def pr_snapshot(repositories: list[str], fetch=run) -> list[dict[str, Any]]:
             for check in checks:
                 if not isinstance(check, dict):
                     raise MonitorError(f"{repo}#{pr['number']} check is malformed")
+                if (not any(field in check for field in ("conclusion", "state", "status"))
+                        or any(check.get(field) is not None and not isinstance(check[field], str) for field in ("conclusion", "state", "status"))):
+                    raise MonitorError("check rollup has invalid status fields")
                 conclusions.append(check.get("conclusion") or check.get("state") or "ABSENT")
             result.append({
                 "repo": repo, "number": pr["number"], "head": pr["headRefOid"],
@@ -279,6 +285,11 @@ def project_snapshot(project: dict[str, Any] | None, fetch=run) -> str:
         raise MonitorError("configured GitHub Project totalCount is unavailable")
     if len(payload["items"]) != total:
         raise MonitorError(f"configured GitHub Project coverage is incomplete ({len(payload['items'])}/{total})")
+    identities = set()
+    for item in payload["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"] or len(item["id"]) > 200 or item["id"] in identities:
+            raise MonitorError("configured Project item identity is malformed or duplicated")
+        identities.add(item["id"])
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
