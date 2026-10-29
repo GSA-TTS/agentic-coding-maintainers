@@ -298,6 +298,13 @@ def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, An
         if prior["request_sha256"] != request_digest:
             raise Unverified("operation ID reused with different content")
         return record, prior["result"], False
+    if request["action"] == "begin":
+        ledger = record.get("repair_protocol", {})
+        for correction_id, correction in ledger.get("corrections", {}).items():
+            if correction["cycle"] == record["rework_count"] and not any(
+                    item["correction_id"] == correction_id and item["phase"] in {"APPLIED_UNREVIEWED", "NOT_APPLIED_OBSERVED"}
+                    for item in ledger.get("operations", {}).values()):
+                raise Unverified("prepared repair must be applied or explicitly settled before a new review generation")
     if request["action"] in {"assign", "accept"}:
         prepared = record.get("repair_protocol", {}).get("corrections", {}).values()
         if any(item["generation"] == request["payload"].get("generation") for item in prepared):

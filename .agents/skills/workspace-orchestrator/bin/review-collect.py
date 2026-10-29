@@ -161,7 +161,12 @@ def packet_sources(packet_bytes: bytes, payload: dict[str, Any], generation: dic
 
 
 def admission(record: dict[str, Any], payload: dict[str, Any], packet: bytes, evidence) -> dict[str, Any]:
-    fields(payload, {"generation", "run_id", "binary_sha256", "model", "agent", "cwd", "sources"})
+    expected = {"generation", "run_id", "binary_sha256", "model", "agent", "cwd", "sources"}
+    if "context" in payload:
+        if not isinstance(payload["context"], dict) or len(canonical(payload["context"])) > 50_000:
+            raise Unverified("invalid bounded review context")
+        expected.add("context")
+    fields(payload, expected)
     generation = evidence.current(record)
     if type(payload["generation"]) is not int or payload["generation"] != generation["number"]:
         raise Unverified("superseded collection generation")
@@ -185,6 +190,11 @@ def verify_bundle(admitted: dict[str, Any], artifacts: dict[str, bytes], runner)
     if set(artifacts) != set(ARTIFACTS) or any(len(data) > LIMIT for data in artifacts.values()):
         raise Unverified("incomplete or oversized runtime bundle")
     receipt = decode(artifacts["receipt.json"])
+    if receipt.get("role", "review") != "review":
+        raise Unverified("owner output cannot count as independent review")
+    expected_context = digest(canonical(admitted["context"])) if "context" in admitted else None
+    if receipt.get("context_sha256") != expected_context:
+        raise Unverified("review context differs from controller admission")
     for field in ("binary_sha256", "model", "agent", "source_sha256"):
         if receipt.get(field) != admitted[field]:
             raise Unverified(f"runtime {field} differs from controller admission")
@@ -283,6 +293,8 @@ def validate_retained(state: dict[str, Any], store: Path, record: dict[str, Any]
         if type(historical["revision"]) is not int or not generation["admission_revision"] < historical["revision"] < record["revision"]:
             raise Unverified("invalid admission revision")
         payload = {name: admitted.get(name) for name in ("generation", "run_id", "binary_sha256", "model", "agent", "cwd", "sources")}
+        if "context" in admitted:
+            payload["context"] = admitted["context"]
         reproduced = admission(historical, payload, read_bytes(store / generation["packet"], PACKET_LIMIT), evidence)
         if admitted != reproduced:
             raise Unverified("retained admission differs from authoritative assignment")
@@ -329,6 +341,8 @@ def validate_retained(state: dict[str, Any], store: Path, record: dict[str, Any]
             if assigned_at is None or assigned_at > request["expected_revision"]:
                 raise Unverified("collection admission precedes its assignment")
             payload = {name: admitted[name] for name in ("generation", "run_id", "binary_sha256", "model", "agent", "cwd", "sources")}
+            if "context" in admitted:
+                payload["context"] = admitted["context"]
             expected = {"status": "COLLECTION_ADMITTED", "admission_id": key, "resulting_revision": revision}
             if request["payload"] != payload or request["expected_revision"] != admitted["admission_revision"]:
                 raise Unverified("admission operation differs from retained admission")
