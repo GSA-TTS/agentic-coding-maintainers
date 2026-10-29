@@ -179,6 +179,23 @@ class PlanTests(unittest.TestCase):
         (self.repo / "probe.py").write_text("print(7)\n")
         self.assertEqual(plan.assess(self.record, self.state)["status"], "UNVERIFIED")
 
+    def test_undispatched_operation_remains_reserved_across_generations(self):
+        self.admit()
+        generation = self.record["review_protocol"]["generations"][0]
+        self.record, _, _ = e.apply(self.record, {"schema_version": 1, "operation_id": "next-review", "expected_revision": self.record["revision"],
+            "action": "begin", "payload": {name: generation[name] for name in ("packet", "policy", "base", "head", "obligations")}})
+        self.record["revision"] += 1
+        request = copy.deepcopy(self.request)
+        request.update(operation_id="next-plan", expected_revision=self.record["revision"])
+        request["payload"]["generation"] = 2
+        with self.assertRaisesRegex(Exception, "already reserved"):
+            plan.admit(self.record, request, self.state, self.packet, {self.sha: self.raw})
+        request["payload"]["obligations"]["correctness"][0]["operation_id"] = "fresh-execution"
+        updated, result, changed = plan.admit(self.record, request, self.state, self.packet, {self.sha: self.raw})
+        self.assertTrue(changed)
+        updated["revision"] += 1
+        self.assertEqual(plan.dispatch_plan(updated, self.state, "fresh-execution", self.sha), result["plan_id"])
+
     def test_public_assessment_is_read_only_after_worker_release(self):
         self.execution()
         env = {**os.environ, "ORCHESTRATOR_TEST_MODE": "1", "ORCHESTRATOR_STATE_DIR": str(self.state)}

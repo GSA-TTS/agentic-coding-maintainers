@@ -139,7 +139,7 @@ def validate_plans(record: dict[str, Any], root: Path) -> None:
     plans = record.get("execution_plans", {})
     if not isinstance(plans, dict) or len(plans) > 16:
         raise Unverified("invalid execution plan ledger")
-    generations, operation_ids, revisions = set(), set(), set()
+    generations, operation_ids, revisions, execution_ids = set(), set(), set(), set()
     for plan_id, plan in plans.items():
         e.fields(plan, {"request", "context", "controller", "worktree", "resulting_revision"})
         if digest(canonical(plan)) != plan_id:
@@ -163,6 +163,9 @@ def validate_plans(record: dict[str, Any], root: Path) -> None:
         for sha in plan["controller"].values():
             e.hash_value(sha)
         operations = requirements(request["payload"], generation, e)
+        if execution_ids.intersection(operations):
+            raise Unverified("execution operation reserved by more than one plan")
+        execution_ids.update(operations)
         for operation, selection in operations.items():
             raw = c.read_bytes(root / "review-artifacts" / selection["definition_sha256"], 200_000)
             if digest(raw) != selection["definition_sha256"]:
@@ -204,6 +207,11 @@ def admit(record: dict[str, Any], request: dict[str, Any], root: Path, packet: b
     if any(plan["context"]["generation"] == generation["number"] for plan in record.get("execution_plans", {}).values()):
         raise Unverified("plan already frozen; new selection requires new review generation")
     operations = requirements(request["payload"], generation, e)
+    reserved = {operation for previous in record.get("execution_plans", {}).values()
+                for selections in previous["request"]["payload"]["obligations"].values()
+                for operation in (selection["operation_id"] for selection in selections)}
+    if reserved.intersection(operations):
+        raise Unverified("execution operation already reserved by an earlier plan")
     if set(definitions) != {item["definition_sha256"] for item in operations.values()}:
         raise Unverified("supply exactly the referenced definitions")
     if any(attempt["request"]["expected_revision"] >= generation["admission_revision"]
