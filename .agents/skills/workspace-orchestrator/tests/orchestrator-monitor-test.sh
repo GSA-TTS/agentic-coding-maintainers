@@ -88,6 +88,7 @@ set +e
 run_monitor success >/dev/null 2>&1; rc=$?
 set -e
 [[ "$rc" -eq 3 ]]
+rmdir "$STATE/monitor/poll.lock"
 
 # Reject an interval that would accidentally hammer GitHub.
 set +e
@@ -97,9 +98,9 @@ set -e
 
 # A successful but truncated Project response is UNVERIFIED, not unchanged.
 set +e
-run_monitor project-incomplete >/dev/null 2>&1; rc=$?
+err="$(run_monitor project-incomplete 2>&1 >/dev/null)"; rc=$?
 set -e
-[[ "$rc" -eq 3 ]]
+[[ "$rc" -eq 3 && "$err" == *"coverage is incomplete"* ]]
 
 # Config is data, not a command surface: bad repo names, duplicate repos, and
 # malformed project identities all fail UNVERIFIED before gh runs.

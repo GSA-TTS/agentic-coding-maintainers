@@ -36,7 +36,7 @@ if [[ "$*" == *"pr list"* ]]; then
     printf '[{"number":%d,"title":"Title","isDraft":"false","headRefOid":"%s","statusCheckRollup":[],"state":"OPEN"}]\n' "$number" "$head"
     exit 0
   fi
-  printf '[{"number":%d,"title":"Title\\u001b[31mFORGED","author":{"login":"x"},"isDraft":false,"state":"OPEN","headRefOid":"%s","updatedAt":"2026-10-16T00:00:00Z","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}]}]\n' "$number" "$head"
+   printf '[{"number":%d,"title":"Title\\u001b[31mFORGED","author":{"login":"x"},"isDraft":false,"state":"OPEN","headRefOid":"%s","updatedAt":"2026-10-16T00:00:00Z","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}]\n' "$number" "$head"
   exit 0
 fi
 printf 'unexpected gh invocation: %s\n' "$*" >&2

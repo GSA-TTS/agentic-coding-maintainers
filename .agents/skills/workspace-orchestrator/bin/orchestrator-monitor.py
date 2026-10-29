@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import selectors
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,7 +49,7 @@ def load_config(path: Path) -> dict[str, Any]:
         config = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise MonitorError(f"monitor config is unreadable: {safe_text(exc, 300)}") from exc
-    if not isinstance(config, dict) or config.get("schema_version") != 1:
+    if not isinstance(config, dict) or type(config.get("schema_version")) is not int or config.get("schema_version") != 1:
         raise MonitorError("monitor config must be a schema-version 1 object")
     if not set(config).issubset({"schema_version", "repositories", "project"}):
         raise MonitorError("monitor config contains unsupported fields")
@@ -55,6 +58,8 @@ def load_config(path: Path) -> dict[str, Any]:
         raise MonitorError("monitor config repositories must contain 1-50 entries")
     if any(not isinstance(r, str) or not REPO_RE.fullmatch(r) for r in repositories):
         raise MonitorError("monitor repositories must be owner/name values")
+    if any(part in {".", ".."} for repo in repositories for part in repo.split("/")):
+        raise MonitorError("monitor repository path components are invalid")
     if len(set(repositories)) != len(repositories):
         raise MonitorError("monitor repositories must be unique owner/name values")
     project = config.get("project")
@@ -100,6 +105,38 @@ def run(argv: list[str], timeout: int = 90) -> str:
     if len(result.stdout) > 5_000_000:
         raise MonitorError("monitor output exceeded 5 MB")
     return result.stdout
+
+
+def bounded_run(argv: list[str], timeout: float) -> str:
+    if timeout <= 0:
+        raise MonitorError("poll deadline exhausted")
+    output, errors = bytearray(), bytearray()
+    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        assert process.stdout is not None and process.stderr is not None
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, output)
+                selector.register(process.stderr, selectors.EVENT_READ, errors)
+                deadline = time.monotonic() + timeout
+                while selector.get_map():
+                    if time.monotonic() >= deadline:
+                        raise MonitorError("GitHub observation timeout")
+                    for key, _ in selector.select(0.1):
+                        data = os.read(key.fd, 65536)
+                        if not data:
+                            selector.unregister(key.fileobj)
+                        else:
+                            key.data.extend(data)
+                            if len(output) + len(errors) > 5_000_000:
+                                raise MonitorError("GitHub observation output exceeds bound")
+                process.wait(timeout=max(0.01, deadline-time.monotonic()))
+            if process.returncode != 0:
+                raise MonitorError("GitHub observation failed")
+            return output.decode("utf-8")
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
 
 
 def atomic_json(path: Path, data: dict[str, Any]) -> None:
@@ -186,13 +223,13 @@ def read_bounded_json(path: Path, label: str) -> dict[str, Any]:
     return data
 
 
-def pr_snapshot(repositories: list[str]) -> list[dict[str, Any]]:
+def pr_snapshot(repositories: list[str], fetch=run) -> list[dict[str, Any]]:
     result = []
     for repo in repositories:
         # gh paginates internally up to --limit. Fetch well beyond normal open
         # counts and refuse at the explicit ceiling instead of checkpointing a
         # silently truncated first page.
-        raw = run(["gh", "pr", "list", "-R", repo, "--state", "open", "--limit", "501", "--json", FIELDS])
+        raw = fetch(["gh", "pr", "list", "-R", repo, "--state", "open", "--limit", "501", "--json", FIELDS])
         try:
             prs = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -206,6 +243,9 @@ def pr_snapshot(repositories: list[str]) -> list[dict[str, Any]]:
                 raise MonitorError(f"{repo} PR response has an invalid shape")
             if type(pr.get("isDraft")) is not bool:
                 raise MonitorError(f"{repo}#{pr['number']} draft state is unavailable")
+            for field in ("reviewDecision", "mergeStateStatus"):
+                if field not in pr or (pr[field] is not None and not isinstance(pr[field], str)):
+                    raise MonitorError("PR review/merge status has invalid type")
             checks = pr.get("statusCheckRollup")
             if not isinstance(checks, list):
                 raise MonitorError(f"{repo}#{pr.get('number')} checks are unavailable")
@@ -213,7 +253,21 @@ def pr_snapshot(repositories: list[str]) -> list[dict[str, Any]]:
             for check in checks:
                 if not isinstance(check, dict):
                     raise MonitorError(f"{repo}#{pr['number']} check is malformed")
-                conclusions.append(check.get("conclusion") or check.get("state") or "ABSENT")
+                if any(check.get(field) is not None and not isinstance(check[field], str) for field in ("conclusion", "state", "status")):
+                    raise MonitorError("check rollup has invalid status fields")
+                if "status" in check:
+                    if check["status"] not in {"QUEUED", "IN_PROGRESS", "COMPLETED", "WAITING", "PENDING", "REQUESTED"}:
+                        raise MonitorError("check run status unavailable")
+                    conclusion = check.get("conclusion")
+                    if conclusion not in {None, "", "SUCCESS", "FAILURE", "NEUTRAL", "CANCELLED", "SKIPPED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"}:
+                        raise MonitorError("invalid check conclusion")
+                    if check["status"] == "COMPLETED" and not conclusion:
+                        raise MonitorError("completed check conclusion unavailable")
+                    conclusions.append(conclusion or check["status"])
+                elif check.get("state") in {"ERROR", "FAILURE", "PENDING", "SUCCESS", "EXPECTED"}:
+                    conclusions.append(check["state"])
+                else:
+                    raise MonitorError("check rollup variant unavailable")
             result.append({
                 "repo": repo, "number": pr["number"], "head": pr["headRefOid"],
                 "title": safe_text(pr.get("title", "")), "draft": pr["isDraft"],
@@ -224,10 +278,10 @@ def pr_snapshot(repositories: list[str]) -> list[dict[str, Any]]:
     return sorted(result, key=lambda p: (p["repo"], p["number"]))
 
 
-def project_snapshot(project: dict[str, Any] | None) -> str:
+def project_snapshot(project: dict[str, Any] | None, fetch=run) -> str:
     if project is None:
         return ""
-    raw = run([
+    raw = fetch([
         "gh", "project", "item-list", str(project["number"]),
         "--owner", project["owner"], "--limit", "2000", "--format", "json",
     ])
@@ -242,6 +296,11 @@ def project_snapshot(project: dict[str, Any] | None) -> str:
         raise MonitorError("configured GitHub Project totalCount is unavailable")
     if len(payload["items"]) != total:
         raise MonitorError(f"configured GitHub Project coverage is incomplete ({len(payload['items'])}/{total})")
+    identities = set()
+    for item in payload["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"] or len(item["id"]) > 200 or item["id"] in identities:
+            raise MonitorError("configured Project item identity is malformed or duplicated")
+        identities.add(item["id"])
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
@@ -293,15 +352,95 @@ def record_failure(root: Path, reason: str) -> None:
     })
 
 
+def journal_module():
+    path = Path(__file__).resolve().with_name("monitor-journal.py")
+    spec = importlib.util.spec_from_file_location("installed_monitor_journal", path)
+    if spec is None or spec.loader is None:
+        raise MonitorError("installed observation journal unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def configured_sources(config: dict[str, Any]) -> list[str]:
+    sources = ["repo:" + repo for repo in config["repositories"]]
+    if config["project"]:
+        sources.append(f"project:{config['project']['owner']}/{config['project']['number']}")
+    return sources
+
+
+def durable_poll(root: Path, config: dict[str, Any], config_path: Path, task_id: str) -> dict[str, Any]:
+    if not sys.flags.isolated or not sys.dont_write_bytecode:
+        raise MonitorError("durable monitor requires python3 -I -B")
+    journal = journal_module()
+    db = journal.open_store(root, writable=True)
+    try:
+        sources = configured_sources(config)
+        seq = journal.begin(db, uuid.uuid4().hex, journal.fingerprint(config), task_id, sources, now())
+        deadline = time.monotonic() + 120
+        results = {}
+        for source in sources:
+            if time.monotonic() >= deadline:
+                results[source] = {"status": "NOT_ATTEMPTED", "items": [], "digest": None, "reason": "DEADLINE"}
+                continue
+            try:
+                def fetch(argv):
+                    return bounded_run(argv, min(30, deadline-time.monotonic()))
+                if source.startswith("repo:"):
+                    items = pr_snapshot([source[5:]], fetch)
+                    value = {"status": "OBSERVED", "items": items, "digest": None, "reason": None}
+                else:
+                    value = {"status": "OBSERVED", "items": [], "digest": hashlib.sha256(project_snapshot(config["project"], fetch).encode()).hexdigest(), "reason": None}
+                # Validate before successful coverage can be committed.
+                results[source] = journal.validate_results({source: value})[source]
+            except Exception:
+                results[source] = {"status": "UNVERIFIED", "items": [], "digest": None, "reason": "FETCH_OR_SCHEMA_FAILED"}
+        # Ownership/config changes discard the batch, retaining previous candidates.
+        try:
+            validate_monitor_task(root, task_id)
+            if load_config(config_path) != config:
+                raise MonitorError("configuration changed")
+        except Exception:
+            results = {source: {"status": "UNVERIFIED", "items": [], "digest": None, "reason": "OWNERSHIP_OR_CONFIG_CHANGED"} for source in sources}
+        return journal.finish(db, seq, results, now())
+    finally:
+        db.close()
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--loop", action="store_true")
     p.add_argument("--interval", type=int, default=600)
-    p.add_argument("--task-id", required=True)
+    p.add_argument("--task-id")
     p.add_argument("--config", type=Path, required=True)
+    p.add_argument("--durable", action="store_true", help="retain SQLite observations without changing task authority")
+    p.add_argument("--status", action="store_true", help="read durable as-of status without polling or claiming a worker")
     args = p.parse_args()
     if args.interval < 60:
         print("monitor: interval must be at least 60 seconds", file=sys.stderr)
+        return 2
+    if args.status:
+        if args.loop or args.task_id:
+            print("monitor: --status cannot claim or run a monitor", file=sys.stderr)
+            return 2
+        try:
+            if not sys.flags.isolated or not sys.dont_write_bytecode:
+                raise MonitorError("durable status requires python3 -I -B")
+            config = load_config(args.config)
+            root = workspace_root() / ".orchestrator" / "monitor"
+            journal = journal_module()
+            db = journal.open_store(root)
+            try:
+                result = journal.status(db, configured_sources(config))
+            finally:
+                db.close()
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["status"] == "AS_OF_POLL" else 3
+        except Exception:
+            print(json.dumps({"status": "UNVERIFIED", "reason": "durable history unavailable"}))
+            return 3
+    if not args.task_id:
+        print("monitor: polling requires --task-id", file=sys.stderr)
         return 2
     try:
         root = state_dir()
@@ -325,19 +464,28 @@ def main() -> int:
                 current_config = load_config(args.config)
                 if current_config != config:
                     raise MonitorError("monitor configuration changed; stop, reconcile targets, and restart")
-                status, _observation, changed = poll(root, current_config, args.config)
-                if status == "CHANGED":
+                if args.durable:
+                    result = durable_poll(root, current_config, args.config, args.task_id)
+                    print(json.dumps(result, sort_keys=True))
+                    if result["status"] == "UNVERIFIED":
+                        return 3
+                    status, changed = result["status"], []
+                else:
+                    status, _observation, changed = poll(root, current_config, args.config)
+                if status == "CHANGED" and not args.durable:
                     print(f"monitor: CHANGED at {now()}")
                     for item in changed:
                         print(f"  {item}")
+            except Exception as exc:
+                if not args.durable:
+                    record_failure(root, str(exc))
+                raise
             finally:
                 os.rmdir(lock)
         except Exception as exc:
-            try:
-                record_failure(root, str(exc))
-            except Exception as record_exc:
-                print(f"monitor: UNVERIFIED - failure state could not be recorded: {safe_text(record_exc, 500)}", file=sys.stderr)
-                return 3
+            # A refused contender must not change another poll's shared status.
+            # Durable failures remain STARTED/INTERRUPTED in the journal when
+            # settlement fails; legacy failure files are not journal authority.
             print(f"monitor: UNVERIFIED - {exc}", file=sys.stderr)
             return 3
         if not args.loop:
