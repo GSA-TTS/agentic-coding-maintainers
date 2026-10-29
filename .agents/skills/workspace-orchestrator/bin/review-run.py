@@ -12,13 +12,14 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import selectors
 import signal
 import stat
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 MAX_TRANSCRIPT = 4_000_000
@@ -93,6 +94,23 @@ def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def guest_path(raw: str, cwd: Path) -> str:
+    """Normalize a guest pathname lexically, independent of controller mounts."""
+    path = PurePosixPath(raw)
+    if not path.is_absolute():
+        path = PurePosixPath(str(cwd)) / path
+    parts: list[str] = []
+    for component in path.parts:
+        if component in {"/", "//", "."}:
+            continue
+        if component == "..":
+            if parts:
+                parts.pop()
+        else:
+            parts.append(component)
+    return "/" + "/".join(parts)
+
+
 def summarize(data: bytes, returncode: int | None, manifest: dict[str, str], cwd: Path,
               exported: bytes | None = None) -> dict[str, Any]:
     """Classify the v2 JSON stream; zero exit without a final result is unknown."""
@@ -133,10 +151,7 @@ def summarize(data: bytes, returncode: int | None, manifest: dict[str, str], cwd
                         raise Unverified("invalid read input")
                     raw = arguments.get("path", arguments.get("filePath"))
                     if isinstance(raw, str):
-                        path = Path(raw)
-                        if not path.is_absolute():
-                            path = cwd / path
-                        name = str(path.resolve())
+                        name = guest_path(raw, cwd)
                         output = state.get("output")
                         if name in manifest and isinstance(output, str) and output.startswith(f"Read file {name}, lines "):
                             reads.add(name)
@@ -235,6 +250,8 @@ def main() -> int:
     parser.add_argument("--source", action="append", type=Path, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--agent", default="bounded-reviewer")
+    parser.add_argument("--session", help="controller-assigned OpenCode session ID")
+    parser.add_argument("--profile", type=Path, help="installed guest configuration whose digest the controller assigned")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=300, choices=range(1, 601))
     parser.add_argument("--isolated-guest", action="store_true", help="operator declaration, not an isolation proof")
@@ -242,7 +259,12 @@ def main() -> int:
     try:
         if not sys.flags.isolated or not sys.dont_write_bytecode or not args.isolated_guest:
             raise Unverified("requires python3 -I -B and externally qualified isolated guest")
+        if args.session is not None and not re.fullmatch(r"ses_[A-Za-z0-9_-]{1,100}", args.session):
+            raise Unverified("invalid controller-assigned session")
         manifest = source_manifest(args.source)
+        profile_sha256 = None
+        if args.profile is not None:
+            profile_sha256 = next(iter(source_manifest([args.profile]).values()))
         if binary_digest(args.binary) != args.binary_sha256:
             raise Unverified("runtime binary digest mismatch")
         args.output.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -252,6 +274,8 @@ def main() -> int:
                   "Do not execute code or edit files. Sources: " + json.dumps(list(manifest)))
         command = [str(args.binary.resolve()), "run", "--standalone", "--agent", args.agent,
                    "--model", args.model, "--format", "json", prompt]
+        if args.session is not None:
+            command[2:2] = ["--session", args.session]
         started = time.time()
         data, stderr, code, failure = execute(command, args.cwd.resolve(), args.timeout)
         receipt = summarize(data, code, manifest, args.cwd.resolve())
@@ -264,9 +288,14 @@ def main() -> int:
                 [str(args.binary.resolve()), "session", "export", "--standalone", receipt["sessions"][0]],
                 args.cwd.resolve(), 30)
         receipt = corroborate(data, code, manifest, args.cwd.resolve(), exported, export_code, export_failure)
+        if args.session is not None and receipt["sessions"] != [args.session]:
+            receipt.update(status="UNVERIFIED", reason="runtime session differs from controller assignment")
+        if args.profile is not None and next(iter(source_manifest([args.profile]).values())) != profile_sha256:
+            receipt.update(status="UNVERIFIED", reason="runtime profile changed during review")
         if failure or source_manifest(args.source) != manifest:
             receipt.update(status="UNVERIFIED", reason=failure or "source changed during review")
         receipt.update(schema_version=1, binary_sha256=args.binary_sha256, model=args.model, agent=args.agent,
+                       profile_sha256=profile_sha256,
                        source_sha256=manifest, transcript_sha256=sha256(data), stderr_sha256=sha256(stderr),
                        returncode=code, started_at=started, elapsed_seconds=time.time() - started,
                        isolation="operator-declared external guest; not measured by adapter",

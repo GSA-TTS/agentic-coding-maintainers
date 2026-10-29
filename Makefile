@@ -6,6 +6,7 @@ test:
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-packet-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-evidence-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-run-test.py
+	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-collect-test.py
 	PYTHONDONTWRITEBYTECODE=1 bash .agents/skills/cross-repo-epic/tests/portfolio-status-test.sh
 	PYTHONDONTWRITEBYTECODE=1 bash .agents/skills/cross-repo-epic/tests/epic-status-test.sh
 	PYTHONDONTWRITEBYTECODE=1 bash .agents/skills/workspace-orchestrator/tests/orchestrator-state-test.sh

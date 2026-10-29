@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 [[ $# -ge 1 ]] || {
-  echo "usage: $0 state|monitor|review-packet|review-evidence|review-run|demo [args...]" >&2
+  echo "usage: $0 state|monitor|review-packet|review-evidence|review-run|review-collect|demo [args...]" >&2
   exit 2
 }
 
@@ -15,6 +15,7 @@ case "$command" in
   review-packet) exec python3 -I -B "$ROOT/bin/review-packet.py" "$@" ;;
   review-evidence) exec python3 -I -B "$ROOT/bin/review-evidence.py" "$@" ;;
   review-run) exec python3 -I -B "$ROOT/bin/review-run.py" "$@" ;;
+  review-collect) exec python3 -I -B "$ROOT/bin/review-collect.py" "$@" ;;
   demo) exec bash "$ROOT/tests/orchestrator-demo.sh" "$@" ;;
   *) echo "unknown workspace-orchestrator command: $command" >&2; exit 2 ;;
 esac
