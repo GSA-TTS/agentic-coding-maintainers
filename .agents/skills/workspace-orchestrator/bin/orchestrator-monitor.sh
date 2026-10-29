@@ -6,4 +6,4 @@ command -v python3 >/dev/null 2>&1 || {
   echo "monitor: UNVERIFIED - python3 is not installed" >&2
   exit 3
 }
-exec python3 "$SCRIPT_DIR/orchestrator-monitor.py" "$@"
+exec python3 -I -B "$SCRIPT_DIR/orchestrator-monitor.py" "$@"

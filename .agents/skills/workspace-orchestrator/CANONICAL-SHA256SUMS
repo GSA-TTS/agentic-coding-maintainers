@@ -4,8 +4,9 @@ dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 ff1f72d12091f046b2ba40b6c8054452ab9ce72df3d5b522456dd888a0514d92  ./bin/execution-observe.py
 9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
-17ddcb478d99792ce3c443eefa164b5c86efa5de9e88d9b216c8b41dcab1cfbd  ./bin/orchestrator-monitor.py
-9db14f7955e7d611e525fdf2fa90d7bc41ba43223935a2a1351796d851f8d086  ./bin/orchestrator-monitor.sh
+c8116aa9680f97ccc833de86a9587b04e469f001139f99da7f6e457c78bf00b3  ./bin/monitor-journal.py
+c45f46b39f7bc9dc0be1c7a9cb5df1db9cb4fa0d3f50dfa62eee367667156fe0  ./bin/orchestrator-monitor.py
+c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
 ab80d47d814efd111d76705b4e0bc426a45cff8813b32283d0d909b58d70a8c9  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 6274e753fab20f49b73242d52e481fcab89fc09af6ee5105bff51e8d5ca4defb  ./bin/repair-apply.py
@@ -15,6 +16,7 @@ ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestr
 9b10d669a2239370af2ddb688bf4164365a16bfc0d774da4c6a1a457902b381f  ./bin/review-evidence.py
 eb60ebeac23bf003c39f7650fc9d784909f3424c6fec76d2504ccb4d744c9c20  ./bin/review-packet.py
 1369dd5e4e1449afcb7b60d025517da25fbf4cf30279c55446d8a46c928f6083  ./bin/review-run.py
+3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
 bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTION-OBSERVER.md
 438fba1a0be38b6b6a16acc701f9e4923fd154320735e802b90c7ff1a7b1a061  ./docs/EXECUTION-PLAN.md
 3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
@@ -37,8 +39,9 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 1d11ec71771ac03225f77b7fc030a9d1ebfaad15eb7691a15609b1ed890b50f3  ./tests/execution-observe-test.py
 0390fc1f963c1a8f925a275d20cdc3a466ce0481ac31d3f4eaafec974940b928  ./tests/execution-plan-test.py
 da22255cf7ecf7fe73af425f999e9818bd82e6900db27cf494ad78bbdf6286f7  ./tests/fixtures/orchestrator-monitor-bin/gh
+b780c5d6eb7d4da874dbf82dbc36bb89801a9055da86c81febfc2c5c0646df9a  ./tests/monitor-journal-test.py
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh
-b87b1459c7f3bd39366bd2df59b6ba825826da956a48ca931cc4077a7354f9de  ./tests/orchestrator-monitor-test.sh
+6887fd021223b9c5dde70ef894ab7dd93656c8dd040f9301ef18aec641cfc2c5  ./tests/orchestrator-monitor-test.sh
 ddb038285f9ba72ebd65f8e25f0f1e861611ce09607c1cbb36597c715f2a99ce  ./tests/orchestrator-production-worktree-test.sh
 e5b97e220f20c8ecb0a1209860ede2c52f95e03dd211be1774f33cc78cfe55f8  ./tests/orchestrator-state-test.sh
 c2b84e54f493617fb9d243bd1dd4de221bde5e646aeff2c99fc795a5d52cbdf6  ./tests/qualification-driver-test.py

@@ -3,6 +3,7 @@ SHELL := /bin/bash
 .PHONY: test check strict-check
 
 test:
+	python3 -I -B .agents/skills/workspace-orchestrator/tests/monitor-journal-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/qualification-driver-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/repair-proposal-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/repair-apply-test.py
