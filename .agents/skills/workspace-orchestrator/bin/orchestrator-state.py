@@ -168,7 +168,7 @@ def workspace_root() -> Path:
     return root
 
 
-def state_root() -> Path:
+def state_root(create: bool = True) -> Path:
     test_mode = os.environ.get("ORCHESTRATOR_TEST_MODE") == "1"
     raw = os.environ.get("ORCHESTRATOR_STATE_DIR") if test_mode else None
     root = Path(raw).expanduser() if raw else workspace_root() / ".orchestrator"
@@ -179,7 +179,10 @@ def state_root() -> Path:
             raise UnknownError("test state root must stay under the system temporary directory") from exc
     if root.exists() and root.is_symlink():
         raise UnknownError("state root is a symlink")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if create:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    elif not root.is_dir():
+        raise UnknownError("coordinator state is not initialized")
     st = root.stat()
     if st.st_uid != os.getuid() or st.st_mode & 0o022:
         raise UnknownError("state root must be current-user owned and not group/world writable")
@@ -187,7 +190,10 @@ def state_root() -> Path:
         path = root / name
         if path.exists() and path.is_symlink():
             raise UnknownError(f"state component {name!r} is a symlink")
-        path.mkdir(mode=0o700, exist_ok=True)
+        if create:
+            path.mkdir(mode=0o700, exist_ok=True)
+        elif not path.is_dir():
+            raise UnknownError(f"state component {name!r} is missing")
         pst = path.stat()
         if not path.is_dir() or pst.st_uid != os.getuid() or pst.st_mode & 0o022:
             raise UnknownError(f"state component {name!r} must be a private current-user directory")

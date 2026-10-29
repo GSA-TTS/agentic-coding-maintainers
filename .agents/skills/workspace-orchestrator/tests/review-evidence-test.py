@@ -242,6 +242,47 @@ class EvidenceTests(unittest.TestCase):
         self.execute(self.request("accept", report))
         self.assertEqual(evidence.assess(self.record)["unresolved_findings"], [])
 
+    def test_correction_targets_original_owner_without_write_authority(self):
+        self.record.update(task_id="task", repo="fixture/project", branch="task-branch", worktree="/work/task",
+                           owned_paths=["src"], restricted_paths=["policy"], acceptance_criteria=["reject stale evidence"])
+        self.assign("review")
+        report = self.report("review")
+        report["findings"] = [{"id": "F1", "invariant": "bound", "trigger": "input", "path": "src/x:1",
+                                "impact": "overflow", "evidence": "observed"}]
+        self.execute(self.request("accept", report))
+        before = copy.deepcopy(self.record)
+        request = evidence.correction_request(self.record)
+        self.assertEqual(request["owner"], "writer")
+        self.assertEqual(request["head"], self.record["head_sha"])
+        self.assertEqual(request["findings"][0]["finding"]["id"], "F1")
+        self.assertEqual(request["owned_paths"], ["src"])
+        self.assertFalse(request["write_authority"])
+        self.assertEqual(self.record, before)
+        self.record["owner"] = "replacement"
+        with self.assertRaises(evidence.Unverified):
+            evidence.correction_request(self.record)
+        self.record = before
+        self.record["rework_count"] = 3
+        with self.assertRaises(evidence.Unverified):
+            evidence.correction_request(self.record)
+        self.record["state"] = "Rework"
+        self.assertEqual(evidence.correction_request(self.record)["remaining_rework_cycles"], 1)
+        self.record["rework_count"] = 1
+        self.record["owner"] = "replacement"
+        self.begin()
+        with self.assertRaises(evidence.Unverified):
+            evidence.correction_request(self.record)
+
+    def test_correction_cli_does_not_initialize_missing_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "missing-state"
+            env = {**os.environ, "ORCHESTRATOR_TEST_MODE": "1", "ORCHESTRATOR_STATE_DIR": str(root)}
+            for extra in ([], ["--request", str(Path(directory) / "request.json")]):
+                result = subprocess.run([sys.executable, "-I", "-B", str(SOURCE), "absent", "--correction", *extra],
+                                        env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 3)
+                self.assertFalse(root.exists())
+
     def test_authoritative_cli_receipt_replay_and_readiness_guard(self):
         coordinator = evidence.load_coordinator()
         with tempfile.TemporaryDirectory() as directory:

@@ -245,6 +245,42 @@ def assess(record: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def correction_request(record: dict[str, Any]) -> dict[str, Any]:
+    """Derive an owner-addressed repair request without granting a write lease."""
+    validate_protocol(record)
+    generation = current(record)
+    assessment = assess(record)
+    if record["kind"] != "implementation" or record["state"] not in {"Reviewing", "Rework"}:
+        raise Unverified("correction requires an implementation in review or rework")
+    original_owner = record["review_protocol"]["generations"][0]["owner"]
+    if record["owner"] != original_owner or generation["owner"] != original_owner or not original_owner:
+        raise Unverified("original implementation owner changed")
+    count = record["rework_count"]
+    if type(count) is not int or not 0 <= count <= 3 or (record["state"] == "Reviewing" and count == 3):
+        raise Unverified("repair budget exhausted; checkpoint and escalate")
+    if record["state"] == "Rework" and count == 0:
+        raise Unverified("rework state has no admitted cycle")
+    identifiers = assessment.get("unresolved_findings")
+    if not identifiers:
+        raise Unverified("no unresolved finding requires correction")
+    history = finding_history(record)
+    request = {
+        "schema_version": 1, "kind": "owner-correction-request", "task_id": record["task_id"],
+        "expected_revision": record["revision"], "owner": original_owner,
+        "repo": record["repo"], "branch": record["branch"], "worktree": record["worktree"],
+        "base": record["base_sha"], "head": record["head_sha"], "generation": generation["number"],
+        "packet": generation["packet"], "policy": generation["policy"],
+        "owned_paths": record["owned_paths"], "restricted_paths": record["restricted_paths"],
+        "acceptance_criteria": record["acceptance_criteria"],
+        "findings": [history[identifier] for identifier in identifiers],
+        "remaining_rework_cycles": 3 - count + (1 if record["state"] == "Rework" else 0),
+        "write_authority": False,
+        "next_action": "Original owner must claim rework through the coordinator before changing its assigned worktree; independently re-review the new generation.",
+    }
+    request["request_sha256"] = hashlib.sha256(canonical(request)).hexdigest()
+    return request
+
+
 def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], bool]:
     validate_request(request)
     validate_protocol(record)
@@ -429,14 +465,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_id")
     parser.add_argument("--request", type=Path)
+    parser.add_argument("--correction", action="store_true", help="emit an owner-directed correction without changing state")
     args = parser.parse_args()
     try:
         if not sys.flags.isolated or not sys.dont_write_bytecode:
             raise Unverified("invoke with python3 -I -B")
+        if args.correction and args.request is not None:
+            raise Unverified("correction projection cannot mutate evidence")
         coordinator = load_coordinator()
-        root = coordinator.state_root()
+        root = coordinator.state_root(create=args.request is not None)
         if args.request is None:
-            result = assess(coordinator.read_task(root, args.task_id))
+            record = coordinator.read_task(root, args.task_id)
+            result = correction_request(record) if args.correction else assess(record)
         else:
             request = read_request(args.request)
             with coordinator.CoordinatorLock(root):
@@ -446,7 +486,7 @@ def main() -> int:
                 if changed:
                     coordinator.write_task(root, updated)
         print(json.dumps(result, sort_keys=True))
-        return 0 if args.request is not None else 3
+        return 0 if args.request is not None or args.correction else 3
     except Exception as exc:
         reason = str(exc) if isinstance(exc, Unverified) else "evidence operation unavailable"
         print(json.dumps({"status": "UNVERIFIED", "reason": reason}))

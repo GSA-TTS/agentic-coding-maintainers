@@ -106,6 +106,16 @@ The source-packet content address and policy binding are supplied claims here;
 they are not silently upgraded to source-access attestations. A qualified
 runner must corroborate them before this protocol can authorize readiness.
 
+`run.sh review-evidence TASK_ID --correction` derives a bounded, hashed repair
+request for the original implementation owner. It carries current source and
+task revision, retained unresolved findings, acceptance criteria, owned/restricted
+paths and remaining rework cycles. It is a read-only projection: it grants no
+writer lease, applies no patch and does not change coordinator state. Changed
+owner, stale generation, exhausted budget or absent unresolved findings are
+refused. The original owner must enter and claim rework using existing coordinator
+transitions before changing its worktree. Review-only external PR tasks cannot
+use this projection to obtain implementation authority.
+
 ## Verification
 
 Run the acceptance suite in the approved isolated environment:
