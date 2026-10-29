@@ -412,6 +412,7 @@ def main() -> int:
             if record.get("transition_intent") or any(item.get("termination") != "STOPPED_OBSERVED" for item in attempts.values()) or len(attempts) >= 12:
                 raise Unverified("unsettled execution or execution budget exhausted")
             coordinator.verify_reservations(root, record)
+            coordinator.require_repair_settled(record, new_review=True, root=root)
             source_binding(record, definition, c)
             plan_id = dependency("execution-plan").dispatch_plan(record, root, args.operation_id, args.definition_sha256)
             inspect_guest(definition, inspect_backend(definition, prefix, env))

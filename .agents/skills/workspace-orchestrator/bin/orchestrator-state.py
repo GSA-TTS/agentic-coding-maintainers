@@ -569,6 +569,31 @@ def require_execution_stopped(record: dict[str, Any]) -> None:
             raise UnknownError("execution stop observation is missing or malformed")
 
 
+def require_repair_settled(record: dict[str, Any], new_review: bool = False, root: Path | None = None) -> None:
+    ledger = record.get("repair_protocol")
+    if ledger is None:
+        return
+    if root is not None:
+        import importlib.util
+        source = Path(__file__).resolve().with_name("repair-apply.py")
+        spec = importlib.util.spec_from_file_location("installed_repair", source)
+        if spec is None or spec.loader is None:
+            raise UnknownError("repair validator unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        try:
+            module.validate_retained(record, root)
+        except Exception as exc:
+            raise UnknownError("retained repair evidence unavailable") from exc
+    if not isinstance(ledger, dict) or not isinstance(ledger.get("operations"), dict):
+        raise UnknownError("repair ledger malformed")
+    for item in ledger["operations"].values():
+        if not isinstance(item, dict) or item.get("phase") not in {"APPLIED_UNREVIEWED", "NOT_APPLIED_OBSERVED"}:
+            raise UnknownError("repair is unsettled; reconcile before lifecycle/head changes")
+        if new_review and item["phase"] == "APPLIED_UNREVIEWED" and item.get("head") == record["head_sha"]:
+            raise UnknownError("repaired bytes require a new committed head before review")
+
+
 def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     with CoordinatorLock(root):
         validate_admission_reservations(root)
@@ -576,6 +601,11 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         if record["state"] not in {"Ready", "Rework"}:
             raise BusyError(f"task is not claimable from state {record['state']!r}")
         require_execution_stopped(record)
+        require_repair_settled(record, root=root)
+        ledger = record.get("repair_protocol", {})
+        prepared = [item for item in ledger.get("corrections", {}).values() if item.get("cycle") == record["rework_count"]]
+        if prepared and args.owner != prepared[0]["owner"]:
+            raise BusyError("prepared repair belongs to original owner")
         owner = safe_scope(args.owner)
         worker = worker_metadata(record["task_id"], owner, args.pid)
         slot = reserve_first(root, "slots", MAX_WORKERS, worker)
@@ -630,6 +660,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         if args.state not in TRANSITIONS[record["state"]]:
             raise InputError(f"transition {record['state']!r} -> {args.state!r} is not allowed")
         require_execution_stopped(record)
+        require_repair_settled(record, root=root)
         if args.state == "Implementing" and (record["kind"] != "implementation" or not record.get("worker")):
             raise InputError("only a claimed implementation task can enter Implementing")
         if args.state == "Implementing" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
@@ -756,6 +787,7 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         raise InputError("head SHA must be full lowercase 40-hex")
     with CoordinatorLock(root):
         record = read_task(root, args.task_id)
+        require_repair_settled(record, root=root)
         if record["kind"] != "implementation" or record["state"] not in {"Implementing", "Rework", "Claimed"}:
             raise BusyError("head can be updated only for an active/rework implementation task")
         worktree = record["worktree"]
@@ -862,6 +894,7 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     if not target:
         return record
     require_execution_stopped(record)
+    require_repair_settled(record, root=root)
     if target == "Ready for human review":
         if "review_protocol" in record:
             raise UnknownError("cannot recover readiness from uncorroborated review protocol claims")
@@ -929,6 +962,7 @@ def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], b
     if not interrupted and not missing_worktree:
         return record, False
     require_execution_stopped(record)
+    require_repair_settled(record, root=root)
     release_capacity(root, record)
     record["state"] = "Blocked"
     record["next_action"] = "interrupted worker" if interrupted else "worktree missing"

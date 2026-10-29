@@ -105,8 +105,8 @@ def begin(record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     review = record.setdefault("review_protocol", {"schema_version": 1, "material_epoch": 0, "generations": [], "operations": {}})
     if len(review["generations"]) >= 16:
         raise Unverified("review generation budget exhausted")
-    if review["generations"] and record["kind"] == "implementation" and record["rework_count"] >= 3:
-        raise Unverified("substantive repair budget exhausted")
+    # The third admitted repair must still receive independent re-review;
+    # admission of a fourth repair is fenced by coordinator transitions.
     generation = {**copy.deepcopy(payload), "number": len(review["generations"]) + 1,
                   "material_epoch": review["material_epoch"],
                   "admission_revision": record["revision"], "owner": record["owner"],
@@ -289,6 +289,7 @@ def correction_request(record: dict[str, Any]) -> dict[str, Any]:
 
 def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], bool]:
     validate_request(request)
+    load_coordinator().require_repair_settled(record, new_review=True)
     validate_protocol(record)
     request_digest = hashlib.sha256(canonical(request)).hexdigest()
     operations = record.get("review_protocol", {}).get("operations", {})
@@ -297,6 +298,10 @@ def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, An
         if prior["request_sha256"] != request_digest:
             raise Unverified("operation ID reused with different content")
         return record, prior["result"], False
+    if request["action"] in {"assign", "accept"}:
+        prepared = record.get("repair_protocol", {}).get("corrections", {}).values()
+        if any(item["generation"] == request["payload"].get("generation") for item in prepared):
+            raise Unverified("prepared correction freezes this generation; use a fresh review generation")
     if request["expected_revision"] != record["revision"]:
         raise Unverified("task revision changed")
     if record["state"] not in {"Claimed", "Implementing", "Reviewing", "Rework"}:
@@ -468,6 +473,7 @@ def read_request(path: Path) -> dict[str, Any]:
 
 
 def validate_collected_retention(record: dict[str, Any], root: Path) -> None:
+    load_coordinator().require_repair_settled(record, root=root)
     has_collected_reports = any("collection_origin" in report
                                 for generation in record.get("review_protocol", {}).get("generations", [])
                                 for report in generation["reports"].values())

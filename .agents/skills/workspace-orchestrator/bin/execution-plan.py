@@ -193,6 +193,7 @@ def admit(record: dict[str, Any], request: dict[str, Any], root: Path, packet: b
           definitions: dict[str, bytes]) -> tuple[dict[str, Any], dict[str, Any], bool]:
     c, e, observer = load("review-collect"), load("review-evidence"), load("execution-observe")
     validate_request(request, e)
+    load("orchestrator-state").require_repair_settled(record, new_review=True, root=root)
     validate_plans(record, root)
     for key, plan in record.get("execution_plans", {}).items():
         if plan["request"]["operation_id"] == request["operation_id"]:
