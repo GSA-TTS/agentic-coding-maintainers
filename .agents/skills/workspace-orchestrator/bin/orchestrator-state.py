@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -347,6 +348,17 @@ def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[st
                 raise UnknownError(f"task worker {field} is invalid")
         if worker["task_id"] != raw["task_id"]:
             raise UnknownError("task worker id does not match task")
+    if "candidate_binding" in raw:
+        path = Path(__file__).resolve().with_name("candidate-binding.py")
+        spec = importlib.util.spec_from_file_location("installed_candidate_binding", path)
+        if spec is None or spec.loader is None:
+            raise UnknownError("candidate binding validator unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        try:
+            module.validate_binding(raw)
+        except Exception as exc:
+            raise UnknownError("task candidate binding is invalid") from exc
     return raw
 
 

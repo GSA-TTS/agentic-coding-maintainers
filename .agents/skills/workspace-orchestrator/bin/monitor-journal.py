@@ -107,11 +107,19 @@ def open_store(root: Path, writable: bool = False) -> sqlite3.Connection:
 
 def validate_store(db: sqlite3.Connection) -> None:
     objects = db.execute("SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
-    if {row["name"] for row in objects} != TABLES or any(row["type"] != "table" for row in objects):
+    names = {row["name"] for row in objects}
+    if names not in (TABLES, TABLES | {"binding_acks"}) or any(row["type"] != "table" for row in objects):
         raise JournalError("unsupported journal schema")
     meta = db.execute("SELECT * FROM meta").fetchall()
-    if len(meta) != 1 or meta[0]["version"] != 1 or not re.fullmatch(r"[0-9a-f]{32}", meta[0]["store_id"]):
+    if (len(meta) != 1 or meta[0]["version"] not in {1,2} or not re.fullmatch(r"[0-9a-f]{32}", meta[0]["store_id"])
+            or (meta[0]["version"] == 2) != ("binding_acks" in names)):
         raise JournalError("unsupported journal version/identity")
+    if "binding_acks" in names:
+        columns = [row[1] for row in db.execute("PRAGMA table_info(binding_acks)")]
+        if columns != ["incarnation","task_id","operation_id","receipt","receipt_sha256"]:
+            raise JournalError("unsupported acknowledgment schema")
+        if db.execute("SELECT count(*) FROM binding_acks").fetchone()[0] > 10_000:
+            raise JournalError("acknowledgment capacity exceeded")
     if db.execute("PRAGMA quick_check").fetchone()[0] != "ok" or db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise JournalError("journal integrity check failed")
     for query, limit in (("SELECT count(*) FROM polls", MAX_POLLS), ("SELECT count(*) FROM events", MAX_EVENTS), ("SELECT count(*) FROM candidates", MAX_CANDIDATES)):
@@ -336,7 +344,7 @@ def snapshot_status(db: sqlite3.Connection, configured: list[str]) -> dict[str, 
         candidates.append({"repo": row["repo"], "number": row["number"], "generation": row["generation"],
                            "reference": f"{store_id}:{row['repo']}#{row['number']}:{row['generation']}",
                            "observation": value, "scope": scope, "latest_poll_observed_source": fresh,
-                           "last_seen_seq": row["last_seen_seq"], "admission": "NOT_ADMITTED"})
+                           "last_seen_seq": row["last_seen_seq"], "admission": "UNMEASURED"})
     return {"status": "AS_OF_POLL" if latest["status"] in {"CURRENT", "CHANGED"} and set(coverage) == set(configured) else "UNVERIFIED",
             "store_id": store_id, "poll_seq": latest["seq"], "poll_status": latest["status"], "finished_at": latest["finished"],
             "coverage": coverage, "candidates": candidates, "continuous_monitoring": "UNMEASURED",
