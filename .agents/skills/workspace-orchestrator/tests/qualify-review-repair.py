@@ -9,6 +9,7 @@ This driver never provisions networking or invokes a model on its own.
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -47,6 +48,34 @@ def require_adjudication(finding_id, assessment):
         raise ValueError("operator must adjudicate a retained finding against the seeded arithmetic invariant; no nonempty-finding shortcut")
 
 
+def validate_retention(root):
+    spec = importlib.util.spec_from_file_location("qualification_proposals", BIN / "repair-proposal.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    coordinator = module.load("orchestrator-state")
+    record = coordinator.read_task(root / ".orchestrator", "qualification")
+    module.validate(record, root / ".orchestrator")
+    module.load("review-evidence").validate_collected_retention(record, root / ".orchestrator")
+    return record
+
+
+def reconcile_commit(git, old_head, receipt_path):
+    if receipt_path.exists():
+        head = json.loads(receipt_path.read_bytes())["head"]
+        if git("rev-parse", "HEAD") != head or git("status", "--porcelain"):
+            raise ValueError("recorded repair commit no longer matches checkout")
+        return head
+    current = git("rev-parse", "HEAD")
+    if current == old_head:
+        git("add", "calc.py", "test_calc.py")
+        git("commit", "-qm", "model-proposed owner repair")
+        current = git("rev-parse", "HEAD")
+    elif git("rev-parse", "HEAD^") != old_head or git("status", "--porcelain"):
+        raise ValueError("unrecorded commit is not the clean direct repair successor")
+    receipt_path.write_bytes(canonical({"head":current,"parent":old_head}))
+    return current
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("init", "review", "proposal", "rereview"))
@@ -74,6 +103,9 @@ def main():
         prior = json.loads(phase_receipt.read_bytes())
         if prior["input"] != phase_input:
             raise ValueError("completed phase replay changed inputs")
+        retained_record = validate_retention(root)
+        if args.phase == "rereview" and retained_record["head_sha"] != prior["result"]["head"]:
+            raise ValueError("qualification source changed since completed phase")
         print(json.dumps(prior["result"], sort_keys=True))
         return
     session_file = evidence / "sessions.json"
@@ -131,7 +163,7 @@ def main():
             generation=generation["number"], run_id=label, binary_sha256=args.binary_sha256, model=args.model, agent="bounded-worker", cwd="/home/node/review",
             sources={"/candidate/"+name:dict(path_base64=base64.b64encode(name.encode()).decode(),side="after") for name in ("calc.py","test_calc.py")}, context=context))
         path=evidence / f"admit-{label}.json"
-        path.write_bytes(canonical(request))
+        retain_request(path, request)
         result=tool("review-collect.py","qualification","--request",path,"--packet",packet_path)
         (evidence / f"admission-{label}.json").write_bytes(canonical(result))
         (evidence / f"context-{label}.json").write_bytes(canonical(context))
@@ -217,8 +249,10 @@ def main():
         snapshot=canonical(state())
         if tool("repair-apply.py","qualification","apply","--request",path,"--bundle",bundle_path) != applied or canonical(state()) != snapshot: raise ValueError("repair replay mutated state")
         if not oracle("after")["passed"]: raise ValueError("model repair failed independent oracle")
-        git("add","calc.py","test_calc.py"); git("commit","-qm","model-proposed owner repair")
-        tool("orchestrator-state.py","update-head","qualification",git("rev-parse","HEAD"))
+        old_head = admission["context"]["correction"]["head"]
+        repair_head = reconcile_commit(git, old_head, evidence/"repair-commit.json")
+        if state()["head_sha"] != repair_head:
+            tool("orchestrator-state.py","update-head","qualification",repair_head)
         result=stage_review("after")
     else:
         ingest_review("after")

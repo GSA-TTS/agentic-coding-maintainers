@@ -119,7 +119,6 @@ def validate(record, root):
     if not isinstance(state, dict) or len(state) > 6:
         raise ValueError("proposal budget exceeded")
     operations, revisions, sessions = set(), set(), set()
-    external_ids = set(record.get("review_protocol", {}).get("operations", {})) | set(record.get("runtime_collections", {}).get("operations", {})) | set(record.get("repair_protocol", {}).get("operations", {}))
     external_revisions = {item["result"]["resulting_revision"] for group in (record.get("review_protocol", {}).get("operations", {}), record.get("runtime_collections", {}).get("operations", {})) for item in group.values()}
     reviewer_sessions = {assignment["session"] for generation in record.get("review_protocol", {}).get("generations", []) for assignment in generation["assignments"].values()}
     def check_request(request, resulting, expected_action, request_sha):
@@ -128,7 +127,7 @@ def validate(record, root):
         if (type(request["schema_version"]) is not int or request["schema_version"] != 1 or request["action"] != expected_action
                 or type(request["expected_revision"]) is not int or request["expected_revision"] < 0
                 or c.digest(c.canonical(request)) != request_sha
-                or request["operation_id"] in operations or request["operation_id"] in external_ids
+                or request["operation_id"] in operations
                 or resulting in revisions or resulting in external_revisions):
             raise ValueError("proposal operation identity/revision corruption")
         operations.add(request["operation_id"])

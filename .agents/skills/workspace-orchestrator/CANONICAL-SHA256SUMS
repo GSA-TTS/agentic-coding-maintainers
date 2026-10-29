@@ -9,7 +9,7 @@ ff1f72d12091f046b2ba40b6c8054452ab9ce72df3d5b522456dd888a0514d92  ./bin/executio
 ab80d47d814efd111d76705b4e0bc426a45cff8813b32283d0d909b58d70a8c9  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 6274e753fab20f49b73242d52e481fcab89fc09af6ee5105bff51e8d5ca4defb  ./bin/repair-apply.py
-6dfc23ce9457cd75af29a09e0012b6e1e0297e2113b6eaeaa46d4d06cc401b84  ./bin/repair-proposal.py
+66c78fbc691bf58a8d0f78aa83eb3b968c3eb4b0e08e90e2c7dfcd27fc1afeed  ./bin/repair-proposal.py
 735b4bea8bb8613c5f82d36d11cd7e0c81f1365436a7fee977cacac68a8634b7  ./bin/review-accept.py
 6a6fec36854d4c48b6f3b46573bbfa2c5c18ca997017dc63fdfe9d6ab0e5ec67  ./bin/review-collect.py
 9b10d669a2239370af2ddb688bf4164365a16bfc0d774da4c6a1a457902b381f  ./bin/review-evidence.py
@@ -17,7 +17,7 @@ eb60ebeac23bf003c39f7650fc9d784909f3424c6fec76d2504ccb4d744c9c20  ./bin/review-p
 1369dd5e4e1449afcb7b60d025517da25fbf4cf30279c55446d8a46c928f6083  ./bin/review-run.py
 bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTION-OBSERVER.md
 438fba1a0be38b6b6a16acc701f9e4923fd154320735e802b90c7ff1a7b1a061  ./docs/EXECUTION-PLAN.md
-cd3aece3939db996ac62e08005d232577df83b915eec53b4baecb03442da4182  ./docs/LIVE-REVIEW-REPAIR.md
+3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
 4b40433713073a75f9ed4539e91a2704e2f0f8d055af31c0f9db4a533de521e0  ./docs/MAINTAINER-SERVICE.md
 22e436522aef3c2135281aabc038eb550bec290482f75e89a98d2ef3cc80e614  ./docs/OPERATOR-GUIDE.md
 a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-REPAIR.md
@@ -41,10 +41,10 @@ da22255cf7ecf7fe73af425f999e9818bd82e6900db27cf494ad78bbdf6286f7  ./tests/fixtur
 b87b1459c7f3bd39366bd2df59b6ba825826da956a48ca931cc4077a7354f9de  ./tests/orchestrator-monitor-test.sh
 ddb038285f9ba72ebd65f8e25f0f1e861611ce09607c1cbb36597c715f2a99ce  ./tests/orchestrator-production-worktree-test.sh
 e5b97e220f20c8ecb0a1209860ede2c52f95e03dd211be1774f33cc78cfe55f8  ./tests/orchestrator-state-test.sh
-324ff0cf328625a69efdec1d8445bedc8fe72d923d238d6290bea872e8ee6704  ./tests/qualification-driver-test.py
-9990cd3b35ebe6f47c4c255c4b567fa1575ff816621dfe14bfb856f7ba8bced5  ./tests/qualify-review-repair.py
+c09c3f815ae4e41fa29e368c2e77b4d2187608848156c2e273c28de5c20b758c  ./tests/qualification-driver-test.py
+ecf032e1379920bee593b86ee363dba905cb1ee05b0c09a4694a9ea44d68b1aa  ./tests/qualify-review-repair.py
 a29d14b081c2121f8ee9adc92eb728fc74e6f96d6f185f09b3cddb601f3a480a  ./tests/repair-apply-test.py
-54a8f43784f923c95af29973a10cd041456185dda7c20ff9bc0e838361b8d92c  ./tests/repair-proposal-test.py
+565f203ee8823aebde34914458a035de78e259ca271ebaaa928cbdf3bdc5526d  ./tests/repair-proposal-test.py
 b33175d22e6d32afa89d2d43d53f094d4b7c83ce8226ec5f95591df15259f522  ./tests/review-accept-test.py
 c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review-baseline.json
 a22f71b08992cc060e6fdc83a8fa4297643f84c12d5979647a62697d9dc44b36  ./tests/review-collect-test.py

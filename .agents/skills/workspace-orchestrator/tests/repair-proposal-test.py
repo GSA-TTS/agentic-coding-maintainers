@@ -101,4 +101,15 @@ class ProposalTests(fixture.RepairTests):
         path.chmod(0o600); path.write_bytes(b"lost")
         with self.assertRaises(Exception): fixture.e.validate_collected_retention(self.record,self.state)
 
+    def test_operation_ids_are_namespaced_by_ledger(self):
+        _,result=self.admit_proposal(); key=result["admission_id"]
+        artifacts=self.artifacts(self.record["repair_proposals"][key]["admission"])
+        request=dict(schema_version=1,operation_id="collected",expected_revision=self.record["revision"],action="collect",payload=dict(admission_id=key,artifact_sha256={name:c.digest(data) for name,data in artifacts.items()}))
+        self.record,result,_=p.apply(self.record,request,self.state,artifacts); self.record["revision"]+=1
+        raw=(self.state/"review-artifacts"/result["bundle_sha256"]).read_bytes()
+        apply_request=dict(schema_version=1,operation_id="propose",expected_revision=self.record["revision"],correction_id=self.correction_id,bundle_sha256=result["bundle_sha256"])
+        fixture.repair.apply_repair(self.record,self.state,apply_request,raw,self.persist)
+        p.validate(self.record,self.state)
+        self.assertEqual((self.repo/"source.py").read_text(),"result = 2\n")
+
 if __name__=="__main__": unittest.main()

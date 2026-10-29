@@ -2,6 +2,7 @@
 """Qualification retry and evidence-oracle checks; no model invocation."""
 
 import importlib.util
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,21 @@ class DriverTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 driver.require_adjudication(finding, assessment)
         driver.require_adjudication("seeded-defect", {"unresolved_findings": ["seeded-defect"]})
+
+    def test_resume_commit_already_created_before_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git","-C",str(root),"-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false",*args]).decode().strip()
+            git("init","-q")
+            (root/"calc.py").write_text("before")
+            git("add","."); git("commit","-qm","before"); old=git("rev-parse","HEAD")
+            (root/"calc.py").write_text("after")
+            git("add","."); git("commit","-qm","repair"); new=git("rev-parse","HEAD")
+            receipt=root/".git"/"qualification-commit.json"
+            self.assertEqual(driver.reconcile_commit(git,old,receipt),new)
+            self.assertEqual(driver.reconcile_commit(git,old,receipt),new)
+            self.assertEqual(git("rev-list","--count","HEAD"),"2")
 
 
 if __name__ == "__main__":

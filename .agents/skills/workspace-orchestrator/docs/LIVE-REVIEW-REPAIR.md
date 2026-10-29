@@ -58,7 +58,8 @@ controller environment using `--isolated-guest --root ROOT --profile PROFILE
 
 1. `init`: create defective committed ordinary source, run independently fixed
    behavioral assertions, admit first reviewer; emit source/context/session.
-2. `review --bundle DIR`: ingest actual reviewer output; stop on a missed defect;
+2. `review --bundle DIR --finding-id ID`: ingest actual reviewer output; require
+   explicit operator adjudication linking the retained ID to the seeded defect;
    prepare correction and owner admission; emit owner context.
 3. `proposal --bundle DIR`: ingest exact model proposal; apply through the
    guarded transport; verify assertions; commit fixture and admit re-review.
@@ -70,6 +71,18 @@ source/context and returned artifacts between phases. There is no fake-response
 fallback. A role-specific failed stage stops with retained evidence. The driver
 does not itself provision guests, grant network access or install models. Owner
 PID is session accounting, not independent worker-process attestation.
+
+Owner/reviewer sessions are unique across roles and driver runs. Proposal
+operation IDs are namespaced within the proposal ledger, as other module-local
+receipts are; their mutation revisions still share task chronology. Accepted
+proposal artifacts are validated by subsequent lifecycle and assessment calls.
+Missing owner evidence cannot silently preserve a complete-loop claim.
+
+The driver retains exact mutation requests across retries, validates referenced
+evidence before replaying completed qualification phases, and reconciles a clean
+direct repair-successor commit after a commit/receipt interruption. These are
+bounded fixture recovery steps, not a general durable workflow engine. A failed
+or unmeasured behavioral baseline cannot substitute for the seeded defect.
 
 Use a Linux controller filesystem that meets `repair-apply`'s same-device and
 metadata contract. In the measured setup, Docker supported it while MSB's guest
