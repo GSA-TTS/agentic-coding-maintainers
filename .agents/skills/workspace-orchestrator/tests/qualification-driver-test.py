@@ -54,6 +54,17 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(driver.reconcile_commit(git,old,receipt),new)
             self.assertEqual(git("rev-list","--count","HEAD"),"2")
 
+    def test_cached_qualification_rechecks_same_head_review(self):
+        record = {"head_sha":"a"*40,"state":"Reviewing"}
+        assessment = {"generation":2,"review_process":"CLAIMS_COMPLETE","missing_obligations":[],"unresolved_findings":[]}
+        completed = {"head":"a"*40,"review":assessment}
+        driver.require_current_qualification(record,completed,assessment)
+        for changed in ({"unresolved_findings":["new-defect"]}, {"generation":3}, {"missing_obligations":["correctness"]}, {"review_process":"UNVERIFIED"}):
+            with self.assertRaises(ValueError):
+                driver.require_current_qualification(record,completed,{**assessment,**changed})
+        with self.assertRaises(ValueError):
+            driver.require_current_qualification({**record,"state":"Cancelled"},completed,assessment)
+
 
 if __name__ == "__main__":
     unittest.main()

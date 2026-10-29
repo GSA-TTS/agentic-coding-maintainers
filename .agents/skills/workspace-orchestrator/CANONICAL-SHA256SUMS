@@ -41,8 +41,8 @@ da22255cf7ecf7fe73af425f999e9818bd82e6900db27cf494ad78bbdf6286f7  ./tests/fixtur
 b87b1459c7f3bd39366bd2df59b6ba825826da956a48ca931cc4077a7354f9de  ./tests/orchestrator-monitor-test.sh
 ddb038285f9ba72ebd65f8e25f0f1e861611ce09607c1cbb36597c715f2a99ce  ./tests/orchestrator-production-worktree-test.sh
 e5b97e220f20c8ecb0a1209860ede2c52f95e03dd211be1774f33cc78cfe55f8  ./tests/orchestrator-state-test.sh
-c09c3f815ae4e41fa29e368c2e77b4d2187608848156c2e273c28de5c20b758c  ./tests/qualification-driver-test.py
-ecf032e1379920bee593b86ee363dba905cb1ee05b0c09a4694a9ea44d68b1aa  ./tests/qualify-review-repair.py
+c2b84e54f493617fb9d243bd1dd4de221bde5e646aeff2c99fc795a5d52cbdf6  ./tests/qualification-driver-test.py
+4922fb971a2448148065e117a6ee570b75e3be75e7c456331a3068c3912b46d7  ./tests/qualify-review-repair.py
 a29d14b081c2121f8ee9adc92eb728fc74e6f96d6f185f09b3cddb601f3a480a  ./tests/repair-apply-test.py
 565f203ee8823aebde34914458a035de78e259ca271ebaaa928cbdf3bdc5526d  ./tests/repair-proposal-test.py
 b33175d22e6d32afa89d2d43d53f094d4b7c83ce8226ec5f95591df15259f522  ./tests/review-accept-test.py

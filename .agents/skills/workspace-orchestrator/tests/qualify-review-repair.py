@@ -59,6 +59,15 @@ def validate_retention(root):
     return record
 
 
+def require_current_qualification(record, completed, assessment):
+    if (record["head_sha"] != completed["head"]
+            or record["state"] not in {"Claimed", "Implementing", "Reviewing", "Ready for human review"}
+            or assessment.get("generation") != completed["review"].get("generation")
+            or assessment.get("unresolved_findings") or assessment.get("missing_obligations")
+            or assessment.get("review_process") != "CLAIMS_COMPLETE"):
+        raise ValueError("completed qualification is historical; current review is changed or incomplete")
+
+
 def reconcile_commit(git, old_head, receipt_path):
     if receipt_path.exists():
         head = json.loads(receipt_path.read_bytes())["head"]
@@ -104,8 +113,11 @@ def main():
         if prior["input"] != phase_input:
             raise ValueError("completed phase replay changed inputs")
         retained_record = validate_retention(root)
-        if args.phase == "rereview" and retained_record["head_sha"] != prior["result"]["head"]:
-            raise ValueError("qualification source changed since completed phase")
+        if args.phase == "rereview":
+            spec = importlib.util.spec_from_file_location("qualification_review", BIN / "review-evidence.py")
+            review = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(review)
+            require_current_qualification(retained_record, prior["result"], review.assess(retained_record))
         print(json.dumps(prior["result"], sort_keys=True))
         return
     session_file = evidence / "sessions.json"
