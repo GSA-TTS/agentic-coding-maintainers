@@ -362,7 +362,7 @@ def apply(record: dict[str, Any], request: dict[str, Any], root: Path,
     evidence = load_module("review-evidence")
     runner = load_module("review-run")
     request_header(request, evidence)
-    load_module("orchestrator-state").require_repair_settled(record, new_review=True)
+    load_module("orchestrator-state").require_repair_settled(record, new_review=True, root=root)
     evidence.validate_protocol(record)
     store = ensure_store(root, Path(record["worktree"]))
     state = record.get("runtime_collections", {"schema_version": 1, "admissions": {}, "collections": {}, "operations": {}})

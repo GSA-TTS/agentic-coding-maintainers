@@ -121,9 +121,11 @@ class RepairTests(unittest.TestCase):
         self.assertEqual((self.repo / "source.py").read_bytes(), b"result = 1\n")
 
     def test_paths_links_scope_and_metadata_refused(self):
-        for path in ("../source.py", "/source.py", "a//b", ".git/config", "src/AGENTS.md", "a\\b", "a/../b"):
+        for path in ("../source.py", "/source.py", "a//b", ".git/config", "src/AGENTS.md", "a\\b", "a/../b", "opencode.json", "OpenCode.JSONC"):
             with self.subTest(path=path), self.assertRaises(repair.Unverified):
                 repair.relative_path(path)
+        self.assertTrue(repair.in_scope("src/PROTECTED.py", ["src/protected.py"]))
+        self.assertFalse(repair.in_scope("src-other/file.py", ["src"]))
         os.link(self.repo / "source.py", self.root / "alias")
         with self.assertRaises(repair.Unverified):
             repair.inspect_targets(self.repo, [dict(path="source.py")])
@@ -205,6 +207,39 @@ class RepairTests(unittest.TestCase):
         updated, _, _ = e.apply(record, dict(schema_version=1, operation_id="final-review", expected_revision=record["revision"], action="begin",
             payload={name:generation[name] for name in ("packet", "policy", "head", "base", "obligations")}))
         self.assertEqual(len(updated["review_protocol"]["generations"]), 2)
+
+    def test_historical_reconcile_never_rewrites_settled_phase(self):
+        request, raw = self.request()
+        repair.apply_repair(self.record, self.state, request, raw, self.persist)
+        self.record.update(state="Cancelled", rework_count=2)
+        (self.repo / "source.py").write_bytes(b"later unrelated bytes\n")
+        before = copy.deepcopy(self.record)
+        with mock.patch.object(repair, "inspect_targets", side_effect=AssertionError("no historical inspection")):
+            result = repair.reconcile(self.record, self.state, "repair", lambda _: self.fail("no historical persistence"))
+        self.assertEqual(result["status"], "APPLIED_UNREVIEWED")
+        self.assertEqual(before, self.record)
+
+    def test_pending_reconcile_rejects_terminal_and_superseded_owner(self):
+        request, raw = self.request()
+        with mock.patch.object(repair, "replace_one", side_effect=OSError("interrupted")):
+            with self.assertRaises(OSError):
+                repair.apply_repair(self.record, self.state, request, raw, self.persist)
+        for field, value in (("state", "Cancelled"), ("owner", "other"), ("rework_count", 2)):
+            record = copy.deepcopy(self.persisted)
+            record[field] = value
+            with self.subTest(field=field), self.assertRaises(repair.Unverified):
+                repair.reconcile(record, self.state, "repair", self.persist)
+
+    def test_artifact_loss_blocks_lifecycle_and_manual_evidence(self):
+        request, raw = self.request()
+        repair.apply_repair(self.record, self.state, request, raw, self.persist)
+        artifact = self.state / "review-artifacts" / repair.digest(raw)
+        artifact.chmod(0o600)
+        artifact.write_bytes(b"lost")
+        with self.assertRaises(Exception):
+            repair.load("orchestrator-state").require_repair_settled(self.record, root=self.state)
+        with self.assertRaises(Exception):
+            e.validate_collected_retention(self.record, self.state)
 
 
 if __name__ == "__main__":

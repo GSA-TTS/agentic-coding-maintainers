@@ -469,6 +469,7 @@ def read_request(path: Path) -> dict[str, Any]:
 
 
 def validate_collected_retention(record: dict[str, Any], root: Path) -> None:
+    load_coordinator().require_repair_settled(record, root=root)
     has_collected_reports = any("collection_origin" in report
                                 for generation in record.get("review_protocol", {}).get("generations", [])
                                 for report in generation["reports"].values())

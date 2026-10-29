@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 LIMIT = 262_144
-DENIED = {".git", ".orchestrator", ".opencode", ".agents", ".github", ".env", "AGENTS.md"}
+DENIED = {".git", ".orchestrator", ".opencode", ".agents", ".github", ".env", "AGENTS.md", "opencode.json", "opencode.jsonc"}
 
 
 class Unverified(Exception):
@@ -57,7 +57,8 @@ def relative_path(value: Any) -> str:
 
 
 def in_scope(path: str, scopes: list[str]) -> bool:
-    return any(scope in {".", ""} or path == scope.rstrip("/") or path.startswith(scope.rstrip("/") + "/") for scope in scopes)
+    path = path.casefold()
+    return any(scope in {".", ""} or path == scope.rstrip("/").casefold() or path.startswith(scope.rstrip("/").casefold() + "/") for scope in scopes)
 
 
 def bundle(raw: bytes, correction: dict[str, Any]) -> list[dict[str, Any]]:
@@ -339,9 +340,14 @@ def reconcile(record: dict[str, Any], root: Path, operation: str, persist) -> di
     item = record.get("repair_protocol", {}).get("operations", {}).get(operation)
     if item is None:
         raise Unverified("repair operation absent")
+    if item["phase"] in {"APPLIED_UNREVIEWED", "NOT_APPLIED_OBSERVED"}:
+        return result(item)  # Historical observation is immutable, not today's bytes.
     # Caller holds coordinator lock: a live cooperative mutator holds it through
     # all writes. Stale lock recovery is explicit, never performed here.
-    if record["head_sha"] != item["head"] or record.get("transition_intent"):
+    if (record["head_sha"] != item["head"] or record.get("transition_intent")
+            or record["state"] != "Implementing" or record["rework_count"] != item["cycle"]
+            or record["review_protocol"]["material_epoch"] != item["epoch"]
+            or record.get("worker") != item["worker"] or record["owner"] != item["worker"]["owner"]):
         raise Unverified("repair source identity changed")
     try:
         observed = inspect_targets(Path(record["worktree"]), item["entries"])

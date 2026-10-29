@@ -116,6 +116,7 @@ def validate_retained(record: dict[str, Any], root: Path) -> None:
 
 def apply(record: dict[str, Any], request: dict[str, Any], root: Path) -> tuple[dict[str, Any], dict[str, Any], bool]:
     c, e, runner = dependencies()
+    c.load_module("orchestrator-state").require_repair_settled(record, new_review=True, root=root)
     validate_request(request, c, e)
     e.validate_protocol(record)
     state = record.get("runtime_collections")
