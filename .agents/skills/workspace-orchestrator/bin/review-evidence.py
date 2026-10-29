@@ -105,8 +105,8 @@ def begin(record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     review = record.setdefault("review_protocol", {"schema_version": 1, "material_epoch": 0, "generations": [], "operations": {}})
     if len(review["generations"]) >= 16:
         raise Unverified("review generation budget exhausted")
-    if review["generations"] and record["kind"] == "implementation" and record["rework_count"] >= 3:
-        raise Unverified("substantive repair budget exhausted")
+    # The third admitted repair must still receive independent re-review;
+    # admission of a fourth repair is fenced by coordinator transitions.
     generation = {**copy.deepcopy(payload), "number": len(review["generations"]) + 1,
                   "material_epoch": review["material_epoch"],
                   "admission_revision": record["revision"], "owner": record["owner"],
@@ -289,6 +289,7 @@ def correction_request(record: dict[str, Any]) -> dict[str, Any]:
 
 def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], bool]:
     validate_request(request)
+    load_coordinator().require_repair_settled(record, new_review=True)
     validate_protocol(record)
     request_digest = hashlib.sha256(canonical(request)).hexdigest()
     operations = record.get("review_protocol", {}).get("operations", {})
