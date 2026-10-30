@@ -139,7 +139,7 @@ def check_summary(checks):
     return "GREEN_OBSERVED" if all(item == "SUCCESS" for item in statuses) else "UNVERIFIED"
 
 
-def valid_pr(value, number):
+def valid_pr(value, number, repo):
     if not isinstance(value, dict) or type(value.get("number")) is not int or value["number"] != number:
         raise Unverified("wrong PR identity")
     if value.get("state") not in {"OPEN","MERGED","CLOSED"} or type(value.get("isDraft")) is not bool:
@@ -151,6 +151,11 @@ def valid_pr(value, number):
             raise Unverified("unavailable branch identity")
     if not isinstance(value.get("baseRefOid"), str) or not re.fullmatch(r"[0-9a-f]{40}", value["baseRefOid"]):
         raise Unverified("unavailable PR base")
+    if "reviewDecision" not in value or value["reviewDecision"] not in (None, "", "REVIEW_REQUIRED", "CHANGES_REQUESTED", "APPROVED"):
+        raise Unverified("unavailable or malformed review decision")
+    expected_url = f"https://github.com/{repo}/pull/{number}"
+    if not isinstance(value.get("url"), str) or value["url"].casefold() != expected_url.casefold():
+        raise Unverified("PR URL does not match owning repository and number")
     return value
 
 
@@ -170,8 +175,10 @@ def report(manifest, snapshots, repository):
                "status":"UNVERIFIED","checks":"UNVERIFIED","approval_required":"HUMAN","merge_authorized":False,
                "waiting_for":[item for item in definition["depends_on"] if item not in merge_observed]}
         try:
-            pr = valid_pr(snapshots.get(number), number)
+            pr = valid_pr(snapshots.get(number), number, manifest["repo"])
             row.update(observed_head=pr["headRefOid"],base=pr["baseRefName"],base_sha=pr["baseRefOid"],state=pr["state"],draft=pr["isDraft"])
+            row.update(url=pr["url"], review_decision=pr["reviewDecision"] or "NONE",
+                       review_attention="CHANGES_REQUESTED" if pr["reviewDecision"] == "CHANGES_REQUESTED" else "NONE_OBSERVED")
             row["checks"] = check_summary(pr.get("statusCheckRollup"))
             row["waiting_for"] = [item for item in definition["depends_on"] if item not in merge_observed]
             if pr["headRefOid"] != definition["head"]:
@@ -189,9 +196,13 @@ def report(manifest, snapshots, repository):
                 row["status"] = "WAITING_FOR_PREDECESSOR"
             elif pr["isDraft"]:
                 row["status"] = "DRAFT"
+            elif pr["reviewDecision"] == "CHANGES_REQUESTED":
+                row["status"] = "CHANGES_REQUESTED"
             else:
                 row["status"] = "INTEGRATION_REVIEW_REQUIRED" if definition["depends_on"] and row["checks"] == "GREEN_OBSERVED" else row["checks"]
             row["next_action"] = "Human reviews exact head, agent evidence, current native rules and dependency acceptance before approval."
+            if pr["state"] == "OPEN" and pr["reviewDecision"] == "CHANGES_REQUESTED":
+                row["next_action"] = "Resolve reviewer findings with the implementation owner and obtain fresh fixed-head re-review; green checks alone do not resolve requested changes."
             if definition["depends_on"]:
                 row["dependency_integration"] = "UNVERIFIED: merge status alone does not prove successor includes or validates predecessor changes"
         except (Unverified, TypeError, ValueError):

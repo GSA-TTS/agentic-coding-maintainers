@@ -138,6 +138,25 @@ try:
     full = copy.deepcopy(base)
     full["legacy_finding_dispositions"] = {"epoch": 0, "history": history}
     score(full, 0)
+    reopened = copy.deepcopy(full)
+    reopened["legacy_finding_dispositions"]["history"].append(
+        dict(history[1], disposition="persists", revision=3))
+    score(reopened, 1)  # latest same-epoch disposition overrides refutation
+    for disposition in ("fixed", "refuted"):
+        resolved = copy.deepcopy(reopened)
+        resolved["legacy_finding_dispositions"]["history"].append(
+            dict(history[1], disposition=disposition, revision=4))
+        score(resolved, 0)
+        resolved["legacy_finding_dispositions"]["history"].append(
+            dict(history[1], disposition=disposition, revision=5))
+        score(resolved)  # ordered duplicate resolution is malformed, not clean
+    duplicate = copy.deepcopy(reopened)
+    duplicate["legacy_finding_dispositions"]["history"].append(
+        dict(history[1], disposition="persists", revision=4))
+    score(duplicate)
+    review = copy.deepcopy(reopened)
+    review["kind"] = "review"
+    score(review, 1)
     stale = copy.deepcopy(full)
     stale["head_sha"] = "b" * 40
     stale["legacy_finding_dispositions"]["epoch"] = 1

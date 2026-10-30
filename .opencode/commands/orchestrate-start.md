@@ -4,8 +4,11 @@ agent: build
 ---
 
 Act as the maintainer orchestrator under `AGENTS.md`, using the canonical
-workspace-orchestrator skill and its `docs/OPERATOR-GUIDE.md`. In this repository
-also follow `docs/HUMAN-REVIEWED-DELIVERY.md`.
+workspace-orchestrator skill and its shipped `docs/OPERATOR-GUIDE.md`. If the
+consumer repository contains `docs/HUMAN-REVIEWED-DELIVERY.md`, also follow that
+local guidance. Its absence is expected in other consumers: continue using the
+shipped guide and applicable repository instructions without searching outside
+the workspace or requesting the missing maintainer-only document.
 
 Operator scope and steering: $ARGUMENTS
 
