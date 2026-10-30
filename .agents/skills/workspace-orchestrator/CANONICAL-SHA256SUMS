@@ -40,8 +40,8 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 636adbe9ffaf013d25cabcc6fc19fbc217a6082babd8ff2b2bac5c415ba04609  ./profiles/opencode-v1/security-reviewer.md
 527a64aa595c4b481a619fc266d884a8a27b2bc95b24af43f2734ee38316fd03  ./run.sh
 10c4282def67c1f8fe05af3b5d5e1e27b10548f7531d44c667ce70cab16ab607  ./tests/candidate-binding-test.py
-1d11ec71771ac03225f77b7fc030a9d1ebfaad15eb7691a15609b1ed890b50f3  ./tests/execution-observe-test.py
-0390fc1f963c1a8f925a275d20cdc3a466ce0481ac31d3f4eaafec974940b928  ./tests/execution-plan-test.py
+507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py
+088c2edbc8305b2a1d49f389fccec47f27403dd34b74a90e625b2b44c8ceccff  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
 8ce5076dba28c115920af104121fe93cf7cdc1d2fe74b73009de55f9ebd8c98d  ./tests/monitor-journal-test.py
@@ -49,8 +49,8 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 6887fd021223b9c5dde70ef894ab7dd93656c8dd040f9301ef18aec641cfc2c5  ./tests/orchestrator-monitor-test.sh
 949e5f105af9557320681191f430ce815dae47d0594f1d353132ea7e4ea16bd2  ./tests/orchestrator-production-worktree-test.sh
 fcf625ab68ac3de5fab7941408c912392fad4b6938077070d5d791be5c14174d  ./tests/orchestrator-state-test.sh
-c2b84e54f493617fb9d243bd1dd4de221bde5e646aeff2c99fc795a5d52cbdf6  ./tests/qualification-driver-test.py
-4922fb971a2448148065e117a6ee570b75e3be75e7c456331a3068c3912b46d7  ./tests/qualify-review-repair.py
+44b418be91442b682941382c5fafb40c72834d4746a78f9609342e3becc31ff1  ./tests/qualification-driver-test.py
+af61a7580370ec893206153c7d1c16a7e855a6397c8d438758b8d99eafb58df1  ./tests/qualify-review-repair.py
 58f9999b7bceb6bd92dfe670b5947e55b667fe9aad39e9f85d43bd175af350d9  ./tests/repair-apply-test.py
 565f203ee8823aebde34914458a035de78e259ca271ebaaa928cbdf3bdc5526d  ./tests/repair-proposal-test.py
 b33175d22e6d32afa89d2d43d53f094d4b7c83ce8226ec5f95591df15259f522  ./tests/review-accept-test.py

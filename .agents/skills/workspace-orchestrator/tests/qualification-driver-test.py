@@ -2,6 +2,7 @@
 """Qualification retry and evidence-oracle checks; no model invocation."""
 
 import importlib.util
+import os
 import subprocess
 import tempfile
 import unittest
@@ -41,9 +42,11 @@ class DriverTests(unittest.TestCase):
 
     def test_resume_commit_already_created_before_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
+            root=Path(directory).resolve()
             def git(*args):
-                return subprocess.check_output(["git","-C",str(root),"-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false",*args]).decode().strip()
+                env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+                env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+                return subprocess.check_output(["git","-C",str(root),"-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false",*args],env=env).decode().strip()
             git("init","-q")
             (root/"calc.py").write_text("before")
             git("add","."); git("commit","-qm","before"); old=git("rev-parse","HEAD")

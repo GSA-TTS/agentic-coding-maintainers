@@ -206,12 +206,14 @@ class ExecutionTests(unittest.TestCase):
     def test_source_binding_checks_actual_checkout_head(self):
         c = observer.dependency("review-collect")
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            root = Path(directory).resolve()
+            env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+            subprocess.run(["git", "init", "-q", str(root)], env=env, check=True)
             (root / "main.py").write_bytes(b"source")
             def git(*args):
                 return subprocess.check_output(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                                                "-c", "commit.gpgsign=false", *args]).decode().strip()
+                                                 "-c", "commit.gpgsign=false", *args], env=env).decode().strip()
             git("add", ".")
             git("commit", "-qm", "first")
             definition = self.definition()
