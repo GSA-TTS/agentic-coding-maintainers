@@ -60,6 +60,31 @@ printf keep > "$consumer/.agents/skills/sibling/KEEP"
 "$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator >/dev/null
 [[ -f "$consumer/.agents/skills/workspace-orchestrator/SKILL.md" ]]
 [[ -f "$consumer/.agents/skills/sibling/KEEP" ]]
+# Install the shipped command in a minimal consumer, which intentionally lacks
+# maintainer-only root docs. Verify the actual sync output and portable contract;
+# this is static command packaging evidence, not an LLM behavior assertion.
+mkdir -p "$consumer/.opencode/commands"
+cp "$consumer/.agents/skills/workspace-orchestrator/examples/commands/orchestrate-start.md" "$consumer/.opencode/commands/"
+python3 -I -B - "$ROOT" "$consumer" <<'PY'
+import pathlib
+import sys
+
+repo, consumer = (pathlib.Path(path).resolve() for path in sys.argv[1:])
+skill = consumer / ".agents/skills/workspace-orchestrator"
+installed = consumer / ".opencode/commands/orchestrate-start.md"
+assert installed.read_bytes() == (skill / "examples/commands/orchestrate-start.md").read_bytes()
+assert installed.read_bytes() == (repo / ".opencode/commands/orchestrate-start.md").read_bytes()
+assert (skill / "docs/OPERATOR-GUIDE.md").is_file()
+assert not (consumer / "docs/HUMAN-REVIEWED-DELIVERY.md").exists()
+text = installed.read_text()
+assert "If the\nconsumer repository contains `docs/HUMAN-REVIEWED-DELIVERY.md`" in text
+assert "Its absence is expected in other consumers" in text
+assert "shipped guide and applicable repository instructions" in text
+# A consumer with optional local guidance retains it on a subsequent sync.
+local = consumer / "docs/HUMAN-REVIEWED-DELIVERY.md"
+local.parent.mkdir()
+local.write_text("Consumer-owned delivery guidance.\n")
+PY
 expected_dirty=false
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all -- .agents/skills/workspace-orchestrator)" ]] || expected_dirty=true
 sync_out="$("$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator)"
@@ -70,6 +95,8 @@ outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
 [[ ! -e "$consumer/.agents/skills/.workspace-orchestrator.sync-in-progress" ]]
 [[ -d "$outbox/marker" && -d "$outbox/lock" ]]
 grep -q 'old consumer skill' "$outbox/MANIFEST.md"
+grep -qx 'Consumer-owned delivery guidance.' "$consumer/docs/HUMAN-REVIEWED-DELIVERY.md"
+cmp -s "$consumer/.opencode/commands/orchestrate-start.md" "$consumer/.agents/skills/workspace-orchestrator/examples/commands/orchestrate-start.md"
 
 set +e
 ln -s /tmp "$consumer/.agents/skills/cross-repo-epic"
