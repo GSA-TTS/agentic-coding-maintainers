@@ -229,6 +229,71 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(result["result"],first["result"])
         self.assertEqual(result["journal_ack"]["status"],"UNVERIFIED")
 
+    def test_fixed_review_head_corruption_refused(self):
+        self.bind()
+        record=self.record()
+        record["head_sha"]="f"*40
+        (self.state/"tasks/review/task.json").write_text(json.dumps(record))
+        self.assertEqual(self.command("show","review").returncode,3)
+        with self.assertRaises(Exception): self.bind()
+
+    def test_fsync_barrier_precedes_contended_replay(self):
+        self.bind()
+        (self.state/"monitor/poll.lock").mkdir()
+        with mock.patch.object(binding,"durable_receipt",side_effect=OSError("uncertain durability")) as barrier:
+            with self.assertRaises(OSError): self.bind()
+            self.assertEqual(barrier.call_count,1)
+        result=self.bind()
+        self.assertEqual(result["result"]["status"],"CANDIDATE_BOUND")
+        self.assertEqual(result["journal_ack"]["status"],"UNVERIFIED")
+
+    def test_corruption_between_lookups_never_returns_cached_success(self):
+        self.bind()
+        real_load=binding.load
+        def load(name):
+            module=real_load(name)
+            if name=="orchestrator-monitor":
+                acquire=module.acquire
+                def corrupt(path):
+                    acquire(path)
+                    (self.state/"tasks/review/task.json").write_text('{}')
+                module.acquire=corrupt
+            return module
+        with mock.patch.object(binding,"load",side_effect=load):
+            with self.assertRaises(Exception): self.bind()
+
+    def test_orphan_acknowledgment_cannot_recreate_task_receipt(self):
+        self.bind()
+        record=self.record()
+        del record["candidate_binding"]
+        path=self.state/"tasks/review/task.json"
+        path.write_text(json.dumps(record))
+        request={**self.request,"expected_revision":record["revision"]}
+        before=path.read_bytes()
+        with self.assertRaisesRegex(binding.Unverified,"receipt is missing"):
+            self.bind(request)
+        self.assertEqual(path.read_bytes(),before)
+
+    def test_failed_schema_extension_rolls_back_preserving_task(self):
+        with mock.patch.object(binding,"acknowledge",side_effect=OSError("ack delayed")):
+            self.bind()
+        record=self.record()
+        self.assertEqual(self.db.execute("SELECT version FROM meta").fetchone()[0],1)
+        def deny_meta_update(action,table,column,database,trigger):
+            if action==journal.sqlite3.SQLITE_UPDATE and table=="meta":
+                return journal.sqlite3.SQLITE_DENY
+            return journal.sqlite3.SQLITE_OK
+        self.db.set_authorizer(deny_meta_update)
+        try:
+            with self.assertRaises(Exception):
+                binding.acknowledge(self.db,record["candidate_binding"])
+        finally:
+            self.db.set_authorizer(None)
+        self.assertEqual(self.db.execute("SELECT version FROM meta").fetchone()[0],1)
+        self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='binding_acks'").fetchone())
+        self.assertEqual(self.record(),record)
+        self.assertEqual(self.bind()["journal_ack"]["status"],"ACKNOWLEDGED")
+
 
 if __name__=="__main__":
     unittest.main()

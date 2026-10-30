@@ -2,7 +2,7 @@ be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METAD
 c4b7230239fea3efb5cccaba2bc5be629d0b909b2fec1018d7c4094244611eef  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
-3255db0bf1a7d45f10a1cd6cbbc5a939c912e65d663aafe7b3ab1da8c65a1f24  ./bin/candidate-binding.py
+cd69bed4b03eaf6576be0118e8a29f258786b3774d286d5f116a919cfe25bfab  ./bin/candidate-binding.py
 ff1f72d12091f046b2ba40b6c8054452ab9ce72df3d5b522456dd888a0514d92  ./bin/execution-observe.py
 9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
 978f11baea2e36e52246c1ba0636071b18db711a0ef9ba4c43b27f385efe05b6  ./bin/monitor-journal.py
@@ -38,7 +38,7 @@ e7f90569dd687d1e874ba8ca450318cb428d0e15192f36611a29aea2916a9d84  ./profiles/ope
 a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/opencode-v1/qa-reviewer.md
 636adbe9ffaf013d25cabcc6fc19fbc217a6082babd8ff2b2bac5c415ba04609  ./profiles/opencode-v1/security-reviewer.md
 527a64aa595c4b481a619fc266d884a8a27b2bc95b24af43f2734ee38316fd03  ./run.sh
-47e20bcdc10526d2340fcc8101c0f44f0886634b14b02d058ac2e5e6bba0177e  ./tests/candidate-binding-test.py
+dc4361388f4eab7c2880d6b13955684b7b654ecd2a777a4666820cec6681baba  ./tests/candidate-binding-test.py
 1d11ec71771ac03225f77b7fc030a9d1ebfaad15eb7691a15609b1ed890b50f3  ./tests/execution-observe-test.py
 0390fc1f963c1a8f925a275d20cdc3a466ce0481ac31d3f4eaafec974940b928  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh

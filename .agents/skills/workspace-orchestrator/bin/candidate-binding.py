@@ -89,6 +89,7 @@ def validate_binding(record: dict[str, Any]) -> None:
     if (binding["schema_version"] != 1 or type(binding["schema_version"]) is not int or request["task_id"] != record["task_id"]
             or request["incarnation"] != incarnation(record) or binding["request_sha256"] != digest(request)
             or record["kind"] != "review" or record["repo"] != candidate["repo"]
+            or record["head_sha"] != candidate["head"]
             or record["tracker_type"] != "pr" or record["tracker_number"] != candidate["number"]):
         raise Unverified("binding identity differs from task authority")
     observation = binding["observation"]
@@ -203,6 +204,20 @@ def acknowledge(db, binding):
     return {"status":"ACKNOWLEDGED", "authority":"task receipt, not journal row"}
 
 
+def durable_receipt(root: Path, task_id: str, state) -> None:
+    path = state.task_path(root,task_id)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def bind(root: Path, task_id: str, request: dict[str, Any], config_path: Path) -> dict[str, Any]:
     request_check(request)
     if task_id != request["task_id"]:
@@ -214,32 +229,24 @@ def bind(root: Path, task_id: str, request: dict[str, Any], config_path: Path) -
         prior = record.get("candidate_binding")
         if prior:
             _, result, _ = prepare(record,request,None,None)
+            durable_receipt(root,task_id,state)
         else:
             result = None
     lock = root/"monitor"/"poll.lock"
     held, db = False, None
     try:
-        monitor.acquire(lock)
+        try:
+            monitor.acquire(lock)
+        except Exception:
+            if result is not None:
+                return {"result":result,"journal_ack":{"status":"UNVERIFIED","reason":"poll lock unavailable"},"live_github_freshness":"UNVERIFIED"}
+            raise
         held = True
         with state.CoordinatorLock(root):
             record = state.read_task(root,task_id)
             if record.get("candidate_binding"):
                 _, result, _ = prepare(record,request,None,None)
-                # Re-establish the durability barrier after a prior uncertain
-                # replacement without changing revision or rewriting task bytes.
-                result = None
-                path = state.task_path(root,task_id)
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                directory = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-                result = record["candidate_binding"]["result"]
+                durable_receipt(root,task_id,state)
             else:
                 state.verify_reservations(root,record)
                 state.verify_review_identity(record)
@@ -247,6 +254,9 @@ def bind(root: Path, task_id: str, request: dict[str, Any], config_path: Path) -
                 if not (root/"monitor/history.sqlite3").is_file():
                     raise Unverified("existing observation journal required")
                 db = journal.open_store(root/"monitor",writable=True)
+                if db.execute("SELECT version FROM meta").fetchone()[0] == 2 and db.execute(
+                        "SELECT 1 FROM binding_acks WHERE incarnation=?", (incarnation(record),)).fetchone():
+                    raise Unverified("journal acknowledgment exists but authoritative task receipt is missing")
                 observation, as_of = resolve(db,request,config,journal)
                 if monitor.load_config(config_path) != config:
                     raise Refused("configuration changed during binding")
@@ -266,12 +276,6 @@ def bind(root: Path, task_id: str, request: dict[str, Any], config_path: Path) -
             except Exception:
                 ack = {"status":"UNVERIFIED", "reason":"journal acknowledgment unavailable; task receipt retained"}
             return {"result":result,"journal_ack":ack,"live_github_freshness":"UNVERIFIED"}
-    except (Refused, Unverified):
-        raise
-    except Exception:
-        if result is not None:
-            return {"result":result,"journal_ack":{"status":"UNVERIFIED","reason":"journal/lock unavailable"},"live_github_freshness":"UNVERIFIED"}
-        raise
     finally:
         if db is not None:
             db.close()
