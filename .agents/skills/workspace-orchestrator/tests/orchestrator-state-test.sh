@@ -100,7 +100,7 @@ import tempfile
 
 cmd = sys.argv[1]
 with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
-    root = Path(tmp)
+    root = Path(tmp).resolve()
     state, work = root / ".orchestrator", root / "work"
     work.mkdir()
     env = dict(os.environ, WORKSPACE_ORCHESTRATOR_ROOT=str(root),
