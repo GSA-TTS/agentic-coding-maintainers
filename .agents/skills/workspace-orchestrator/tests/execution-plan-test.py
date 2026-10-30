@@ -23,7 +23,7 @@ class PlanTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.repo = self.root / "source"
         self.repo.mkdir()
         self.state = self.root / "state"
@@ -59,8 +59,10 @@ class PlanTests(unittest.TestCase):
                         "payload": {"generation": 1, "obligations": obligations}}
 
     def git(self, *args):
+        env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         return subprocess.check_output(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                                        "-c", "commit.gpgsign=false", *args]).decode().strip()
+                                        "-c", "commit.gpgsign=false", *args],env=env).decode().strip()
 
     def admit(self):
         self.record, result, changed = plan.admit(self.record, self.request, self.state, self.packet, {self.sha: self.raw})

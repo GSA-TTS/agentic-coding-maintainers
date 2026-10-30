@@ -100,11 +100,18 @@ import tempfile
 
 cmd = sys.argv[1]
 with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
-    root = Path(tmp)
+    root = Path(tmp).resolve()
     state, work = root / ".orchestrator", root / "work"
     work.mkdir()
     env = dict(os.environ, WORKSPACE_ORCHESTRATOR_ROOT=str(root),
                ORCHESTRATOR_STATE_DIR=str(state), ORCHESTRATOR_TEST_MODE="1")
+    # Git invokes pre-push hooks with GIT_DIR/GIT_WORK_TREE pointing at the
+    # real task checkout. Neither fixture Git nor state CLI probes may inherit
+    # that identity: the inline test must remain confined to its temp repo.
+    for key in list(env):
+        if key.startswith("GIT_"):
+            del env[key]
+    git_env = dict(env, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
     task_id = "legacy"
     task = state / "tasks" / task_id / "task.json"
 
@@ -119,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
         return subprocess.check_output([
             "git", "-c", "user.name=Sandbox Fixture", "-c", "user.email=fixture@example.invalid",
             "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-C", str(work), *args,
-        ], text=True).strip()
+        ], env=git_env, text=True).strip()
 
     def saved():
         return json.loads(task.read_text())
