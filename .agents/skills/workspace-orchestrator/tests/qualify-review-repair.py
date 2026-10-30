@@ -142,8 +142,10 @@ def main():
         return tool(name, "qualification", "--request", path)
 
     def git(*arguments):
+        git_env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+        git_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         result = subprocess.run(["git", "-C", str(source), "-c", "user.name=Qualification", "-c", "user.email=qualification@example.invalid",
-                                 "-c", "commit.gpgsign=false", *arguments], capture_output=True, text=True, timeout=20, check=True)
+                                  "-c", "commit.gpgsign=false", *arguments], env=git_env, capture_output=True, text=True, timeout=20, check=True)
         return result.stdout.strip()
 
     def oracle(label):

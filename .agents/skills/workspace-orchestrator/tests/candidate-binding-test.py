@@ -24,7 +24,7 @@ class BindingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.state = self.root / "state"
         self.source = self.root / "source"
         self.source.mkdir()
@@ -53,8 +53,26 @@ class BindingTests(unittest.TestCase):
                          "generation":1,"head":self.head,"fingerprint":row["fingerprint"]}}
 
     def git(self,*args):
+        # These commits exist only in the temporary fixture repository. Keep
+        # host-managed hooks and global Git configuration on the real checkout;
+        # inheriting them here recursively re-enters the outer pre-push suite.
+        env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         return subprocess.check_output(["git","-C",str(self.source),"-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
-                                        "-c","commit.gpgsign=false",*args]).decode().strip()
+                                        "-c","commit.gpgsign=false",*args],env=env).decode().strip()
+
+    def test_fixture_commit_ignores_host_managed_hook(self):
+        hook_dir = self.root / "host-hooks"
+        hook_dir.mkdir()
+        sentinel = self.root / "hook-invoked"
+        hook = hook_dir / "pre-commit"
+        hook.write_text(f"#!/bin/sh\n: > '{sentinel}'\nexit 1\n")
+        hook.chmod(0o700)
+        global_config = self.root / "host-global.gitconfig"
+        global_config.write_text(f"[core]\n\thooksPath = {hook_dir}\n")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_config)}):
+            self.git("commit", "--allow-empty", "-qm", "fixture follow-up")
+        self.assertFalse(sentinel.exists())
 
     def command(self,*args):
         return subprocess.run([sys.executable,"-I","-B",str(BIN/"orchestrator-state.py"),*args],env=self.environment,capture_output=True,text=True)

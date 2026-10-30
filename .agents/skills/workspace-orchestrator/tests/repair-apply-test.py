@@ -3,6 +3,7 @@
 
 import base64
 import copy
+import errno
 import importlib.util
 import json
 import os
@@ -25,7 +26,7 @@ class RepairTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.repo = self.root / "candidate"
         self.repo.mkdir()
         self.state = self.root / "state"
@@ -53,10 +54,27 @@ class RepairTests(unittest.TestCase):
         self.record["revision"] += 1
         self.record.update(state="Implementing", worker={"owner": "owner", "token": "f" * 32}, leases={"global_slot": 0, "implementation_lane": 0})
         self.persisted = copy.deepcopy(self.record)
+        # Measure the fixture metadata independently. Do not skip on a
+        # production preflight refusal: that could hide a mode/link/owner
+        # regression unrelated to this host's xattr capability.
+        if not hasattr(os, "listxattr"):
+            self.skipTest("host Python cannot inspect xattrs")
+        for name in ("source.py", "test.py"):
+            with (self.repo / name).open("rb") as handle:
+                try:
+                    attrs = os.listxattr(handle.fileno())
+                except OSError as exc:
+                    if exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+                        self.skipTest(f"host does not support fixture xattrs: {exc}")
+                    raise
+                if attrs:
+                    self.skipTest(f"host added fixture xattrs: {attrs}")
 
     def git(self, *args):
+        env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         return subprocess.check_output(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                                        "-c", "commit.gpgsign=false", *args]).decode().strip()
+                                        "-c", "commit.gpgsign=false", *args], env=env).decode().strip()
 
     def request(self, two=False):
         replacements = [dict(path="source.py", before_sha256=repair.digest(b"result = 1\n"), after_base64=base64.b64encode(b"result = 2\n").decode())]
@@ -260,6 +278,32 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(self.record, before)
         repair.validate_retained(self.record, self.state)
         repair.load("orchestrator-state").require_repair_settled(self.record, root=self.state)
+
+
+class MetadataRefusalTests(unittest.TestCase):
+    def test_unmeasured_or_present_xattrs_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / "ordinary.py"
+            target.write_bytes(b"value = 1\n")
+            # Establish that every ordinary-file precondition passes before
+            # injecting an xattr failure, so refusals cannot be credited to
+            # an unrelated owner/mode/link/path check.
+            with mock.patch.object(repair.os, "listxattr", return_value=[], create=True):
+                self.assertEqual(repair.inspect_targets(root, [dict(path="ordinary.py")])[0]["sha256"],
+                                 repair.digest(b"value = 1\n"))
+            with mock.patch.object(repair.os, "listxattr", return_value=["user.fixture"], create=True):
+                with self.assertRaisesRegex(repair.Unverified, "metadata cannot be preserved"):
+                    repair.inspect_targets(root, [dict(path="ordinary.py")])
+            with mock.patch.dict(os.__dict__, {"listxattr": None}):
+                # `hasattr` must be false, not a callable returning an error.
+                del os.listxattr
+                with self.assertRaisesRegex(repair.Unverified, "metadata cannot be preserved"):
+                    repair.inspect_targets(root, [dict(path="ordinary.py")])
+            with mock.patch.object(repair.os, "listxattr", create=True) as unavailable:
+                unavailable.side_effect = OSError("cannot inspect metadata")
+                with self.assertRaisesRegex(repair.Unverified, "metadata cannot be preserved"):
+                    repair.inspect_targets(root, [dict(path="ordinary.py")])
 
 
 if __name__ == "__main__":

@@ -123,8 +123,11 @@ def read_target(parent: int, name: str, device: int) -> tuple[bytes, os.stat_res
                 or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) not in {0o600, 0o644}
                 or getattr(info, "st_flags", 0)):
             raise Unverified("target must be a single-link owned ordinary non-executable file")
-        if not hasattr(os, "listxattr") or os.listxattr(fd):
-            raise Unverified("target metadata cannot be preserved safely")
+        try:
+            if not hasattr(os, "listxattr") or os.listxattr(fd):
+                raise Unverified("target metadata cannot be preserved safely")
+        except OSError as exc:
+            raise Unverified("target metadata cannot be preserved safely") from exc
         data = handle.read(LIMIT + 1)
         if len(data) > LIMIT:
             raise Unverified("target exceeds repair bound")
