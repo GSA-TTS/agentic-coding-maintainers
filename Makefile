@@ -1,8 +1,9 @@
 SHELL := /bin/bash
 
-.PHONY: test check strict-check
+.PHONY: test check strict-check review-workspace-preflight-test
 
 test:
+	python3 -I -B tests/review-workspace-preflight-test.py
 	python3 -I -B tests/delivery-batch-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/candidate-binding-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/monitor-journal-test.py
@@ -39,6 +40,9 @@ test:
 	python3 -I -B tests/observe-review-requests-test.py
 	python3 -I -B tests/adapt-issues-capture-test.py
 	bash tests/operating-surface-test.sh
+
+review-workspace-preflight-test:
+	python3 -I -B tests/review-workspace-preflight-test.py
 
 check: test
 	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
