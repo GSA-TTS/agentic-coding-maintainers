@@ -67,11 +67,36 @@ assert d["validation"] == []
 assert d["findings"] == ["unresolved finding"]
 PY
 
-"$CMD" record production-task resolution 'unresolved finding' >/dev/null
-
 "$CMD" transition production-task Reviewing >/dev/null
 "$CMD" record production-task reviewer qa-reviewer --reviewed-sha "$head" >/dev/null
 "$CMD" record production-task validation 'production fixture passed' >/dev/null
+# Complete review fields alone cannot bypass the unresolved finding.
+set +e
+"$CMD" transition production-task 'Ready for human review' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 4 ]]
+shown="$("$CMD" show production-task)"
+revision="$(python3 -I -B -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<<"$shown")"
+finding_digest="$(python3 -I -B -c 'import hashlib,json,sys; print(hashlib.sha256(json.load(sys.stdin)["findings"][0].encode("utf-8")).hexdigest())' <<<"$shown")"
+"$CMD" resolve-finding production-task --finding-index 0 \
+  --finding-sha256 "$finding_digest" --head-sha "$head" \
+  --expected-revision "$revision" --disposition fixed --reviewer qa-reviewer \
+  --evidence 'Synthetic production fixture disposition; not an actual independent review' >/dev/null
+python3 - "$CONSUMER/.orchestrator/tasks/production-task/task.json" "$head" "$revision" "$finding_digest" <<'PY'
+import json, sys
+d=json.load(open(sys.argv[1]))
+assert d["findings"] == ["unresolved finding"]
+assert d["state"] == "Reviewing"
+assert d["revision"] == int(sys.argv[3]) + 1
+assert d["legacy_finding_dispositions"] == {"epoch": 0, "history": [{
+    "finding_index": 0, "finding_sha256": sys.argv[4], "head_sha": sys.argv[2],
+    "epoch": 0, "disposition": "fixed", "reviewer": "qa-reviewer",
+    "implementation_owner": "test-worker",
+    "evidence": "Synthetic production fixture disposition; not an actual independent review",
+    "revision": int(sys.argv[3]) + 1,
+}]}
+PY
 printf unreviewed > "$WORKTREE/untracked.txt"
 set +e
 "$CMD" transition production-task 'Ready for human review' >/dev/null 2>&1
@@ -84,6 +109,13 @@ rm "$WORKTREE/untracked.txt"
 "$CMD" record production-task finding 'late correctness finding' >/dev/null
 grep -q '"state": "Rework"' "$CONSUMER/.orchestrator/tasks/production-task/task.json"
 grep -q 'late correctness finding' "$CONSUMER/.orchestrator/tasks/production-task/task.json"
+python3 - "$CONSUMER/.orchestrator/tasks/production-task/task.json" <<'PY'
+import json, sys
+d=json.load(open(sys.argv[1]))
+assert d["findings"] == ["unresolved finding", "late correctness finding"]
+assert len(d["legacy_finding_dispositions"]["history"]) == 1
+assert d["legacy_finding_dispositions"]["history"][0]["finding_index"] == 0
+PY
 
 # A finding after the third rework blocks/escalates instead of overflowing the
 # schema and leaving the task falsely ready.

@@ -86,6 +86,196 @@ PY
 "$CMD" transition impl-a Done >/dev/null
 [[ ! -d "$STATE/scopes/$(printf 'repo:x:path:a' | shasum -a 256 | cut -d' ' -f1).lock" ]] || fail "Done task retained scope lock"
 
+# Legacy dispositions preserve findings, bind index/text/head/revision, and
+# fail closed on stale or malformed evidence. Run only in the approved sandbox.
+python3 -I -B - "$CMD" <<'PY'
+import copy
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+cmd = sys.argv[1]
+with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
+    root = Path(tmp)
+    state, work = root / ".orchestrator", root / "work"
+    work.mkdir()
+    env = dict(os.environ, WORKSPACE_ORCHESTRATOR_ROOT=str(root),
+               ORCHESTRATOR_STATE_DIR=str(state), ORCHESTRATOR_TEST_MODE="1")
+    task = state / "tasks" / "legacy" / "task.json"
+
+    def call(*args, rc=0):
+        result = subprocess.run([cmd, *args], env=env, text=True, capture_output=True)
+        assert result.returncode == rc, (args, result.returncode, result.stdout, result.stderr)
+        if rc == 3:
+            assert "UNVERIFIED" in result.stderr and json.loads(result.stdout)["state"] == "Unknown"
+        return json.loads(result.stdout) if rc == 0 else None
+
+    def git(*args):
+        return subprocess.check_output([
+            "git", "-c", "user.name=Sandbox Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-C", str(work), *args,
+        ], text=True).strip()
+
+    def saved():
+        return json.loads(task.read_text())
+
+    def put(record):
+        task.write_text(json.dumps(record))
+
+    git("init", "-b", "fixture")
+    git("commit", "--allow-empty", "-m", "fixture A")
+    a = git("rev-parse", "HEAD")
+    git("commit", "--allow-empty", "-m", "fixture B")
+    b = git("rev-parse", "HEAD")
+    git("reset", "--hard", a)
+    call("create", "legacy", "--kind", "implementation", "--scope", "legacy:findings",
+         "--repo", "fixture/legacy", "--branch", "fixture", "--worktree", str(work),
+         "--base-sha", a, "--head-sha", a)
+    call("claim", "legacy", "--owner", "implementer", "--pid", str(os.getpid()))
+    call("transition", "legacy", "Reviewing")
+    texts = ["first finding: café", "second finding"]
+    for text in texts:
+        call("record", "legacy", "finding", text)
+    call("record", "legacy", "reviewer", "qa", "--reviewed-sha", a)
+    call("record", "legacy", "validation", "fixture review evidence")
+    # Exercise production Git identity/cleanliness checks against the isolated
+    # fixture repository as well as CLI/state validation (still sandbox-only).
+    env.pop("ORCHESTRATOR_TEST_MODE")
+
+    def resolve(index=0, rc=0, **overrides):
+        options = {"finding-index": str(index),
+                   "finding-sha256": hashlib.sha256(texts[index].encode()).hexdigest(),
+                   "head-sha": saved()["head_sha"], "disposition": "fixed",
+                   "reviewer": "qa", "evidence": "fixture-only evidence, not a real review",
+                   "expected-revision": str(saved()["revision"])}
+        options.update(overrides)
+        args = ["resolve-finding", "legacy"]
+        for key, value in options.items():
+            if value is not None:
+                args.extend(["--" + key, value])
+        before = task.read_bytes()
+        result = call(*args, rc=rc)
+        if rc:
+            assert task.read_bytes() == before, "refused resolution mutated task"
+        return result
+
+    call("transition", "legacy", "Ready for human review", rc=4)
+    before = task.read_bytes()
+    call("record", "legacy", "resolution", texts[0], rc=2)
+    call("record", "legacy", "finding", texts[0], rc=4)
+    assert task.read_bytes() == before
+    resolve(rc=2, reviewer=None)
+    resolve(rc=2, reviewer=" ")
+    resolve(rc=2, evidence=" ")
+    resolve(rc=2, **{"expected-revision": None})
+    resolve(rc=4, reviewer="implementer")
+    resolve(rc=4, **{"expected-revision": "0"})
+    resolve(rc=4, **{"head-sha": b})
+    resolve(rc=4, **{"finding-sha256": "0" * 64})
+    resolve(rc=4, **{"finding-index": "2"})
+    resolve(rc=2, **{"finding-index": "-1"})
+    git("reset", "--hard", b)
+    resolve(rc=3)  # actual checkout head must match recorded head
+    git("reset", "--hard", a)
+    dirty = work / "untracked-fixture"
+    dirty.write_text("dirty checkout fixture")
+    resolve(rc=4)
+    dirty.unlink()
+    original = saved()
+    no_owner = copy.deepcopy(original)
+    no_owner["owner"] = ""
+    put(no_owner)
+    resolve(rc=4)
+    put(original)
+    resolve()
+    resolve(rc=4)  # duplicate at a current revision still refused
+    call("transition", "legacy", "Ready for human review", rc=4)
+    resolve(1, disposition="refuted")
+    resolved = saved()
+    assert resolved["findings"] == texts
+    history = resolved["legacy_finding_dispositions"]["history"]
+    assert [item["disposition"] for item in history] == ["fixed", "refuted"]
+
+    # Optional extension absent is legacy-compatible; present-but-broken is not.
+    malformed = [None, {}, {"epoch": False, "history": []}]
+    for field, value in (("finding_index", True), ("finding_sha256", "0" * 64),
+                         ("head_sha", b), ("reviewer", "implementer"), ("evidence", ""),
+                         ("revision", resolved["revision"] + 1), ("epoch", 1)):
+        ledger = copy.deepcopy(resolved["legacy_finding_dispositions"])
+        ledger["history"][0][field] = value
+        malformed.append(ledger)
+    duplicate = copy.deepcopy(resolved["legacy_finding_dispositions"])
+    duplicate["history"].append(copy.deepcopy(duplicate["history"][0]))
+    malformed.append(duplicate)
+    for ledger in malformed:
+        corrupt = copy.deepcopy(resolved)
+        corrupt["legacy_finding_dispositions"] = ledger
+        put(corrupt)
+        before = task.read_bytes()
+        call("show", "legacy", rc=3)
+        call("transition", "legacy", "Ready for human review", rc=3)
+        assert task.read_bytes() == before
+    put(resolved)
+    protocol = copy.deepcopy(resolved)
+    protocol["review_protocol"] = {}
+    put(protocol)
+    resolve(rc=4)
+    call("transition", "legacy", "Ready for human review", rc=4)
+    protocol["transition_intent"] = "Ready for human review"
+    put(protocol)
+    call("reconcile", "legacy", rc=3)
+    for field, value in (("validation", []), ("reviewers", []), ("reviewed_sha", b)):
+        incomplete = copy.deepcopy(resolved)
+        incomplete[field] = value
+        put(incomplete)
+        call("transition", "legacy", "Ready for human review", rc=4)
+    put(resolved)
+
+    # Crash recovery must use exactly the same all-findings-resolved gate.
+    pending = copy.deepcopy(resolved)
+    pending["transition_intent"] = "Ready for human review"
+    pending["legacy_finding_dispositions"]["history"].pop()
+    put(pending)
+    call("reconcile", "legacy", rc=3)
+    pending["legacy_finding_dispositions"] = copy.deepcopy(resolved["legacy_finding_dispositions"])
+    put(pending)
+    call("reconcile", "legacy")
+    assert saved()["state"] == "Ready for human review"
+    call("transition", "legacy", "Rework")
+    call("claim", "legacy", "--owner", "implementer", "--pid", str(os.getpid()))
+
+    # Real Git-backed A -> B -> A updates cannot resurrect A's dispositions.
+    for head in (b, a):
+        git("reset", "--hard", head)
+        call("update-head", "legacy", head)
+    assert saved()["legacy_finding_dispositions"] == {"epoch": 2, "history": history}
+    call("update-head", "legacy", a)  # same head does not advance epoch
+    assert saved()["legacy_finding_dispositions"]["epoch"] == 2
+    call("transition", "legacy", "Reviewing")
+    call("record", "legacy", "reviewer", "qa", "--reviewed-sha", a)
+    call("record", "legacy", "validation", "fresh fixture evidence")
+    call("transition", "legacy", "Ready for human review", rc=4)
+    resolve()
+    resolve(1, disposition="refuted")
+    assert saved()["legacy_finding_dispositions"]["history"][:2] == history
+    call("transition", "legacy", "Ready for human review")
+    call("record", "legacy", "finding", "new finding after readiness")
+    assert saved()["state"] == "Rework" and saved()["findings"] == texts + ["new finding after readiness"]
+    resolve(rc=4)  # wrong lifecycle state
+    call("claim", "legacy", "--owner", "replacement", "--pid", str(os.getpid()))
+    assert saved()["legacy_finding_dispositions"]["epoch"] == 3
+    call("transition", "legacy", "Reviewing")
+    call("record", "legacy", "reviewer", "qa", "--reviewed-sha", a)
+    call("record", "legacy", "validation", "replacement-owner fixture evidence")
+    call("transition", "legacy", "Ready for human review", rc=4)
+    call("transition", "legacy", "Cancelled")
+    resolve(rc=4)
+PY
+
 # Duplicate exact scope is a verified refusal, not UNKNOWN.
 mkdir "$WORK/scope-owner"
 "$CMD" create scope-owner --scope 'repo:x:path:shared' --kind review --worktree "$WORK/scope-owner" --head-sha "$REVIEW_SHA" >/dev/null
