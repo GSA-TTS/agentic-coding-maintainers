@@ -211,6 +211,12 @@ with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
     duplicate = copy.deepcopy(resolved["legacy_finding_dispositions"])
     duplicate["history"].append(copy.deepcopy(duplicate["history"][0]))
     malformed.append(duplicate)
+    # Historical entries no longer compare to the current owner, but a single
+    # epoch still cannot name two implementation owners at the same head.
+    conflicting_owner = copy.deepcopy(resolved["legacy_finding_dispositions"])
+    conflicting_owner["epoch"] = 1
+    conflicting_owner["history"][1]["implementation_owner"] = "different-owner"
+    malformed.append(conflicting_owner)
     for ledger in malformed:
         corrupt = copy.deepcopy(resolved)
         corrupt["legacy_finding_dispositions"] = ledger

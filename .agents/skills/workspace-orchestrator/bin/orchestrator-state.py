@@ -373,7 +373,7 @@ def validate_legacy_dispositions(record: dict[str, Any]) -> None:
             or not isinstance(ledger["history"], list) or len(ledger["history"]) > 1000):
         raise UnknownError("legacy finding dispositions are malformed")
     seen = set()
-    heads: dict[int, str] = {}
+    bindings: dict[int, tuple[str, str]] = {}
     previous_revision, previous_epoch = -1, -1
     for item in ledger["history"]:
         if not isinstance(item, dict) or set(item) != {
@@ -399,22 +399,28 @@ def validate_legacy_dispositions(record: dict[str, Any]) -> None:
                 raise UnknownError("legacy finding disposition identity/evidence is missing or invalid")
         if item["reviewer"] == item["implementation_owner"]:
             raise UnknownError("legacy finding disposition reviewer is the implementation owner")
-        if epoch in heads and heads[epoch] != item["head_sha"]:
-            raise UnknownError("legacy finding disposition epoch has conflicting heads")
+        binding = (item["head_sha"], item["implementation_owner"])
+        if epoch in bindings and bindings[epoch] != binding:
+            raise UnknownError("legacy finding disposition epoch has conflicting head/owner bindings")
         if epoch == ledger["epoch"] and (item["head_sha"] != record["head_sha"]
                 or item["implementation_owner"] != record["owner"]):
             raise UnknownError("current legacy finding disposition binding changed")
-        heads[epoch] = item["head_sha"]
+        bindings[epoch] = binding
         seen.add((epoch, index))
         previous_revision, previous_epoch = revision, epoch
 
 
-def unresolved_legacy_findings(record: dict[str, Any]) -> bool:
+def unresolved_legacy_finding_indices(record: dict[str, Any]) -> list[int]:
+    """Return unresolved indices from a validated task; validate claims before counting."""
     validate_legacy_dispositions(record)
     ledger = record.get("legacy_finding_dispositions", {"epoch": 0, "history": []})
     resolved = {item["finding_index"] for item in ledger["history"]
                 if item["epoch"] == ledger["epoch"]}
-    return any(index not in resolved for index in range(len(record["findings"])))
+    return [index for index in range(len(record["findings"])) if index not in resolved]
+
+
+def unresolved_legacy_findings(record: dict[str, Any]) -> bool:
+    return bool(unresolved_legacy_finding_indices(record))
 
 
 class CoordinatorLock:
