@@ -48,7 +48,7 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh
 6887fd021223b9c5dde70ef894ab7dd93656c8dd040f9301ef18aec641cfc2c5  ./tests/orchestrator-monitor-test.sh
 949e5f105af9557320681191f430ce815dae47d0594f1d353132ea7e4ea16bd2  ./tests/orchestrator-production-worktree-test.sh
-92f00ec2af454ae89b4a0b62a1de712dd4c930dce716c405795267ced9090e95  ./tests/orchestrator-state-test.sh
+d0f0406abc5c1023e991a1e87b276b32fc0adfa1ba138e9870af07023656c4dc  ./tests/orchestrator-state-test.sh
 44b418be91442b682941382c5fafb40c72834d4746a78f9609342e3becc31ff1  ./tests/qualification-driver-test.py
 af61a7580370ec893206153c7d1c16a7e855a6397c8d438758b8d99eafb58df1  ./tests/qualify-review-repair.py
 58f9999b7bceb6bd92dfe670b5947e55b667fe9aad39e9f85d43bd175af350d9  ./tests/repair-apply-test.py
