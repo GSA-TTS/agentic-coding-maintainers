@@ -372,7 +372,7 @@ def validate_legacy_dispositions(record: dict[str, Any]) -> None:
             or type(ledger["epoch"]) is not int or not 0 <= ledger["epoch"] <= record["revision"]
             or not isinstance(ledger["history"], list) or len(ledger["history"]) > 1000):
         raise UnknownError("legacy finding dispositions are malformed")
-    seen = set()
+    latest: dict[tuple[int, int], str] = {}
     bindings: dict[int, tuple[str, str]] = {}
     previous_revision, previous_epoch = -1, -1
     for item in ledger["history"]:
@@ -384,14 +384,16 @@ def validate_legacy_dispositions(record: dict[str, Any]) -> None:
         index, epoch, revision = item["finding_index"], item["epoch"], item["revision"]
         if (type(index) is not int or not 0 <= index < len(record["findings"])
                 or type(epoch) is not int or not previous_epoch <= epoch <= ledger["epoch"] or epoch < 0
-                or type(revision) is not int or revision < 1 or not previous_revision < revision <= record["revision"]
-                or (epoch, index) in seen):
+                or type(revision) is not int or revision < 1 or not previous_revision < revision <= record["revision"]):
             raise UnknownError("legacy finding disposition identity/order is invalid or duplicated")
         if item["finding_sha256"] != scope_key(record["findings"][index]):
             raise UnknownError("legacy finding text digest changed")
         if (not isinstance(item["head_sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", item["head_sha"])
-                or item["disposition"] not in ("fixed", "refuted")):
+                or item["disposition"] not in ("fixed", "refuted", "persists")):
             raise UnknownError("legacy finding disposition head/outcome is invalid")
+        prior = latest.get((epoch, index))
+        if prior is not None and (prior == "persists") == (item["disposition"] == "persists"):
+            raise UnknownError("legacy finding disposition duplicates an outcome without reopening/resolution")
         for field in ("reviewer", "implementation_owner", "evidence"):
             value = item[field]
             if (not isinstance(value, str) or not value or value != value.strip()
@@ -406,7 +408,7 @@ def validate_legacy_dispositions(record: dict[str, Any]) -> None:
                 or item["implementation_owner"] != record["owner"]):
             raise UnknownError("current legacy finding disposition binding changed")
         bindings[epoch] = binding
-        seen.add((epoch, index))
+        latest[(epoch, index)] = item["disposition"]
         previous_revision, previous_epoch = revision, epoch
 
 
@@ -414,9 +416,10 @@ def unresolved_legacy_finding_indices(record: dict[str, Any]) -> list[int]:
     """Return unresolved indices from a validated task; validate claims before counting."""
     validate_legacy_dispositions(record)
     ledger = record.get("legacy_finding_dispositions", {"epoch": 0, "history": []})
-    resolved = {item["finding_index"] for item in ledger["history"]
-                if item["epoch"] == ledger["epoch"]}
-    return [index for index in range(len(record["findings"])) if index not in resolved]
+    latest = {item["finding_index"]: item["disposition"] for item in ledger["history"]
+              if item["epoch"] == ledger["epoch"]}
+    return [index for index in range(len(record["findings"]))
+            if latest.get(index) not in ("fixed", "refuted")]
 
 
 def unresolved_legacy_findings(record: dict[str, Any]) -> bool:
@@ -821,6 +824,21 @@ def verify_review_identity(record: dict[str, Any]) -> None:
     verify_clean_checkout(worktree)
 
 
+def revoke_legacy_readiness(record: dict[str, Any]) -> None:
+    if record["state"] != "Ready for human review":
+        return
+    if record["rework_count"] >= 3:
+        record["state"] = "Blocked"
+        record["next_action"] = "three rework cycles reached; escalate new or persisting finding"
+    else:
+        record["state"] = "Rework"
+        record["rework_count"] += 1
+        record["next_action"] = "address new or persisting finding"
+    record["reviewers"] = []
+    record["validation"] = []
+    record["reviewed_sha"] = ""
+
+
 def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if args.category == "resolution":
         raise InputError("record resolution would erase history; use resolve-finding with exact binding and evidence")
@@ -835,20 +853,10 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         record = read_task(root, args.task_id)
         if record["state"] in TERMINAL:
             raise BusyError("terminal task evidence is immutable")
-        if args.category == "finding" and record["state"] == "Ready for human review":
-            if record["rework_count"] >= 3:
-                record["state"] = "Blocked"
-                record["next_action"] = "three rework cycles reached; escalate new finding"
-            else:
-                record["state"] = "Rework"
-                record["rework_count"] += 1
-            record["reviewers"] = []
-            record["validation"] = []
-            record["reviewed_sha"] = ""
-            if record["state"] == "Rework":
-                record["next_action"] = "address newly recorded finding"
         if args.category == "finding" and value in record[field]:
-            raise BusyError("finding is already recorded; original finding identity is retained")
+            raise BusyError("finding is already recorded; use resolve-finding --disposition persists to reopen")
+        if args.category == "finding":
+            revoke_legacy_readiness(record)
         if value not in record[field]:
             if len(record[field]) >= 200:
                 raise InputError(f"task field {field!r} is full")
@@ -876,8 +884,11 @@ def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, A
             raise UnknownError("reconcile unfinished transition before resolving findings")
         if "review_protocol" in record:
             raise BusyError("legacy resolution cannot supply review protocol evidence")
-        if record["kind"] != "implementation" or record["state"] != "Reviewing":
-            raise BusyError("legacy resolution requires an implementation task in Reviewing")
+        allowed_states = {"Reviewing"}
+        if args.disposition == "persists":
+            allowed_states.add("Ready for human review")
+        if record["kind"] not in {"implementation", "review"} or record["state"] not in allowed_states:
+            raise BusyError("legacy disposition requires an implementation/review task in Reviewing (or ready for persists)")
         if args.expected_revision != record["revision"] or args.head_sha != record["head_sha"]:
             raise BusyError("resolution revision/head is stale")
         if not record["owner"].strip() or reviewer == record["owner"].strip():
@@ -888,12 +899,16 @@ def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, A
         require_execution_stopped(record)
         require_repair_settled(record, root=root)
         if os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
-            verify_worktree_identity(record, require_head=True)
-            verify_clean_checkout(record["worktree"])
+            if record["kind"] == "review":
+                verify_review_identity(record)
+            else:
+                verify_worktree_identity(record, require_head=True)
+                verify_clean_checkout(record["worktree"])
         ledger = record.setdefault("legacy_finding_dispositions", {"epoch": 0, "history": []})
-        if any(item["epoch"] == ledger["epoch"] and item["finding_index"] == args.finding_index
-               for item in ledger["history"]):
-            raise BusyError("finding already has a disposition in the current epoch")
+        prior = next((item["disposition"] for item in reversed(ledger["history"])
+                      if item["epoch"] == ledger["epoch"] and item["finding_index"] == args.finding_index), None)
+        if prior is not None and (prior == "persists") == (args.disposition == "persists"):
+            raise BusyError("finding already has this outcome; requires an intervening reopening/resolution")
         if len(ledger["history"]) >= 1000:
             raise BusyError("legacy disposition history is full; checkpoint and escalate")
         ledger["history"].append({
@@ -902,6 +917,8 @@ def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, A
             "reviewer": reviewer, "implementation_owner": record["owner"], "evidence": evidence,
             "revision": record["revision"] + 1,
         })
+        if args.disposition == "persists":
+            revoke_legacy_readiness(record)
         write_task(root, record)
     return record
 
@@ -1190,7 +1207,7 @@ def parser() -> argparse.ArgumentParser:
     resolve.add_argument("--finding-index", type=int, required=True)
     resolve.add_argument("--finding-sha256", required=True)
     resolve.add_argument("--head-sha", required=True)
-    resolve.add_argument("--disposition", choices=("fixed", "refuted"), required=True)
+    resolve.add_argument("--disposition", choices=("fixed", "refuted", "persists"), required=True)
     resolve.add_argument("--reviewer", required=True)
     resolve.add_argument("--evidence", required=True)
     resolve.add_argument("--expected-revision", type=int, required=True)

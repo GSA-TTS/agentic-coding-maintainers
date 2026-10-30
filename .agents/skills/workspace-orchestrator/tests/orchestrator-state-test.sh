@@ -105,7 +105,8 @@ with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
     work.mkdir()
     env = dict(os.environ, WORKSPACE_ORCHESTRATOR_ROOT=str(root),
                ORCHESTRATOR_STATE_DIR=str(state), ORCHESTRATOR_TEST_MODE="1")
-    task = state / "tasks" / "legacy" / "task.json"
+    task_id = "legacy"
+    task = state / "tasks" / task_id / "task.json"
 
     def call(*args, rc=0):
         result = subprocess.run([cmd, *args], env=env, text=True, capture_output=True)
@@ -153,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
                    "reviewer": "qa", "evidence": "fixture-only evidence, not a real review",
                    "expected-revision": str(saved()["revision"])}
         options.update(overrides)
-        args = ["resolve-finding", "legacy"]
+        args = ["resolve-finding", task_id]
         for key, value in options.items():
             if value is not None:
                 args.extend(["--" + key, value])
@@ -280,6 +281,103 @@ with tempfile.TemporaryDirectory(prefix="legacy-dispositions-") as tmp:
     call("transition", "legacy", "Ready for human review", rc=4)
     call("transition", "legacy", "Cancelled")
     resolve(rc=4)
+
+    # Same-head reopenings retain exact identity/history and revoke readiness.
+    # Repeat with a detached review checkout: branch identity is deliberately
+    # irrelevant there, but actual HEAD and cleanliness must still be checked.
+    for kind in ("implementation", "review"):
+        task_id = "reopen-" + kind
+        task = state / "tasks" / task_id / "task.json"
+        if kind == "review":
+            git("checkout", "--detach", a)
+        call("create", task_id, "--kind", kind, "--scope", task_id,
+             "--repo", "fixture/legacy", "--branch", "fixture", "--worktree", str(work),
+             "--base-sha", a, "--head-sha", a)
+        call("claim", task_id, "--owner", "implementer", "--pid", str(os.getpid()))
+        call("transition", task_id, "Reviewing")
+        call("record", task_id, "finding", texts[0])
+        resolve(rc=4, reviewer="implementer")
+        resolve(rc=2, reviewer=" ")
+        resolve(rc=2, evidence=" ")
+        git("reset", "--hard", b)
+        resolve(rc=3)
+        git("reset", "--hard", a)
+        dirty.write_text("dirty review checkout fixture")
+        resolve(rc=4)
+        dirty.unlink()
+        resolve(disposition="persists")  # explicit initial unresolved evidence
+        resolve(rc=4, disposition="persists")
+        resolve(disposition="refuted")
+
+        def ready():
+            call("record", task_id, "reviewer", "qa", "--reviewed-sha", a)
+            call("record", task_id, "validation", "fresh sandbox fixture review")
+            call("transition", task_id, "Ready for human review")
+
+        ready()
+        for cycle, outcome in enumerate(("fixed", "refuted", "fixed"), 1):
+            before = saved()
+            retained = copy.deepcopy(before["legacy_finding_dispositions"]["history"])
+            resolve(rc=4, disposition="persists", **{"expected-revision": "0"})
+            resolve(rc=4, disposition="persists", **{"head-sha": b})
+            resolve(rc=4, disposition="persists", **{"finding-sha256": "0" * 64})
+            resolve(rc=4, disposition="persists", reviewer="implementer")
+            protocol = copy.deepcopy(before)
+            protocol["review_protocol"] = {}
+            put(protocol)
+            resolve(rc=4, disposition="persists")
+            put(before)
+            call("record", task_id, "finding", texts[0], rc=4)
+            assert saved() == before
+            reopened = resolve(disposition="persists")
+            ledger = reopened["legacy_finding_dispositions"]
+            assert reopened["state"] == "Rework" and reopened["rework_count"] == cycle
+            assert reopened["findings"] == [texts[0]] and ledger["epoch"] == 0
+            assert ledger["history"][:-1] == retained
+            event = ledger["history"][-1]
+            assert event["disposition"] == "persists" and event["head_sha"] == a
+            assert event["revision"] == before["revision"] + 1 == reopened["revision"]
+            assert event["reviewer"] == "qa" and event["implementation_owner"] == "implementer"
+            assert event["evidence"] and event["finding_index"] == 0
+            assert event["finding_sha256"] == hashlib.sha256(texts[0].encode()).hexdigest()
+            assert not reopened["reviewers"] and not reopened["validation"] and not reopened["reviewed_sha"]
+            call("claim", task_id, "--owner", "implementer", "--pid", str(os.getpid()))
+            call("transition", task_id, "Reviewing")
+            call("record", task_id, "reviewer", "qa", "--reviewed-sha", a)
+            call("record", task_id, "validation", "new evidence cannot hide persisting finding")
+            call("transition", task_id, "Ready for human review", rc=4)
+            resolve(rc=4, disposition="persists")
+            current = saved()
+            pending = copy.deepcopy(current)
+            pending["transition_intent"] = "Ready for human review"
+            put(pending)
+            call("reconcile", task_id, rc=3)
+            put(current)
+            # Increasing revision numbers alone cannot legalize duplicate events.
+            duplicate = copy.deepcopy(current)
+            duplicate["revision"] += 1
+            duplicate["legacy_finding_dispositions"]["history"].append(
+                dict(event, revision=duplicate["revision"]))
+            put(duplicate)
+            call("show", task_id, rc=3)
+            put(current)
+            resolve(disposition=outcome)
+            resolve(rc=4, disposition="refuted" if outcome == "fixed" else "fixed")
+            closed = saved()
+            duplicate = copy.deepcopy(closed)
+            duplicate["revision"] += 1
+            duplicate["legacy_finding_dispositions"]["history"].append(
+                dict(duplicate["legacy_finding_dispositions"]["history"][-1],
+                     revision=duplicate["revision"]))
+            put(duplicate)
+            call("show", task_id, rc=3)
+            put(closed)
+            ready()
+        resolve(disposition="persists")
+        assert saved()["state"] == "Blocked" and saved()["rework_count"] == 3
+        assert not saved()["reviewed_sha"] and not saved()["validation"] and not saved()["reviewers"]
+        call("transition", task_id, "Cancelled")
+        resolve(rc=4, disposition="persists")
 PY
 
 # Duplicate exact scope is a verified refusal, not UNKNOWN.
