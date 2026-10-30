@@ -10,7 +10,7 @@ dd73225fa0e5da3ab25836719ceb9c6bf01378c07487886b3e48393065a34ca8  ./bin/orchestr
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
 1d4aaba27c349d8f68e7a17f2476cf121eb74b6cacb6411c22c22200fe1dcebd  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
-6274e753fab20f49b73242d52e481fcab89fc09af6ee5105bff51e8d5ca4defb  ./bin/repair-apply.py
+758f61822f30af9c1d0b8013fcd8e98c2c8d1d48bb4500dd722580cb9d8942fe  ./bin/repair-apply.py
 66c78fbc691bf58a8d0f78aa83eb3b968c3eb4b0e08e90e2c7dfcd27fc1afeed  ./bin/repair-proposal.py
 735b4bea8bb8613c5f82d36d11cd7e0c81f1365436a7fee977cacac68a8634b7  ./bin/review-accept.py
 6a6fec36854d4c48b6f3b46573bbfa2c5c18ca997017dc63fdfe9d6ab0e5ec67  ./bin/review-collect.py
@@ -51,7 +51,7 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 4df729376543198c457aff77bae9d0ac891c7ccace3295b0df81e2900bb2a470  ./tests/orchestrator-state-test.sh
 c2b84e54f493617fb9d243bd1dd4de221bde5e646aeff2c99fc795a5d52cbdf6  ./tests/qualification-driver-test.py
 4922fb971a2448148065e117a6ee570b75e3be75e7c456331a3068c3912b46d7  ./tests/qualify-review-repair.py
-a29d14b081c2121f8ee9adc92eb728fc74e6f96d6f185f09b3cddb601f3a480a  ./tests/repair-apply-test.py
+39bfe1654d817928993f8fe9465ec48d3b2de9f0767fc7a9c74b9145e57a87e9  ./tests/repair-apply-test.py
 565f203ee8823aebde34914458a035de78e259ca271ebaaa928cbdf3bdc5526d  ./tests/repair-proposal-test.py
 b33175d22e6d32afa89d2d43d53f094d4b7c83ce8226ec5f95591df15259f522  ./tests/review-accept-test.py
 c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review-baseline.json

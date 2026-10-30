@@ -25,7 +25,7 @@ class RepairTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.repo = self.root / "candidate"
         self.repo.mkdir()
         self.state = self.root / "state"
@@ -53,6 +53,15 @@ class RepairTests(unittest.TestCase):
         self.record["revision"] += 1
         self.record.update(state="Implementing", worker={"owner": "owner", "token": "f" * 32}, leases={"global_slot": 0, "implementation_lane": 0})
         self.persisted = copy.deepcopy(self.record)
+        # The repair controller deliberately refuses a target when the host
+        # cannot inspect xattrs, or when the filesystem adds metadata to a
+        # newly created fixture. Do not turn that refusal into a false test
+        # failure (or mock it away): positive repair is measured on hosts
+        # where the same production preflight can actually run.
+        try:
+            repair.inspect_targets(self.repo, [dict(path="source.py"), dict(path="test.py")])
+        except repair.Unverified as exc:
+            self.skipTest(f"repair target preflight unavailable on this host: {exc}")
 
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -260,6 +269,21 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(self.record, before)
         repair.validate_retained(self.record, self.state)
         repair.load("orchestrator-state").require_repair_settled(self.record, root=self.state)
+
+
+class MetadataRefusalTests(unittest.TestCase):
+    def test_unmeasured_or_present_xattrs_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / "ordinary.py"
+            target.write_bytes(b"value = 1\n")
+            with mock.patch.object(repair.os, "listxattr", return_value=["user.fixture"], create=True):
+                with self.assertRaisesRegex(repair.Unverified, "metadata cannot be preserved"):
+                    repair.inspect_targets(root, [dict(path="ordinary.py")])
+            with mock.patch.object(repair.os, "listxattr", create=True) as unavailable:
+                unavailable.side_effect = OSError("cannot inspect metadata")
+                with self.assertRaisesRegex(repair.Unverified, "metadata cannot be preserved"):
+                    repair.inspect_targets(root, [dict(path="ordinary.py")])
 
 
 if __name__ == "__main__":
