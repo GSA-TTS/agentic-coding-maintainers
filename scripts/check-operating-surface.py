@@ -8,6 +8,10 @@ import sys
 from pathlib import Path
 
 
+class Mismatch(ValueError):
+    pass
+
+
 def read_regular(path: Path) -> bytes:
     if any(item.is_symlink() for item in (path, *path.parents)):
         raise ValueError("command path contains a symlink")
@@ -34,7 +38,7 @@ def check(root: Path) -> int:
         raise ValueError("required canonical orchestrate-start command missing")
     for source in sources:
         if read_regular(source) != read_regular(installed / source.name):
-            raise ValueError(f"installed command differs: {source.name}")
+            raise Mismatch(f"installed command differs: {source.name}")
     return len(sources)
 
 
@@ -46,6 +50,9 @@ def main() -> int:
         count = check(args.root.absolute())
         print(f"command parity: PASS ({count} canonical commands)")
         return 0
+    except Mismatch as exc:
+        print(f"command parity: FINDINGS ({exc})", file=sys.stderr)
+        return 1
     except (OSError, ValueError):
         print("command parity: UNVERIFIED (missing, mismatched or unsupported command input)", file=sys.stderr)
         return 3

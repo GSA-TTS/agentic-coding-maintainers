@@ -31,13 +31,14 @@ import importlib.util
 import pathlib
 import tempfile
 import sys
+import subprocess
 
 repo = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("surface", repo / "scripts/check-operating-surface.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 with tempfile.TemporaryDirectory() as directory:
-    root = pathlib.Path(directory)
+    root = pathlib.Path(directory).resolve()
     canonical = root / ".agents/skills/workspace-orchestrator/examples/commands"
     installed = root / ".opencode/commands"
     canonical.mkdir(parents=True)
@@ -57,8 +58,12 @@ with tempfile.TemporaryDirectory() as directory:
         raise AssertionError("unmeasured command parity passed")
     target.write_bytes(b"drifted\n")
     refused()
+    result = subprocess.run([sys.executable, "-I", "-B", str(repo / "scripts/check-operating-surface.py"), str(root)], capture_output=True, text=True)
+    assert result.returncode == 1 and "FINDINGS" in result.stderr and "orchestrate-start.md" in result.stderr
     target.unlink()
     refused()
+    result = subprocess.run([sys.executable, "-I", "-B", str(repo / "scripts/check-operating-surface.py"), str(root)], capture_output=True, text=True)
+    assert result.returncode == 3 and "UNVERIFIED" in result.stderr
     target.symlink_to(source)
     refused()
     target.unlink()
