@@ -107,5 +107,35 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(changed.returncode,3,changed.stdout+changed.stderr)
             self.assertEqual(json.loads(changed.stdout)["prs"][0]["status"],"UNVERIFIED")
 
+    def test_invalid_manifest_never_invokes_gh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            marker=root/"invoked"
+            stub=root/"gh"
+            stub.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n')
+            stub.chmod(0o700)
+            valid=json.dumps(self.manifest()).encode()
+            for payload in (valid+b" "*100001, valid+b" "*100001+b"trailing invalid", b"["*5000+b"]"*5000):
+                path=root/"batch.json"; path.write_bytes(payload)
+                result=subprocess.run([sys.executable,"-I","-B",str(Path(__file__).resolve().parents[1]/"scripts/delivery-batch.py"),str(path)],
+                    env={**os.environ,"PATH":str(root)+os.pathsep+os.environ["PATH"]},capture_output=True,text=True)
+                self.assertEqual(result.returncode,3,result.stderr)
+                self.assertEqual(json.loads(result.stdout)["status"],"UNVERIFIED")
+                self.assertNotIn("Traceback",result.stderr)
+                self.assertFalse(marker.exists())
+
+    def test_null_repository_identity_has_structured_cli_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            path=root/"batch.json"; path.write_text(json.dumps(self.manifest()))
+            stub=root/"gh"
+            stub.write_text(f'#!{sys.executable}\nprint(\'{{"nameWithOwner":null,"defaultBranchRef":{{"name":"main"}}}}\')\n')
+            stub.chmod(0o700)
+            result=subprocess.run([sys.executable,"-I","-B",str(Path(__file__).resolve().parents[1]/"scripts/delivery-batch.py"),str(path)],
+                env={**os.environ,"PATH":str(root)+os.pathsep+os.environ["PATH"]},capture_output=True,text=True)
+            self.assertEqual(result.returncode,3)
+            self.assertEqual(json.loads(result.stdout)["status"],"UNVERIFIED")
+            self.assertNotIn("Traceback",result.stderr)
+
 
 if __name__=="__main__": unittest.main()

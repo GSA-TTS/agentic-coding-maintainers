@@ -33,7 +33,10 @@ def unique(pairs):
 def decode(data: bytes):
     if not data or len(data) > MAX_BYTES:
         raise Unverified("missing or oversized JSON")
-    return json.loads(data, object_pairs_hook=unique, parse_constant=lambda _: (_ for _ in ()).throw(Unverified("nonfinite JSON")))
+    try:
+        return json.loads(data, object_pairs_hook=unique, parse_constant=lambda _: (_ for _ in ()).throw(Unverified("nonfinite JSON")))
+    except (RecursionError, ValueError) as exc:
+        raise Unverified("malformed or excessively nested JSON") from exc
 
 
 def object_fields(value, fields):
@@ -155,6 +158,7 @@ def report(manifest, snapshots, repository):
     order = validate_manifest(manifest)
     default = repository.get("defaultBranchRef", {}) if isinstance(repository, dict) else {}
     if (not isinstance(default, dict) or default.get("name") != manifest["default_branch"]
+            or not isinstance(repository.get("nameWithOwner"), str)
             or repository.get("nameWithOwner", "").casefold() != manifest["repo"].casefold()):
         raise Unverified("owning repository/default branch differs from batch")
     metadata = {item["number"]: item for item in manifest["prs"]}
@@ -207,9 +211,10 @@ def main():
         if not sys.flags.isolated or not sys.dont_write_bytecode:
             raise Unverified("invoke with python3 -I -B")
         with args.manifest.open("rb") as stream:
-            manifest = decode(stream.read(100_001))
-        if len(json.dumps(manifest).encode()) > 100_000:
+            raw = stream.read(100_001)
+        if len(raw) > 100_000:
             raise Unverified("manifest exceeds bound")
+        manifest = decode(raw)
         validate_manifest(manifest)
         deadline = time.monotonic()+120
         repo = read_gh(["repo","view",manifest["repo"],"--json","nameWithOwner,defaultBranchRef"],deadline)
