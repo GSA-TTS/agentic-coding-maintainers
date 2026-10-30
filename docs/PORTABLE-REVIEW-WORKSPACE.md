@@ -87,13 +87,20 @@ the parked automatic publication/App work is not a package prerequisite.
 
 ## State-preserving consumer upgrades
 
-`scripts/review-workspace-preflight.py --source CANONICAL --consumer WORKSPACE
+`sh scripts/review-workspace-preflight.sh --source CANONICAL --consumer WORKSPACE
 --expected-source FULL_SHA` is a read-only first check. It inventories the complete
 skill, selected profiles/commands and local state, reports drift and active-state
 signals, and verifies the pinned source. It does not import a controller, query
 processes, make network calls, migrate records, or prove quiescence. Its sanitized
 status is ALIGNED_STATIC, ACTION_REQUIRED or UNVERIFIED; no status means safe to
 overwrite a running controller.
+
+The wrapper selects `python3 -I -B` before interpreter startup. Direct Python use
+requires those flags and otherwise refuses before importing package helpers.
+Bounded monitor JSON and interrupted task-write markers are inspected; SQLite
+contents remain explicitly unmeasured and require separate coherent backup and
+validation. The preflight cannot replace actual controller-state compatibility
+tests, nor classify a stable but active worker as stopped.
 
 Upgrade in this order:
 

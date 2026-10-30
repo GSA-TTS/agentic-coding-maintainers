@@ -3,6 +3,7 @@ SHELL := /bin/bash
 .PHONY: test check strict-check review-workspace-preflight-test
 
 test:
+	sh -n scripts/review-workspace-preflight.sh
 	python3 -I -B tests/review-workspace-preflight-test.py
 	python3 -I -B tests/delivery-batch-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/candidate-binding-test.py
@@ -42,6 +43,7 @@ test:
 	bash tests/operating-surface-test.sh
 
 review-workspace-preflight-test:
+	sh -n scripts/review-workspace-preflight.sh
 	python3 -I -B tests/review-workspace-preflight-test.py
 
 check: test

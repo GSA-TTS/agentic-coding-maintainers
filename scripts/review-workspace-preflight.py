@@ -6,6 +6,15 @@ Only local Git object reads are subprocesses. No controller imports, runtime
 queries, recovery, locks, or writes. Run with python3 -I -B.
 """
 
+import sys
+
+# sys is built in. Refuse before loading any potentially shadowed stdlib module.
+# This cannot undo interpreter startup hooks; the shell wrapper supplies -I -B
+# before startup and is the supported entry point.
+if not sys.flags.isolated or not sys.dont_write_bytecode:
+    sys.stdout.write('{"status":"UNVERIFIED","unverified_codes":["isolated_no_bytecode_required"]}\n')
+    raise SystemExit(3)
+
 import argparse
 import hashlib
 import json
@@ -16,7 +25,7 @@ import shutil
 import stat
 import subprocess
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -35,6 +44,8 @@ MAX_DEPTH = 16
 STATES = {"Ready", "Claimed", "Implementing", "Reviewing", "Rework",
           "Ready for human review", "Blocked", "Cancelled", "Done"}
 TERMINAL = {"Cancelled", "Done"}
+MONITOR_JSON = {"checkpoint.json", "last-failure.json"}
+MONITOR_SQLITE = {"history.sqlite3", "history.sqlite3-wal", "history.sqlite3-shm", "history.sqlite3-journal"}
 
 
 class Unverified(Exception):
@@ -124,7 +135,7 @@ class Reader:
             raise Unverified("file_changed")
         return Entry("file", mode, hashlib.sha256(data).hexdigest(), stamp(before), bytes(data))
 
-    def tree(self, root, relative):
+    def tree(self, root, relative, missing_ok=False):
         result = {}
 
         def walk(fd, prefix, depth):
@@ -148,19 +159,26 @@ class Reader:
             if stamp(os.fstat(fd)) != stamp(before):
                 raise Unverified("directory_changed")
 
-        with directory(root, relative) as fd:
-            walk(fd, relative, 0)
+        with ExitStack() as stack:
+            # Suppress absence only while opening the requested tree root.
+            # A disappearing descendant means incomplete evidence, not absence.
+            try:
+                fd = stack.enter_context(directory(root, relative))
+            except FileNotFoundError:
+                if missing_ok:
+                    return {}
+                raise Unverified("required_tree_missing") from None
+            try:
+                walk(fd, relative, 0)
+            except FileNotFoundError:
+                raise Unverified("tree_descendant_disappeared") from None
         return result
 
 
 def package_snapshot(root, installed=False):
     reader, result = Reader(), {}
     for relative in PACKAGE:
-        try:
-            result.update(reader.tree(root, relative))
-        except FileNotFoundError:
-            if not installed:
-                raise Unverified("source_package_missing") from None
+        result.update(reader.tree(root, relative, missing_ok=installed))
     return result
 
 
@@ -178,16 +196,33 @@ def state_snapshot(root):
         result["state_inventory"] = tuple(names)
     for group in GROUPS:
         result.update(reader.tree(root, ".orchestrator/" + group))
-    # Monitor databases may be large and are outside this static check. Inspect
-    # its directory inventory and every lock subtree, never open a live DB.
+    # Monitor JSON is bounded evidence. Database contents remain unmeasured:
+    # record only no-follow metadata, never open a database or its sidecars.
     result["monitor_inventory"] = ()
     if "monitor" in names:
         with directory(root, ".orchestrator/monitor") as fd:
+            before = os.fstat(fd)
             monitor_names = reader.names(fd)
             result["monitor_inventory"] = tuple(monitor_names)
+            if set(monitor_names) - MONITOR_JSON - MONITOR_SQLITE - {"poll.lock"}:
+                raise Unverified("unrecognized_monitor_entry")
             for name in monitor_names:
-                if name.endswith(".lock"):
-                    result.update(reader.tree(root, ".orchestrator/monitor/" + name))
+                key = ".orchestrator/monitor/" + name
+                if name == "poll.lock":
+                    result.update(reader.tree(root, key))
+                elif name in MONITOR_JSON:
+                    item = reader.entry(fd, name)
+                    if item.kind != "file":
+                        raise Unverified("monitor_json_not_regular")
+                    object_json(item.data)
+                    result[key] = item
+                else:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode):
+                        raise Unverified("monitor_sqlite_not_regular")
+                    result[key] = Entry("unmeasured_sqlite", stat.S_IMODE(info.st_mode), "", stamp(info))
+            if stamp(os.fstat(fd)) != stamp(before):
+                raise Unverified("monitor_directory_changed")
     # Sync stages, previous installs, locks and markers must not disappear into
     # an ignored dot-directory. Only declared skill transaction names are read.
     with directory(root, SKILL_ROOT.rstrip("/")) as fd:
@@ -285,6 +320,9 @@ def inspect_state(snapshot, counts, actions):
         if not isinstance(entry, Entry) or not path.startswith(prefix):
             continue
         tail = path[len(prefix):].split("/")
+        if any(name.startswith(".new-") for name in tail):
+            actions.add("task_write_artifact_present")
+            continue
         if len(tail) == 1:
             if entry.kind != "directory":
                 raise Unverified("unexpected_task_layout")
@@ -336,6 +374,9 @@ def inspect_state(snapshot, counts, actions):
         actions.add("sync_transaction_present")
     if any(name.endswith(".lock") for name in snapshot["monitor_inventory"]):
         actions.add("monitor_lock_present")
+    counts["monitor_sqlite_unmeasured"] = len(set(snapshot["monitor_inventory"]) & MONITOR_SQLITE)
+    if counts["monitor_sqlite_unmeasured"]:
+        actions.add("monitor_sqlite_unmeasured")
     for path, entry in snapshot.items():
         if path.startswith(".orchestrator/monitor/") and isinstance(entry, Entry) and entry.kind == "file" and path.endswith(".json"):
             object_json(entry.data)
@@ -442,7 +483,8 @@ def verify_source(root, expected, source):
 
 def preflight(source_root, consumer_root, expected):
     counts = {key: 0 for key in ("source_files", "installed_files", "package_differences", "tasks",
-                               "schema_1_observed", "schema_2_observed", "reservation_entries", "sync_markers")}
+                               "schema_1_observed", "schema_2_observed", "reservation_entries", "sync_markers",
+                               "monitor_sqlite_unmeasured")}
     actions, errors = set(), set()
     try:
         if not re.fullmatch(r"[0-9a-f]{40}", expected):

@@ -280,6 +280,119 @@ class PreflightTest(unittest.TestCase):
         path.write_text("corrupt")
         self.assert_status("UNVERIFIED")
 
+    def test_monitor_json_bounded_regular_and_parsed(self):
+        for name in sorted(P.MONITOR_JSON):
+            with self.subTest(name=name):
+                path = put(self.consumer, ".orchestrator/monitor/" + name, '{"note":"PRIVATE-MONITOR"}')
+                report = self.assert_status("ALIGNED_STATIC")
+                self.assertNotIn("PRIVATE-MONITOR", json.dumps(report))
+                for content in ("{", "[]", "x" * (P.MAX_FILE + 1)):
+                    path.write_text(content)
+                    self.assert_status("UNVERIFIED")
+                path.unlink()
+                path.symlink_to(self.source / P.ORCHESTRATOR / "SKILL.md")
+                self.assert_status("UNVERIFIED")
+                path.unlink()
+
+    def test_monitor_same_name_json_change(self):
+        for name in sorted(P.MONITOR_JSON):
+            with self.subTest(name=name):
+                path = put(self.consumer, ".orchestrator/monitor/" + name, '{"revision":1}')
+                original = P.state_snapshot
+                calls = []
+
+                def changed(root):
+                    calls.append(root)
+                    if len(calls) == 2:
+                        path.write_text('{"revision":2}')
+                    return original(root)
+
+                with patch.object(P, "state_snapshot", side_effect=changed):
+                    report = self.assert_status("UNVERIFIED")
+                self.assertIn("state_changed_between_passes", report["unverified_codes"])
+                path.unlink()
+
+    def test_sqlite_is_explicitly_unmeasured_and_never_opened(self):
+        for name in sorted(P.MONITOR_SQLITE):
+            put(self.consumer, ".orchestrator/monitor/" + name, b"not parsed as a database")
+        real_open = os.open
+
+        def guarded(path, *args, **kwargs):
+            self.assertNotIn(os.path.basename(path), P.MONITOR_SQLITE)
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(os, "open", side_effect=guarded):
+            report = self.assert_status("ACTION_REQUIRED")
+        self.assertEqual(report["counts"]["monitor_sqlite_unmeasured"], len(P.MONITOR_SQLITE))
+        self.assertIn("monitor_sqlite_unmeasured", report["action_codes"])
+        path = self.consumer / ".orchestrator/monitor/history.sqlite3"
+        path.unlink()
+        path.symlink_to(self.source / P.ORCHESTRATOR / "SKILL.md")
+        self.assert_status("UNVERIFIED")
+
+    def test_unknown_monitor_entry_rejected(self):
+        put(self.consumer, ".orchestrator/monitor/unknown.json", "{}")
+        report = self.assert_status("UNVERIFIED")
+        self.assertIn("unrecognized_monitor_entry", report["unverified_codes"])
+
+    def test_task_atomic_write_artifacts(self):
+        self.write_task()
+        for relative in ("example/.new-pending", ".new-pending", "example/evidence/.new-pending"):
+            with self.subTest(relative=relative):
+                path = put(self.consumer, ".orchestrator/tasks/" + relative, "incomplete private write")
+                report = self.assert_status("ACTION_REQUIRED")
+                self.assertIn("task_write_artifact_present", report["action_codes"])
+                path.unlink()
+
+    def test_disappeared_descendant_not_missing_install(self):
+        original = P.Reader.entry
+
+        def disappeared(reader, fd, name):
+            if name == "SKILL.md":
+                raise FileNotFoundError("simulated descendant disappearance")
+            return original(reader, fd, name)
+
+        with patch.object(P.Reader, "entry", new=disappeared):
+            with self.assertRaisesRegex(P.Unverified, "tree_descendant_disappeared"):
+                P.package_snapshot(str(self.consumer), installed=True)
+
+    def isolated_entry_fixture(self):
+        # Copy only the entry points into a hostile import directory in the guest.
+        directory = self.root / "entry points"
+        directory.mkdir()
+        python = directory / SCRIPT.name
+        wrapper = directory / "review-workspace-preflight.sh"
+        shutil.copyfile(SCRIPT, python)
+        shutil.copyfile(SCRIPT.with_suffix(".sh"), wrapper)
+        put(directory, "json.py", 'raise RuntimeError("SHADOW_JSON_EXECUTED")\n')
+        shadow = self.root / "pythonpath"
+        put(shadow, "json.py", 'raise RuntimeError("PYTHONPATH_JSON_EXECUTED")\n')
+        env = dict(os.environ, PYTHONPATH=str(shadow))
+        args = ["--source", str(self.source), "--consumer", str(self.consumer), "--expected-source", self.sha]
+        return directory, python, wrapper, env, args
+
+    def test_wrapper_ignores_shadow_json_and_pythonpath(self):
+        directory, _, wrapper, env, args = self.isolated_entry_fixture()
+        result = subprocess.run(["sh", str(wrapper), *args], env=env, cwd=directory,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(json.loads(result.stdout)["status"], "ALIGNED_STATIC")
+        self.assertEqual(result.stderr, "")
+        self.assertFalse(list(directory.rglob("*.pyc")))
+        self.assertFalse(list((self.root / "pythonpath").rglob("*.pyc")))
+
+    def test_direct_python_refuses_missing_flags_before_json_import(self):
+        directory, python, _, env, args = self.isolated_entry_fixture()
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        for flags in ([], ["-B"], ["-I"]):
+            with self.subTest(flags=flags):
+                result = subprocess.run([sys.executable, *flags, str(python), *args], env=env,
+                                        cwd=directory, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 3, result.stderr + result.stdout)
+                self.assertEqual(json.loads(result.stdout)["unverified_codes"], ["isolated_no_bytecode_required"])
+                self.assertEqual(result.stderr, "")
+        self.assertFalse(list(directory.rglob("*.pyc")))
+
     def test_two_pass_task_content_change(self):
         self.write_task()
         original = P.state_snapshot
