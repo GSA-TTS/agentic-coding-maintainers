@@ -2,6 +2,13 @@
 
 Status: proposed implementation; remote capabilities inactive.
 
+Current delivery direction: automated GitHub App activation and automated review
+publication are parked. Continue bounded native OpenCode implementation and
+QA/security review, delivering main-based PRs under existing authority for human
+approval. See `OPERATOR-GUIDE.md` and the consuming workspace's delivery runbook.
+The future service stages below are not prerequisites for that work and do not
+claim an activated runtime or remote permission.
+
 ## Outcome and boundary
 
 Extend the existing coordinator with evidence-bound review and owner-directed

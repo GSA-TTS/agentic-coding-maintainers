@@ -14,7 +14,35 @@ local user, or a distributed scheduler.
 | Delegation depth | One level on installed OpenCode v1.19.0 |
 | Rework limit | 3 substantive cycles, then checkpoint/escalate |
 | Review gates | Independent QA; baseline security; independent security for trust-boundary changes |
-| GitHub writes | Task-branch push and fixed-head reviews permitted; an independent applicable CODEOWNER may merge the current approved head after all gates; PR closure requires per-action authorization |
+| GitHub writes | Use the consumer's recorded standing authority and narrower current steering; this guide grants no permissions |
+
+## Human-reviewed delivery
+
+The canonical OpenCode start command is `examples/commands/orchestrate-start.md`
+inside this skill. Install a byte-identical copy at the consumer workspace's
+`.opencode/commands/orchestrate-start.md`. Quit and restart OpenCode after command
+changes. The command directs native task dispatch; installing it does not prove
+that workers ran or that runtime capabilities are qualified.
+
+Within explicit delivery scope, continue admitted work and choose further bounded
+tasks using existing standing authority. Do not wait unconditionally for task
+selection or reauthorization of every covered write. Ask when scope, ownership or
+the intended action lacks authority. Current narrower operator steering controls;
+admission itself grants no remote capability.
+
+For human-reviewed delivery, keep automated GitHub App/review publication parked
+and retain native review evidence for human approval. Use multiple independently
+reviewable default-branch-based PRs with explicit integration order. A dependent
+implementation starts from refreshed main only after its prerequisite merges;
+do not stack PR bases on branches subject to auto-deletion. Continue independent
+batches while earlier PRs await human review.
+
+Reserve two of the six worker slots for QA/security, with no more than two
+implementation lanes. Monitors and specialists count too. Reduce implementation
+admission as review accumulates. Dispatch actual native OpenCode tasks and record
+task/session IDs and outcomes; specialist analysis supplements mandatory review.
+Unavailable dispatch is UNVERIFIED coverage, not a simulated review. A finished,
+reconciled worker can release its slot while its PR awaits human approval.
 
 ## Startup
 
@@ -125,17 +153,25 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
    ```
 3. Add an independent security review when credentials, identity, permissions,
    isolation, networking, execution, dependencies, or CI changed.
-4. Findings return to the implementation owner. Re-review the changed SHA.
+4. Objective findings return to the implementation owner for correction. Retain
+   evidenced fixed/refuted/persists dispositions. Re-review every materially
+   changed SHA; an implementer's self-review cannot supply independent coverage.
 5. After three failed substantive cycles, set `Blocked`, preserve evidence, and
    escalate while unrelated work continues.
-6. `Ready for human review` is not `Done`. The orchestrator may commit, push a
-   task-owned branch, and submit a review bound to the inspected commit after
-   rechecking the remote head; verify the submitted review's commit afterward.
+6. `Ready for human review` is not `Done`. Require completed applicable validation
+   and review at the current head, with no unresolved Blocker or Should-fix.
+   Failed, skipped, absent or pending required checks are not green. Candidate
+   tests/builds run only in the approved sandbox with observed transcripts.
+   The orchestrator may commit, push or publish only within recorded authority;
+   parked publication remains inactive. If a submitted review is authorized,
+   bind it to the inspected commit after rechecking the remote head and verify
+   the submitted review's commit afterward.
    Do not claim independent sign-off from an unverifiable or failed reviewer.
    Evaluate merge readiness after a clean approval. The independent applicable
    CODEOWNER who approved the current head may submit an eligible PR for merge
-   without a separate operator prompt, guarded by that reviewed head SHA. PR
-   closure without merge still requires per-action operator authorization. A
+   only under the consumer's applicable authority, guarded by that reviewed head
+   SHA. Human approval remains required in human-reviewed delivery mode. PR
+   closure requires its own applicable authorization. A
    queue entry is not a completed merge; check the owning repository for the
    terminal result.
 
