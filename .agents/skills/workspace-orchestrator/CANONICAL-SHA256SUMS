@@ -39,7 +39,7 @@ e7f90569dd687d1e874ba8ca450318cb428d0e15192f36611a29aea2916a9d84  ./profiles/ope
 a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/opencode-v1/qa-reviewer.md
 636adbe9ffaf013d25cabcc6fc19fbc217a6082babd8ff2b2bac5c415ba04609  ./profiles/opencode-v1/security-reviewer.md
 527a64aa595c4b481a619fc266d884a8a27b2bc95b24af43f2734ee38316fd03  ./run.sh
-4a1107e656a2cfe5702d02185d7b3b2988a206fdb3414682480c1e679e6ae774  ./tests/candidate-binding-test.py
+70b00951f73958520cb055b85cd61f65b2f84f1dd4390281c3ec1615b573e342  ./tests/candidate-binding-test.py
 1d11ec71771ac03225f77b7fc030a9d1ebfaad15eb7691a15609b1ed890b50f3  ./tests/execution-observe-test.py
 0390fc1f963c1a8f925a275d20cdc3a466ce0481ac31d3f4eaafec974940b928  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
