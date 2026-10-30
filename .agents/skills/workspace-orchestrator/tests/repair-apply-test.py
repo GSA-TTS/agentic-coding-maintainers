@@ -3,6 +3,7 @@
 
 import base64
 import copy
+import errno
 import importlib.util
 import json
 import os
@@ -63,7 +64,9 @@ class RepairTests(unittest.TestCase):
                 try:
                     attrs = os.listxattr(handle.fileno())
                 except OSError as exc:
-                    self.skipTest(f"host cannot inspect fixture xattrs: {exc}")
+                    if exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+                        self.skipTest(f"host does not support fixture xattrs: {exc}")
+                    raise
                 if attrs:
                     self.skipTest(f"host added fixture xattrs: {attrs}")
 
@@ -281,6 +284,12 @@ class MetadataRefusalTests(unittest.TestCase):
             root = Path(directory).resolve()
             target = root / "ordinary.py"
             target.write_bytes(b"value = 1\n")
+            # Establish that every ordinary-file precondition passes before
+            # injecting an xattr failure, so refusals cannot be credited to
+            # an unrelated owner/mode/link/path check.
+            with mock.patch.object(repair.os, "listxattr", return_value=[], create=True):
+                self.assertEqual(repair.inspect_targets(root, [dict(path="ordinary.py")])[0]["sha256"],
+                                 repair.digest(b"value = 1\n"))
             with mock.patch.object(repair.os, "listxattr", return_value=["user.fixture"], create=True):
                 with self.assertRaisesRegex(repair.Unverified, "metadata cannot be preserved"):
                     repair.inspect_targets(root, [dict(path="ordinary.py")])
