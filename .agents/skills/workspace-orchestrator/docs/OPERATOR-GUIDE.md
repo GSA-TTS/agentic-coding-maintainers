@@ -185,7 +185,7 @@ command; migrate callers to `resolve-finding` with the bindings below. Findings
 already deleted by the old command cannot be reconstructed from the task record.
 Preserve any separately retained review evidence; do not claim this migration
 retroactively restores that missing history.
-For an implementation task in `Reviewing`, record a fixed/refuted disposition:
+For an implementation or review task in `Reviewing`, record a fixed/refuted disposition:
 
 ```bash
 "$SKILL_DIR/run.sh" state show example-task
@@ -198,22 +198,38 @@ For an implementation task in `Reviewing`, record a fixed/refuted disposition:
   --evidence 'Reviewed fix at <sha>; retained review/transcript at <location>'
 ```
 
-Use `refuted` only with evidence that the finding does not apply. A persisting
-finding stays unresolved. The command requires a nonempty implementation owner,
-a distinct reviewer label, and nonempty evidence. It checks the actual assigned
-checkout/head and cleanliness in production; a stale revision, mismatched finding
-index/text digest, duplicate disposition in the current epoch, or missing identity
-is refused without changing the record. Refresh `show` before each disposition.
+Use `refuted` only with evidence that the finding does not apply. Use the same
+exact-bound command with `--disposition persists` and fresh evidence to reopen a
+fixed/refuted finding, including at the same head after readiness. It is accepted
+in `Reviewing` or `Ready for human review`; an initial `persists` records explicit
+unresolved evidence too. Reopening a ready task clears reviewers, validation and
+reviewed SHA and moves it to `Rework` (or `Blocked` at the three-cycle limit).
+Reclaim the task and return to `Reviewing` before recording a later fixed/refuted
+resolution and fresh readiness evidence.
+
+The command requires a nonempty task owner, a distinct reviewer label, and
+nonempty evidence. The retained `implementation_owner` field names that task
+owner for both kinds; for review tasks it is not a claim about the code author.
+Production implementation checks verify assigned branch, head and cleanliness;
+review tasks use `verify_review_identity` to verify checkout root, head and
+cleanliness, allowing detached HEAD. A stale revision, mismatched finding
+index/text digest or missing identity is refused without changing the record.
+Within each epoch, another fixed/refuted event requires an intervening `persists`,
+and another `persists` requires an intervening fixed/refuted event. Duplicate
+outcomes are refused, even with a newer revision. Refresh `show` before each event.
 
 `legacy_finding_dispositions.history` is append-only through the tool, including
 the owner, reviewer, evidence, disposition, finding digest/index, head, epoch and
-write revision. All findings need a current disposition before legacy readiness
+write revision. All findings need a latest current-epoch fixed/refuted disposition before legacy readiness
 or readiness recovery can succeed; the existing reviewer, validation, current-SHA
 and clean-checkout requirements still apply. `update-head` increments the epoch
 on each recorded head change, including A→B→A, preserving old history without
 reactivating it. Claiming under a different owner also invalidates dispositions.
 Unrecorded external changes are not an observed epoch: always update the recorded
-head as work changes. New findings still revoke readiness. Present but malformed
+head as work changes. New and reopened findings revoke readiness. The entire
+retained history is validated, including event order, alternating outcomes and
+epoch/head/owner bindings; counting uses the latest event for each finding in the
+current epoch. Present but malformed
 disposition data yields exit `3` / `UNVERIFIED`; it never falls back to legacy
 success. Missing extension data is compatible but resolves no findings. Invalid
 arguments exit `2`; stale/conflicting or disallowed claims exit `4`.
