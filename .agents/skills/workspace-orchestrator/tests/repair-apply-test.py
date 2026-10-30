@@ -71,8 +71,10 @@ class RepairTests(unittest.TestCase):
                     self.skipTest(f"host added fixture xattrs: {attrs}")
 
     def git(self, *args):
+        env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         return subprocess.check_output(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                                        "-c", "commit.gpgsign=false", *args]).decode().strip()
+                                        "-c", "commit.gpgsign=false", *args], env=env).decode().strip()
 
     def request(self, two=False):
         replacements = [dict(path="source.py", before_sha256=repair.digest(b"result = 1\n"), after_base64=base64.b64encode(b"result = 2\n").decode())]

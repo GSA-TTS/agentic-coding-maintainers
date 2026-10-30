@@ -61,6 +61,19 @@ class BindingTests(unittest.TestCase):
         return subprocess.check_output(["git","-C",str(self.source),"-c","user.name=Fixture","-c","user.email=fixture@example.invalid",
                                         "-c","commit.gpgsign=false",*args],env=env).decode().strip()
 
+    def test_fixture_commit_ignores_host_managed_hook(self):
+        hook_dir = self.root / "host-hooks"
+        hook_dir.mkdir()
+        sentinel = self.root / "hook-invoked"
+        hook = hook_dir / "pre-commit"
+        hook.write_text(f"#!/bin/sh\n: > '{sentinel}'\nexit 1\n")
+        hook.chmod(0o700)
+        global_config = self.root / "host-global.gitconfig"
+        global_config.write_text(f"[core]\n\thooksPath = {hook_dir}\n")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_config)}):
+            self.git("commit", "--allow-empty", "-qm", "fixture follow-up")
+        self.assertFalse(sentinel.exists())
+
     def command(self,*args):
         return subprocess.run([sys.executable,"-I","-B",str(BIN/"orchestrator-state.py"),*args],env=self.environment,capture_output=True,text=True)
 

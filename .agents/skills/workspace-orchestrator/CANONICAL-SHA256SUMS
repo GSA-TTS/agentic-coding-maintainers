@@ -39,7 +39,7 @@ e7f90569dd687d1e874ba8ca450318cb428d0e15192f36611a29aea2916a9d84  ./profiles/ope
 a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/opencode-v1/qa-reviewer.md
 636adbe9ffaf013d25cabcc6fc19fbc217a6082babd8ff2b2bac5c415ba04609  ./profiles/opencode-v1/security-reviewer.md
 527a64aa595c4b481a619fc266d884a8a27b2bc95b24af43f2734ee38316fd03  ./run.sh
-70b00951f73958520cb055b85cd61f65b2f84f1dd4390281c3ec1615b573e342  ./tests/candidate-binding-test.py
+10c4282def67c1f8fe05af3b5d5e1e27b10548f7531d44c667ce70cab16ab607  ./tests/candidate-binding-test.py
 1d11ec71771ac03225f77b7fc030a9d1ebfaad15eb7691a15609b1ed890b50f3  ./tests/execution-observe-test.py
 0390fc1f963c1a8f925a275d20cdc3a466ce0481ac31d3f4eaafec974940b928  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
@@ -51,7 +51,7 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 fcf625ab68ac3de5fab7941408c912392fad4b6938077070d5d791be5c14174d  ./tests/orchestrator-state-test.sh
 c2b84e54f493617fb9d243bd1dd4de221bde5e646aeff2c99fc795a5d52cbdf6  ./tests/qualification-driver-test.py
 4922fb971a2448148065e117a6ee570b75e3be75e7c456331a3068c3912b46d7  ./tests/qualify-review-repair.py
-ac92a5218b81f9bcbde3d74ffc8de38f87b3cab7b1f565bed34c23924db5810f  ./tests/repair-apply-test.py
+58f9999b7bceb6bd92dfe670b5947e55b667fe9aad39e9f85d43bd175af350d9  ./tests/repair-apply-test.py
 565f203ee8823aebde34914458a035de78e259ca271ebaaa928cbdf3bdc5526d  ./tests/repair-proposal-test.py
 b33175d22e6d32afa89d2d43d53f094d4b7c83ce8226ec5f95591df15259f522  ./tests/review-accept-test.py
 c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review-baseline.json
