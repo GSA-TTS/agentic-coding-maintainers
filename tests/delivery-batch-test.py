@@ -25,6 +25,7 @@ class BatchTests(unittest.TestCase):
 
     def snapshot(self,number):
         return {"number":number,"headRefOid":("a" if number==1 else "b")*40,"baseRefOid":"c"*40,
+                "reviewDecision":"REVIEW_REQUIRED","url":f"https://github.com/fixture/project/pull/{number}",
                 "baseRefName":"main","headRefName":f"work-{number}","isDraft":False,"state":"OPEN",
                 "statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}],"mergeCommit":None}
 
@@ -84,6 +85,38 @@ class BatchTests(unittest.TestCase):
         observations[1]["state"]="CLOSED"
         self.assertEqual(self.report(observations=observations)["prs"][1]["status"],"WAITING_FOR_PREDECESSOR")
         self.assertEqual(self.report(observations={2:self.snapshot(2)})["prs"][0]["status"],"UNVERIFIED")
+
+    def test_changes_requested_cannot_hide_behind_green_checks(self):
+        manifest=self.manifest(); manifest["prs"][0]["depends_on"]=[]
+        observations={n:self.snapshot(n) for n in (1,2)}
+        observations[1]["reviewDecision"]="CHANGES_REQUESTED"
+        result=self.report(manifest,observations)
+        row=result["prs"][0]
+        self.assertEqual(result["status"],"ATTENTION")
+        self.assertEqual(row["status"],"CHANGES_REQUESTED")
+        self.assertEqual(row["checks"],"GREEN_OBSERVED")
+        self.assertEqual(row["url"],"https://github.com/fixture/project/pull/1")
+        self.assertIn("Resolve reviewer findings",row["next_action"])
+        self.assertFalse(row["merge_authorized"])
+
+    def test_review_attention_survives_other_primary_blockers(self):
+        for changed,expected in (({"isDraft":True},"DRAFT"),({"headRefOid":"f"*40},"HEAD_CHANGED"),({"baseRefName":"feature"},"NONDEFAULT_BASE")):
+            snapshots={1:{**self.snapshot(1),"reviewDecision":"CHANGES_REQUESTED",**changed},2:self.snapshot(2)}
+            row=self.report(observations=snapshots)["prs"][0]
+            self.assertEqual(row["status"],expected)
+            self.assertEqual(row["review_attention"],"CHANGES_REQUESTED")
+
+    def test_invalid_reviews_and_urls_are_unverified(self):
+        for changed in ({"reviewDecision":False},{"reviewDecision":{}},{"reviewDecision":"unknown"},
+                        {"url":"https://github.com/other/project/pull/1"},{"url":"https://github.com/fixture/project/pull/2"},
+                        {"url":"https://attacker.invalid/fixture/project/pull/1"}):
+            row=self.report(observations={1:{**self.snapshot(1),**changed},2:self.snapshot(2)})["prs"][0]
+            self.assertEqual(row["status"],"UNVERIFIED")
+            self.assertNotIn("url",row)
+        for decision in (None,"","APPROVED","REVIEW_REQUIRED"):
+            row=self.report(observations={1:{**self.snapshot(1),"reviewDecision":decision},2:self.snapshot(2)})["prs"][0]
+            self.assertEqual(row["status"],"GREEN_OBSERVED")
+            self.assertFalse(row["merge_authorized"])
 
     def test_cli_double_reads_and_changed_snapshot_degrades(self):
         with tempfile.TemporaryDirectory() as directory:

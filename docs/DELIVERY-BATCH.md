@@ -30,6 +30,15 @@ the tool does not authenticate them, judge fixes, interpret native branch rules,
 or substitute check summaries for QA/security review. Human approval and live
 required-check/CODEOWNER/dependency acceptance remain separate requirements.
 
+The report preserves the fetched `reviewDecision` and validates the PR URL
+against its owning repository and number. Observed CHANGES_REQUESTED yields
+review attention even when all checks pass; the next action is owner fixes and
+fresh re-review. Other primary blockers (changed head, draft, dependency or
+non-default base) retain priority but do not hide that review attention. A
+GitHub APPROVED summary still supplies no merge authority or proof that all
+required independent reviews apply to the current head. Missing/malformed
+review fields or mismatched URLs are unavailable evidence, not clean reviews.
+
 ## Branch deletion and dependency safety
 
 Independent PRs should target the repository default branch and can merge in
