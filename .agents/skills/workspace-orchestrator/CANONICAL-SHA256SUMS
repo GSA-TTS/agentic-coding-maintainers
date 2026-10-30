@@ -51,7 +51,7 @@ a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/ope
 4df729376543198c457aff77bae9d0ac891c7ccace3295b0df81e2900bb2a470  ./tests/orchestrator-state-test.sh
 c2b84e54f493617fb9d243bd1dd4de221bde5e646aeff2c99fc795a5d52cbdf6  ./tests/qualification-driver-test.py
 4922fb971a2448148065e117a6ee570b75e3be75e7c456331a3068c3912b46d7  ./tests/qualify-review-repair.py
-39bfe1654d817928993f8fe9465ec48d3b2de9f0767fc7a9c74b9145e57a87e9  ./tests/repair-apply-test.py
+35fe8aae8921f1351b38748ef259751f545a52ea84ae262166803fc8a0fb361f  ./tests/repair-apply-test.py
 565f203ee8823aebde34914458a035de78e259ca271ebaaa928cbdf3bdc5526d  ./tests/repair-proposal-test.py
 b33175d22e6d32afa89d2d43d53f094d4b7c83ce8226ec5f95591df15259f522  ./tests/review-accept-test.py
 c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review-baseline.json
