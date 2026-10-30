@@ -359,7 +359,68 @@ def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[st
             module.validate_binding(raw)
         except Exception as exc:
             raise UnknownError("task candidate binding is invalid") from exc
+    validate_legacy_dispositions(raw)
     return raw
+
+
+def validate_legacy_dispositions(record: dict[str, Any]) -> None:
+    """Validate optional local claims, including retained, no-longer-current history."""
+    if "legacy_finding_dispositions" not in record:
+        return
+    ledger = record["legacy_finding_dispositions"]
+    if (not isinstance(ledger, dict) or set(ledger) != {"epoch", "history"}
+            or type(ledger["epoch"]) is not int or not 0 <= ledger["epoch"] <= record["revision"]
+            or not isinstance(ledger["history"], list) or len(ledger["history"]) > 1000):
+        raise UnknownError("legacy finding dispositions are malformed")
+    seen = set()
+    bindings: dict[int, tuple[str, str]] = {}
+    previous_revision, previous_epoch = -1, -1
+    for item in ledger["history"]:
+        if not isinstance(item, dict) or set(item) != {
+            "finding_index", "finding_sha256", "head_sha", "epoch", "disposition",
+            "reviewer", "implementation_owner", "evidence", "revision",
+        }:
+            raise UnknownError("legacy finding disposition entry is malformed")
+        index, epoch, revision = item["finding_index"], item["epoch"], item["revision"]
+        if (type(index) is not int or not 0 <= index < len(record["findings"])
+                or type(epoch) is not int or not previous_epoch <= epoch <= ledger["epoch"] or epoch < 0
+                or type(revision) is not int or revision < 1 or not previous_revision < revision <= record["revision"]
+                or (epoch, index) in seen):
+            raise UnknownError("legacy finding disposition identity/order is invalid or duplicated")
+        if item["finding_sha256"] != scope_key(record["findings"][index]):
+            raise UnknownError("legacy finding text digest changed")
+        if (not isinstance(item["head_sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", item["head_sha"])
+                or item["disposition"] not in ("fixed", "refuted")):
+            raise UnknownError("legacy finding disposition head/outcome is invalid")
+        for field in ("reviewer", "implementation_owner", "evidence"):
+            value = item[field]
+            if (not isinstance(value, str) or not value or value != value.strip()
+                    or len(value) > 500 or any(ord(c) < 32 for c in value)):
+                raise UnknownError("legacy finding disposition identity/evidence is missing or invalid")
+        if item["reviewer"] == item["implementation_owner"]:
+            raise UnknownError("legacy finding disposition reviewer is the implementation owner")
+        binding = (item["head_sha"], item["implementation_owner"])
+        if epoch in bindings and bindings[epoch] != binding:
+            raise UnknownError("legacy finding disposition epoch has conflicting head/owner bindings")
+        if epoch == ledger["epoch"] and (item["head_sha"] != record["head_sha"]
+                or item["implementation_owner"] != record["owner"]):
+            raise UnknownError("current legacy finding disposition binding changed")
+        bindings[epoch] = binding
+        seen.add((epoch, index))
+        previous_revision, previous_epoch = revision, epoch
+
+
+def unresolved_legacy_finding_indices(record: dict[str, Any]) -> list[int]:
+    """Return unresolved indices from a validated task; validate claims before counting."""
+    validate_legacy_dispositions(record)
+    ledger = record.get("legacy_finding_dispositions", {"epoch": 0, "history": []})
+    resolved = {item["finding_index"] for item in ledger["history"]
+                if item["epoch"] == ledger["epoch"]}
+    return [index for index in range(len(record["findings"])) if index not in resolved]
+
+
+def unresolved_legacy_findings(record: dict[str, Any]) -> bool:
+    return bool(unresolved_legacy_finding_indices(record))
 
 
 class CoordinatorLock:
@@ -632,6 +693,8 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if os.environ.get("ORCHESTRATOR_TEST_MODE") == "1" and os.environ.get("ORCHESTRATOR_TEST_FAIL_CLAIM_WRITE") == "1":
                 raise OSError("injected claim persistence failure")
             record["state"] = "Claimed"
+            if record["owner"] != owner and "legacy_finding_dispositions" in record:
+                record["legacy_finding_dispositions"]["epoch"] += 1
             record["owner"] = owner
             record["worker"] = worker
             record["leases"]["global_slot"] = slot
@@ -701,7 +764,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                 raise BusyError("reviewed SHA does not match task head SHA")
             if record["kind"] == "review" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
                 verify_review_identity(record)
-            if record["findings"]:
+            if unresolved_legacy_findings(record):
                 raise BusyError("readiness is blocked by unresolved findings")
             if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
                 verify_clean_checkout(record["worktree"])
@@ -759,12 +822,13 @@ def verify_review_identity(record: dict[str, Any]) -> None:
 
 
 def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
+    if args.category == "resolution":
+        raise InputError("record resolution would erase history; use resolve-finding with exact binding and evidence")
     field = {
         "reviewer": "reviewers",
         "finding": "findings",
         "validation": "validation",
         "dependency": "dependencies",
-        "resolution": "findings",
     }[args.category]
     value = safe_scope(args.value)
     with CoordinatorLock(root):
@@ -783,11 +847,9 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             record["reviewed_sha"] = ""
             if record["state"] == "Rework":
                 record["next_action"] = "address newly recorded finding"
-        if args.category == "resolution":
-            if value not in record["findings"]:
-                raise InputError("finding to resolve is not recorded")
-            record["findings"].remove(value)
-        elif value not in record[field]:
+        if args.category == "finding" and value in record[field]:
+            raise BusyError("finding is already recorded; original finding identity is retained")
+        if value not in record[field]:
             if len(record[field]) >= 200:
                 raise InputError(f"task field {field!r} is full")
             record[field].append(value)
@@ -797,6 +859,49 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if not re.fullmatch(r"[0-9a-f]{40}", args.reviewed_sha):
                 raise InputError("reviewed SHA must be full lowercase 40-hex")
             record["reviewed_sha"] = args.reviewed_sha
+        write_task(root, record)
+    return record
+
+
+def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, Any]:
+    reviewer, evidence = safe_scope(args.reviewer), safe_scope(args.evidence)
+    if (args.finding_index < 0 or args.expected_revision < 0
+            or not re.fullmatch(r"[0-9a-f]{64}", args.finding_sha256)
+            or not re.fullmatch(r"[0-9a-f]{40}", args.head_sha)):
+        raise InputError("resolution requires a nonnegative index/revision and full lowercase digests")
+    with CoordinatorLock(root):
+        record = read_task(root, args.task_id)
+        verify_reservations(root, record)
+        if record["transition_intent"]:
+            raise UnknownError("reconcile unfinished transition before resolving findings")
+        if "review_protocol" in record:
+            raise BusyError("legacy resolution cannot supply review protocol evidence")
+        if record["kind"] != "implementation" or record["state"] != "Reviewing":
+            raise BusyError("legacy resolution requires an implementation task in Reviewing")
+        if args.expected_revision != record["revision"] or args.head_sha != record["head_sha"]:
+            raise BusyError("resolution revision/head is stale")
+        if not record["owner"].strip() or reviewer == record["owner"].strip():
+            raise BusyError("resolution requires an owner and a distinct reviewer label")
+        if (args.finding_index >= len(record["findings"])
+                or scope_key(record["findings"][args.finding_index]) != args.finding_sha256):
+            raise BusyError("resolution finding index/text digest does not match")
+        require_execution_stopped(record)
+        require_repair_settled(record, root=root)
+        if os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
+            verify_worktree_identity(record, require_head=True)
+            verify_clean_checkout(record["worktree"])
+        ledger = record.setdefault("legacy_finding_dispositions", {"epoch": 0, "history": []})
+        if any(item["epoch"] == ledger["epoch"] and item["finding_index"] == args.finding_index
+               for item in ledger["history"]):
+            raise BusyError("finding already has a disposition in the current epoch")
+        if len(ledger["history"]) >= 1000:
+            raise BusyError("legacy disposition history is full; checkpoint and escalate")
+        ledger["history"].append({
+            "finding_index": args.finding_index, "finding_sha256": args.finding_sha256,
+            "head_sha": args.head_sha, "epoch": ledger["epoch"], "disposition": args.disposition,
+            "reviewer": reviewer, "implementation_owner": record["owner"], "evidence": evidence,
+            "revision": record["revision"] + 1,
+        })
         write_task(root, record)
     return record
 
@@ -829,6 +934,8 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if not isinstance(protocol, dict) or type(protocol.get("material_epoch")) is not int:
                 raise UnknownError("review protocol material epoch is malformed")
             protocol["material_epoch"] += 1
+        if record["head_sha"] != args.head_sha and "legacy_finding_dispositions" in record:
+            record["legacy_finding_dispositions"]["epoch"] += 1
         record["head_sha"] = args.head_sha
         record["reviewed_sha"] = ""
         record["reviewers"] = []
@@ -920,7 +1027,8 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
         # The earlier readiness check was performed before writing intent.
         # The worktree may have changed during a crash: never publish ready
         # solely by replaying the intent.
-        if record["reviewed_sha"] != record["head_sha"] or not record["reviewers"] or not record["validation"] or record["findings"]:
+        if (not record["head_sha"] or record["reviewed_sha"] != record["head_sha"]
+                or not record["reviewers"] or not record["validation"] or unresolved_legacy_findings(record)):
             raise UnknownError("cannot recover readiness: review evidence changed")
         if record["kind"] == "implementation" and os.environ.get("ORCHESTRATOR_TEST_MODE") != "1":
             verify_worktree_identity(record, require_head=True)
@@ -1077,6 +1185,15 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("value")
     record.add_argument("--next-action", default="")
     record.add_argument("--reviewed-sha", default="")
+    resolve = sub.add_parser("resolve-finding")
+    resolve.add_argument("task_id")
+    resolve.add_argument("--finding-index", type=int, required=True)
+    resolve.add_argument("--finding-sha256", required=True)
+    resolve.add_argument("--head-sha", required=True)
+    resolve.add_argument("--disposition", choices=("fixed", "refuted"), required=True)
+    resolve.add_argument("--reviewer", required=True)
+    resolve.add_argument("--evidence", required=True)
+    resolve.add_argument("--expected-revision", type=int, required=True)
     return p
 
 
@@ -1104,6 +1221,8 @@ def main() -> int:
             emit(command_record(args, root))
         elif args.command == "update-head":
             emit(command_update_head(args, root))
+        elif args.command == "resolve-finding":
+            emit(command_resolve_finding(args, root))
         return 0
     except InputError as exc:
         print(f"orchestrator: invalid input: {exc}", file=sys.stderr)

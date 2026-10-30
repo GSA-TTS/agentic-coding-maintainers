@@ -91,6 +91,73 @@ report="$(python3 -I -B "$EVAL" --workspace "$FIXTURE")"
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["coverage"]=="parsed_task_records" and d["task_count"]==1 and d["by_state"]=={"Ready":1}; assert d["cases"][0]["id"]=="eval-case" and "time in state" in d["unmeasured"] and "reservation/lease consistency" in d["unmeasured"]' <<<"$report"
 [[ ! -e "$ROOT/.agents/skills/workspace-orchestrator/bin/__pycache__" ]]
 
+# Retained findings are not an unresolved count. Exercise the scorecard CLI
+# with exact, synthetic disposition records; no real review is attested here.
+python3 -I -B - "$EVAL" "$FIXTURE" <<'PY'
+import copy
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+script, workspace = sys.argv[1:]
+path = Path(workspace) / ".orchestrator/tasks/eval-case/task.json"
+original = path.read_bytes()
+base = json.loads(original)
+base.update(kind="implementation", owner="fixture-owner", revision=10,
+            findings=["first retained finding", "second retained finding"])
+history = [{
+    "finding_index": index,
+    "finding_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    "head_sha": base["head_sha"], "epoch": 0,
+    "disposition": disposition, "reviewer": "fixture-qa",
+    "implementation_owner": base["owner"], "evidence": "synthetic scorecard fixture",
+    "revision": index + 1,
+} for index, (text, disposition) in enumerate(zip(base["findings"], ("fixed", "refuted")))]
+
+def score(record, expected=None):
+    path.write_text(json.dumps(record), encoding="utf-8")
+    result = subprocess.run([sys.executable, "-I", "-B", script, "--workspace", workspace],
+                            text=True, capture_output=True)
+    if expected is None:
+        assert result.returncode == 3, (result.stdout, result.stderr)
+        assert "UNVERIFIED" in result.stderr and not result.stdout
+    else:
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        report = json.loads(result.stdout)
+        assert report["coverage"] == "parsed_task_records" and report["task_count"] == 1
+        assert report["cases"][0]["unresolved_finding_count"] == expected, report
+    assert json.loads(path.read_text())["findings"] == base["findings"]
+
+try:
+    score(base, 2)  # no extension resolves nothing
+    partial = copy.deepcopy(base)
+    partial["legacy_finding_dispositions"] = {"epoch": 0, "history": history[:1]}
+    score(partial, 1)
+    full = copy.deepcopy(base)
+    full["legacy_finding_dispositions"] = {"epoch": 0, "history": history}
+    score(full, 0)
+    stale = copy.deepcopy(full)
+    stale["head_sha"] = "b" * 40
+    stale["legacy_finding_dispositions"]["epoch"] = 1
+    score(stale, 2)
+    stale["head_sha"] = base["head_sha"]  # A -> B -> A does not revive old claims
+    stale["legacy_finding_dispositions"]["epoch"] = 2
+    score(stale, 2)
+    stale["legacy_finding_dispositions"]["history"].append(dict(history[1], epoch=2, revision=3))
+    score(stale, 1)  # one current claim, one still historical
+    corrupt = copy.deepcopy(full)
+    corrupt["legacy_finding_dispositions"]["history"][0]["finding_sha256"] = "0" * 64
+    score(corrupt)
+    corrupt = copy.deepcopy(full)
+    corrupt["legacy_finding_dispositions"]["epoch"] = 1
+    corrupt["legacy_finding_dispositions"]["history"][1]["implementation_owner"] = "other-owner"
+    score(corrupt)  # historical owner conflict invalidates the entire scorecard
+finally:
+    path.write_bytes(original)
+PY
+
 # A malformed record invalidates the entire report; it cannot be dropped from
 # a denominator. Stage the fixture for operator disposal, never use rm.
 python3 -I -B - "$FIXTURE/.orchestrator/tasks/eval-case/task.json" <<'PY'

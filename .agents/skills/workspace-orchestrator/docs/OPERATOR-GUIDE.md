@@ -175,6 +175,57 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
    queue entry is not a completed merge; check the owning repository for the
    terminal result.
 
+### Legacy finding dispositions
+
+Legacy `state record TASK finding TEXT` entries are retained in their original
+order. Duplicate finding text is refused. The baseline provided
+`record TASK resolution TEXT`, which removed the matching finding string without
+retaining a disposition. This change intentionally refuses that destructive
+command; migrate callers to `resolve-finding` with the bindings below. Findings
+already deleted by the old command cannot be reconstructed from the task record.
+Preserve any separately retained review evidence; do not claim this migration
+retroactively restores that missing history.
+For an implementation task in `Reviewing`, record a fixed/refuted disposition:
+
+```bash
+"$SKILL_DIR/run.sh" state show example-task
+# Take REVISION, HEAD_SHA and the zero-based FINDING_INDEX from that record.
+# FINDING_SHA256 is SHA-256 of the exact finding's UTF-8 text, without a newline.
+"$SKILL_DIR/run.sh" state resolve-finding example-task \
+  --finding-index "$FINDING_INDEX" --finding-sha256 "$FINDING_SHA256" \
+  --head-sha "$HEAD_SHA" --expected-revision "$REVISION" \
+  --disposition fixed --reviewer qa-reviewer \
+  --evidence 'Reviewed fix at <sha>; retained review/transcript at <location>'
+```
+
+Use `refuted` only with evidence that the finding does not apply. A persisting
+finding stays unresolved. The command requires a nonempty implementation owner,
+a distinct reviewer label, and nonempty evidence. It checks the actual assigned
+checkout/head and cleanliness in production; a stale revision, mismatched finding
+index/text digest, duplicate disposition in the current epoch, or missing identity
+is refused without changing the record. Refresh `show` before each disposition.
+
+`legacy_finding_dispositions.history` is append-only through the tool, including
+the owner, reviewer, evidence, disposition, finding digest/index, head, epoch and
+write revision. All findings need a current disposition before legacy readiness
+or readiness recovery can succeed; the existing reviewer, validation, current-SHA
+and clean-checkout requirements still apply. `update-head` increments the epoch
+on each recorded head change, including A→B→A, preserving old history without
+reactivating it. Claiming under a different owner also invalidates dispositions.
+Unrecorded external changes are not an observed epoch: always update the recorded
+head as work changes. New findings still revoke readiness. Present but malformed
+disposition data yields exit `3` / `UNVERIFIED`; it never falls back to legacy
+success. Missing extension data is compatible but resolves no findings. Invalid
+arguments exit `2`; stale/conflicting or disallowed claims exit `4`.
+
+These are operator-supplied local claims, **not authenticated independent-review
+attestations**. A different label cannot prove a different person/session performed
+the review, and evidence text is not verified as a transcript. The orchestrator
+must retain actual independent review and sandbox validation evidence. The store
+is not tamper-proof against its owning user. Tasks with `review_protocol` remain
+ineligible for this command and retain their existing fail-closed readiness guard;
+legacy claims cannot bypass runtime corroboration or authorize GitHub approval.
+
 ## Shutdown and cleanup
 
 1. Stop monitor with `Ctrl-C`.

@@ -104,6 +104,7 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
             try:
                 source_schema = raw.get("schema_version") if isinstance(raw, dict) else None
                 record = module.validate_record(raw, name)
+                unresolved = module.unresolved_legacy_finding_indices(record)
             except Exception as exc:  # malformed field types may raise TypeError in the canonical validator
                 raise Unverified("a task record could not be validated") from exc
             if record["transition_intent"] is not None:
@@ -119,7 +120,7 @@ def snapshot(workspace: Path, as_of: datetime) -> dict:
                 # with a *default* zero. Without provenance, a zero cannot
                 # distinguish no rework from unknown pre-upgrade history.
                 "recorded_rework_count": record["rework_count"] if source_schema != 1 and record["rework_count"] > 0 else None,
-                "unresolved_finding_count": len(record["findings"]),
+                "unresolved_finding_count": len(unresolved),
             })
     return {
         "as_of": as_of.isoformat(), "coverage": "parsed_task_records" if results else "no_evidence",
