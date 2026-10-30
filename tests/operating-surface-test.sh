@@ -23,6 +23,61 @@ for target in "$agents"/*.md; do
 done
 pass=$((pass+1))
 
+# Canonical shipped command examples must match installed bytes. These tests
+# change only isolated scratch fixtures, never the real command copies.
+python3 -I -B "$ROOT/scripts/check-operating-surface.py" "$ROOT" || fail 'command parity failed'
+python3 -I -B - "$ROOT" <<'PY' || fail 'command parity refusal regressions'
+import importlib.util
+import pathlib
+import tempfile
+import sys
+import subprocess
+
+repo = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("surface", repo / "scripts/check-operating-surface.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as directory:
+    root = pathlib.Path(directory).resolve()
+    canonical = root / ".agents/skills/workspace-orchestrator/examples/commands"
+    installed = root / ".opencode/commands"
+    canonical.mkdir(parents=True)
+    installed.mkdir(parents=True)
+    source = canonical / "orchestrate-start.md"
+    target = installed / source.name
+    source.write_bytes(b"canonical command\n")
+    target.write_bytes(source.read_bytes())
+    assert module.check(root) == 1
+    (installed / "project-only.md").write_text("consumer extension\n")
+    assert module.check(root) == 1
+    def refused():
+        try:
+            module.check(root)
+        except (ValueError, OSError):
+            return
+        raise AssertionError("unmeasured command parity passed")
+    target.write_bytes(b"drifted\n")
+    refused()
+    result = subprocess.run([sys.executable, "-I", "-B", str(repo / "scripts/check-operating-surface.py"), str(root)], capture_output=True, text=True)
+    assert result.returncode == 1 and "FINDINGS" in result.stderr and "orchestrate-start.md" in result.stderr
+    target.unlink()
+    refused()
+    result = subprocess.run([sys.executable, "-I", "-B", str(repo / "scripts/check-operating-surface.py"), str(root)], capture_output=True, text=True)
+    assert result.returncode == 3 and "UNVERIFIED" in result.stderr
+    target.symlink_to(source)
+    refused()
+    target.unlink()
+    target.write_bytes(b"canonical command\n")
+    source.write_bytes(b"")
+    refused()
+    source.unlink()
+    refused()
+    source.symlink_to(target)
+    refused()
+print("command parity refusal cases: PASS")
+PY
+pass=$((pass+1))
+
 # Run a real dispatcher without network; verify it operates in this repository.
 "$ROOT/bin/orchestrator-state.sh" reconcile >/dev/null || fail 'state reconcile failed'
 pass=$((pass+1))
