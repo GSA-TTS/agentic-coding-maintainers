@@ -294,6 +294,20 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(self.record(),record)
         self.assertEqual(self.bind()["journal_ack"]["status"],"ACKNOWLEDGED")
 
+    def test_corrupted_ack_identity_degrades_mirror_not_task(self):
+        first=self.bind()
+        before=self.record()
+        for query, restore in (("UPDATE binding_acks SET task_id='wrong'", "UPDATE binding_acks SET task_id='review'"),
+                               ("UPDATE binding_acks SET operation_id='wrong'", "UPDATE binding_acks SET operation_id='bind-1'")):
+            self.db.execute(query)
+            self.db.commit()
+            result=self.bind()
+            self.assertEqual(result["result"],first["result"])
+            self.assertEqual(result["journal_ack"]["status"],"UNVERIFIED")
+            self.assertEqual(self.record(),before)
+            self.db.execute(restore)
+            self.db.commit()
+
 
 if __name__=="__main__":
     unittest.main()

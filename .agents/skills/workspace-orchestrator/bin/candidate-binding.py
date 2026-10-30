@@ -193,9 +193,9 @@ def acknowledge(db, binding):
         if version == 1:
             db.execute("CREATE TABLE binding_acks (incarnation TEXT PRIMARY KEY, task_id TEXT NOT NULL, operation_id TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
             db.execute("UPDATE meta SET version=2")
-        prior = db.execute("SELECT receipt,receipt_sha256 FROM binding_acks WHERE incarnation=?", (key,)).fetchone()
+        prior = db.execute("SELECT receipt,receipt_sha256,task_id,operation_id FROM binding_acks WHERE incarnation=?", (key,)).fetchone()
         if prior:
-            if prior[0] != receipt or prior[1] != digest(binding):
+            if prior[0] != receipt or prior[1] != digest(binding) or prior[2] != request["task_id"] or prior[3] != request["operation_id"]:
                 raise Unverified("journal acknowledgment conflicts with task authority")
         else:
             if db.execute("SELECT count(*) FROM binding_acks").fetchone()[0] >= 10_000:
