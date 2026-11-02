@@ -281,7 +281,9 @@ class ForegroundTests(unittest.TestCase):
         record["review_protocol"]["material_epoch"] += 1
         self.store_record(record)
         self.dispatch(self.request("accept-review"), expected=3)
+        self.assertEqual(self.dispatch()["next_action"], "FRESH_REVIEW_GENERATION_REQUIRED")
         self.assertEqual(self.dispatch(request), result)
+
         self.cli("state", "transition", "fixture", "Cancelled")
         before = self.task_path.read_bytes()
         self.assertEqual(self.dispatch(request), result)
@@ -294,6 +296,24 @@ class ForegroundTests(unittest.TestCase):
         self.store_record(terminal)
         self.dispatch(self.request("pause", "done-pause"), expected=3)
         self.assertEqual(self.dispatch(request), result)
+
+    def test_blocked_pause_requires_readmission_not_resume(self):
+        self.dispatch(self.request("pause"))
+        self.cli("state", "transition", "fixture", "Blocked", "--reason", "operator pause of task")
+        self.assertEqual(self.dispatch()["next_action"], "COORDINATOR_READMISSION_REQUIRED")
+        self.dispatch(self.request("resume"), expected=3)
+
+    def test_missing_initialized_history_never_clears_pause(self):
+        self.dispatch(self.request("pause"))
+        record = self.record()
+        del record["foreground_control"]
+        self.store_record(record)
+        self.dispatch(expected=3)
+        self.dispatch(self.request("collect-review"), expected=3, bundle=True)
+        record.pop("foreground_initialized")
+        record["foreground_initialized"] = None
+        self.store_record(record)
+        self.dispatch(expected=3)
 
     def test_prepare_only_already_rework_and_replay_keeps_files(self):
         self.dispatch(self.request("prepare-correction"), expected=3)

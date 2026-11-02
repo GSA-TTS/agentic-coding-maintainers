@@ -67,6 +67,10 @@ Pause is **dispatcher-scoped**: it refuses new collect/accept/prepare operations
 through this command. It does not terminate a worker, release capacity, change
 task lifecycle or disable other installed entrypoints. Resume only clears that
 gate, after current identity/revision checks; it does not re-admit lost ownership.
+The first mutation sets `foreground_initialized` alongside the control ledger.
+Missing control history on an initialized task is UNVERIFIED, never implicitly
+resumed. This detects partial record loss, not coordinated rollback or deletion
+of both the initialization marker and its ledger.
 Missing workers, unresolved execution/repair or uncertain reservations cannot be
 automatically repaired by this dispatcher.
 

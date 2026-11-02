@@ -111,6 +111,11 @@ def validate_retained(record, root, c, e):
         dependency("review-accept").validate_retained(record, root)
     e.validate_collected_retention(record, root)
     dependency("repair-apply").validate_retained(record, root)
+    initialized = record.get("foreground_initialized")
+    if "foreground_initialized" in record and initialized is not True:
+        raise c.Unverified("invalid foreground initialization marker")
+    if ("foreground_control" in record) != (initialized is True):
+        raise c.Unverified("initialized foreground task lost control history")
     state = record.get("foreground_control", {"schema_version": 1, "paused": False, "receipts": {}})
     c.fields(state, {"schema_version", "paused", "receipts"})
     if (type(state["schema_version"]) is not int or state["schema_version"] != 1
@@ -154,6 +159,8 @@ def status(record, state):
     review = e.assess(record)
     if record["state"] in {"Done", "Cancelled"}:
         next_action = "TERMINAL_NO_DISPATCH"
+    elif record["state"] not in {"Claimed", "Implementing", "Reviewing", "Rework"}:
+        next_action = "COORDINATOR_READMISSION_REQUIRED"
     elif state["paused"]:
         next_action = "RESUME_FOREGROUND"
     elif record["state"] == "Rework":
@@ -163,11 +170,25 @@ def status(record, state):
     elif review.get("unresolved_findings"):
         next_action = "OWNER_REWORK_ADMISSION_REQUIRED"
     else:
-        generation = record.get("review_protocol", {}).get("generations", [])
-        pending = [item for item in record.get("runtime_collections", {}).get("collections", {})
-                   if generation and record["runtime_collections"]["admissions"][item]["generation"] == generation[-1]["number"]
-                   and record["runtime_collections"]["admissions"][item]["run_id"] not in generation[-1]["reports"]]
-        if pending:
+        generation = None
+        try:
+            generation = e.current(record)
+            if generation["owner"] != record["owner"]:
+                generation = None
+        except (e.Unverified, KeyError, TypeError):
+            pass
+        pending = []
+        for item in record.get("runtime_collections", {}).get("collections", {}):
+            admitted = record["runtime_collections"]["admissions"][item]
+            if (generation is not None and admitted["generation"] == generation["number"]
+                    and admitted["material_epoch"] == generation["material_epoch"]
+                    and admitted["owner"] == record["owner"]
+                    and admitted["assignment"] == generation["assignments"].get(admitted["run_id"])
+                    and admitted["run_id"] not in generation["reports"]):
+                pending.append(item)
+        if generation is None and "review_protocol" in record:
+            next_action = "FRESH_REVIEW_GENERATION_REQUIRED"
+        elif pending:
             next_action = "ACCEPT_COLLECTED_REVIEW"
         elif review.get("review_process") == "CLAIMS_COMPLETE":
             next_action = "HUMAN_HANDOFF_REQUIRES_VALIDATION_AND_LIVE_PR_CHECKS"
@@ -242,6 +263,7 @@ def dispatch(record, request, root, bundle=None):
         reference = {"table": "repair_protocol.corrections", "key": result["correction_id"]}
     else:
         result = {"status": "PAUSED" if action == "pause" else "RESUMED"}
+    updated["foreground_initialized"] = True
     control = updated.setdefault("foreground_control", copy.deepcopy(state))
     if action in {"pause", "resume"}:
         control["paused"] = action == "pause"
