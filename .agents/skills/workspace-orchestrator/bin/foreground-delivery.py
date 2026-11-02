@@ -324,7 +324,8 @@ def status(record, state):
             "incarnation": dependency("candidate-binding").incarnation(record),
             "revision": record["revision"], "task_state": record["state"],
             "paused": state["paused"], "pause_scope": "dispatcher-only",
-            "receipt_count": len(state["receipts"]), "next_action": next_action,
+            "receipt_count": len(state["receipts"]) + dependency("foreground-repair").count(record),
+            "next_action": next_action,
             "review_claims": review, "candidate_ready": False,
             "execution_credit": False, "delivery_credit": False}
 
@@ -370,9 +371,9 @@ def dispatch(record, request, root, bundle=None, persist=None):
     receipt_count = len(state["receipts"]) + repair_bridge.count(record)
     if receipt_count >= MAX_RECEIPTS:
         raise c.Unverified("foreground receipt budget exhausted")
-    if (action != "reconcile-owner-proposal" and repair_bridge.pending(record)
+    if (not repair_bridge.targets_pending(record, request) and repair_bridge.pending(record)
             and receipt_count >= MAX_RECEIPTS - 1):
-        raise c.Unverified("pending repair reserves the final receipt slot for reconciliation")
+        raise c.Unverified("final receipt slot requires reconciliation of a pending application")
     if state["paused"] and action not in {"pause", "resume", "reconcile-owner-proposal"}:
         raise c.Unverified("foreground dispatcher is paused")
     operation = request["operation_id"]

@@ -204,11 +204,24 @@ Receipt capacity
 is 64 across control, applications and reconciliations, with at most three
 applications; the task payload retains the existing 900KB bound. Application
 requires capacity for its entry and at least one explicit recovery observation,
-and reserves 20KB of the byte bound for completion before starting target writes.
-While a foreground application remains pending, every non-reconcile mutation
-must leave the final receipt slot available for reconciliation. At 63 entries,
-pause/resume refuse without changing task history; status and exact replay remain
-available, and reconciliation can use entry 64. Reconciliation observations still
+and projects concrete normal-completion and all possible recovery outcome records
+before the first intent persist or target write. These size-only projections use
+the shared coordinator serializer (sorted, indented, ASCII-escaped JSON plus
+newline, 1MB durable limit), as well as the 900KB canonical limit. They include
+writer revision/timestamp fields, final application metadata and a recovery
+request/receipt with maximum permitted operation-ID/revision lengths. They never
+pass synthetic phases through domain validators. Actual writes still validate
+their real retained history and both size bounds. This replaces the guessed
+20KB margin; later mutations can still consume byte capacity and must pass their
+own guards.
+Status `receipt_count` reports the combined control, application and reconciliation
+entry count used by admission checks.
+While a foreground application remains pending, every mutation except a
+reconciliation targeting a pending application must leave the final receipt slot
+available. At 63 entries, pause/resume and reconciliation of a completed older
+application refuse without changing task history; status and exact replay remain
+available, and reconciliation of the pending application can use entry 64.
+Reconciliation observations still
 consume the finite budget: a partial/unknown observation in the final slot fails
 closed on subsequent new requests rather than evicting history or granting
 automatic recovery.

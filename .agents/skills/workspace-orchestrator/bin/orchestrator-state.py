@@ -238,11 +238,17 @@ def scope_key(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def atomic_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+def serialized_json(data: dict[str, Any]) -> bytes:
+    """Exact durable representation, shared with pre-write budget projections."""
     encoded = (json.dumps(data, sort_keys=True, indent=2) + "\n").encode("utf-8")
     if len(encoded) > 1_000_000:
         raise InputError("record would exceed 1 MB")
+    return encoded
+
+
+def atomic_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    encoded = serialized_json(data)
     fd, tmp = tempfile.mkstemp(prefix=".new-", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)

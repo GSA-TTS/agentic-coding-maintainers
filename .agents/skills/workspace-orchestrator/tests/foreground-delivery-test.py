@@ -220,27 +220,28 @@ class ForegroundTests(unittest.TestCase):
 
     def owner_bundle(self, unable=False):
         admitted = self.record()["repair_proposals"][self.proposal_id]["admission"]
+        session = admitted["session"]
         final = json.dumps({"schema_version": 1, "status": "unable" if unable else "proposed",
                            "replacements": [] if unable else [{"path": path, "content": "result = 2\n"}
                                for path in admitted["sources"].values()],
                            "limitations": ["synthetic owner claims only"]})
-        events = [{"type": "tool_use", "sessionID": "ses_owner", "part": {"tool": "read", "state": {
+        events = [{"type": "tool_use", "sessionID": session, "part": {"tool": "read", "state": {
             "status": "completed", "input": {"path": "/candidate/source.py"},
             "output": "Read file /candidate/source.py, lines 1-1\n1: result = 1"}}},
-            {"type": "text", "sessionID": "ses_owner", "part": {"text": final}},
-            {"type": "step_finish", "sessionID": "ses_owner", "part": {"reason": "stop", "tokens": {"input": 100, "output": 50}}}]
+            {"type": "text", "sessionID": session, "part": {"text": final}},
+            {"type": "step_finish", "sessionID": session, "part": {"reason": "stop", "tokens": {"input": 100, "output": 50}}}]
         if "/candidate/second.py" in admitted["sources"]:
             second = copy.deepcopy(events[0])
             second["part"]["state"]["input"]["path"] = "/candidate/second.py"
             second["part"]["state"]["output"] = "Read file /candidate/second.py, lines 1-1\n1: result = 1"
             events.insert(1, second)
         transcript = b"".join(c.canonical(event) for event in events)
-        exported = c.canonical({"info": {"id": "ses_owner", "outcome": "succeeded", "agent": "owner",
+        exported = c.canonical({"info": {"id": session, "outcome": "succeeded", "agent": "owner",
             "model": {"providerID": "fixture", "id": "model"}, "tokens": {"input": 100, "output": 50}},
             "messages": [{"type": "assistant", "finish": "stop", "content": [{"type": "text", "text": final}]}]})
         receipt = {name: admitted[name] for name in ("model", "agent", "binary_sha256", "profile_sha256", "source_sha256")}
         receipt.update(role="owner-proposal", context_sha256=c.digest(c.canonical(admitted["context"])),
-                       sessions=["ses_owner"], status="REVIEW_OBSERVED", candidate_ready=False, execution_credit=False,
+                       sessions=[session], status="REVIEW_OBSERVED", candidate_ready=False, execution_credit=False,
                        transcript_sha256=c.digest(transcript), stderr_sha256=c.digest(b""), returncode=0,
                        export_returncode=0, export_failure=None, final_text=final)
         self.bundle = {"receipt.json": c.canonical(receipt), "transcript.jsonl": transcript,
@@ -1104,15 +1105,8 @@ class ForegroundTests(unittest.TestCase):
         self.dispatch(self.request("pause", request["operation_id"]), expected=3)
         self.assertEqual(self.repair_cli(request), result)
 
-    def test_repair_receipt_capacity_and_completion_byte_budget(self):
+    def test_repair_receipt_capacity(self):
         request = self.collected_two_file_proposal()
-        saved = self.record()
-        large = copy.deepcopy(saved)
-        large["next_action"] = "x" * 880_000
-        self.store_record(large)
-        self.dispatch(request, expected=3)
-        self.assertEqual(self.target_bytes(), [self.source] * 2)
-        self.store_record(saved)
         record = self.record()
         for index in range(delivery.MAX_RECEIPTS - len(record["foreground_control"]["receipts"])):
             if len(record["foreground_control"]["receipts"]) == 63:
@@ -1126,6 +1120,174 @@ class ForegroundTests(unittest.TestCase):
         self.dispatch(self.request("apply-owner-proposal"), expected=3)
         self.assertEqual(self.target_bytes(), [self.source] * 2)
 
+    def test_completion_budget_valid_record_refuses_before_persist_or_targets(self):
+        request = self.collected_two_file_proposal()
+        saved = self.record()
+        bridge = delivery.dependency("foreground-repair")
+        repair = bridge.load("repair-apply")
+        coordinator = bridge.load("orchestrator-state")
+        original_load = bridge.load
+        # Schema-valid padding does not change the correction's scope, owner,
+        # sources, worker or lifecycle. Dense extension metadata is legal under
+        # validate_record (unknown top-level fields are retained), and exposes
+        # indentation overhead that a single large string cannot demonstrate.
+        def padded(width, escaped):
+            value = copy.deepcopy(saved)
+            text = ("\x01" * width) if escaped else ("x" * width)
+            for field in ("dependencies", "findings", "reviewers", "validation"):
+                value[field] = [text] * 200
+            return value
+
+        for escaped in (False, True):
+            with self.subTest(escaped=escaped):
+                # Find a schema-valid input fitting both initial limits whose
+                # projected completion does not. The disappearing review arrays
+                # would shrink intent, so only stable arrays carry the final pad.
+                record = padded(1, escaped)
+                record["reviewers"], record["validation"] = [], []
+                # Extra schema-permitted metadata provides a nested JSON object,
+                # accepted by validate_record, to expose compact-vs-pretty sizing.
+                record["fixture_budget_metadata"] = ({str(i): ["x"] * 20 for i in range(1000)}
+                                                   if escaped else {})
+                target = 995_000 if escaped else 898_000
+                measure = (lambda v: len((json.dumps(v, sort_keys=True, indent=2) + "\n").encode())) if escaped else (lambda v: len(c.canonical(v)))
+                record["fixture_budget_metadata"]["padding"] = "x" * max(0, target - measure(record) - 20)
+                coordinator.validate_record(record, "fixture")
+                delivery.validate_retained(record, self.state_root, c, e)
+                self.assertLessEqual(len(c.canonical(record)), 900_000)
+                coordinator.serialized_json(record)
+                self.store_record(record)
+                before = self.task_path.read_bytes()
+                checked = []
+                original_budget = bridge.completion_budget
+                def budget(value, req, collector, writer):
+                    checked.append(True)
+                    return original_budget(value, req, collector, writer)
+                with mock.patch.object(bridge, "load", side_effect=lambda name:
+                        repair if name == "repair-apply" else original_load(name)), \
+                        mock.patch.object(bridge, "completion_budget", side_effect=budget), \
+                        mock.patch.object(repair, "replace_one") as replace, \
+                        mock.patch.object(coordinator, "write_task") as persist:
+                    expected_error = "exceed 1 MB" if escaped else "canonical completion budget"
+                    with self.assertRaisesRegex(Exception, expected_error):
+                        bridge.run(record, request, self.state_root,
+                                   lambda value: persist(self.state_root, value), record["foreground_control"])
+                    persist.assert_not_called()
+                    replace.assert_not_called()
+                self.assertEqual(checked, [True])
+                self.assertEqual(self.task_path.read_bytes(), before)
+                self.assertEqual(self.target_bytes(), [self.source] * 2)
+        self.store_record(saved)
+
+    def test_recovery_projection_fits_real_writer_fields_and_reserves_metadata(self):
+        request = self.collected_two_file_proposal()
+        _, writes, _ = self.injected_apply(request, "first-persist")
+        intent = writes[0]  # Real engine intent; first persistence failed, no writes.
+        bridge = delivery.dependency("foreground-repair")
+        coordinator = bridge.load("orchestrator-state")
+        projections = []
+        serialize = coordinator.serialized_json
+        with mock.patch.object(coordinator, "serialized_json", side_effect=lambda value:
+                projections.append(copy.deepcopy(value)) or serialize(value)):
+            bridge.completion_budget(intent, request, c, coordinator)
+        self.assertEqual(len(projections), 1 + len(bridge.OBSERVED))
+        self.assertTrue(all(value["updated_at"] == "9999-12-31T23:59:59.999999Z" for value in projections))
+        normal = len(serialize(projections[0]))
+        recovery = max(len(serialize(value)) for value in projections[1:])
+        self.assertGreater(recovery, normal)
+        # Add identical legal metadata to the real record and real engine intent.
+        # A dense array makes the durable bound bind first, not the compact one.
+        record = self.record()
+        for value in (record, intent):
+            value["fixture_budget_metadata"] = {str(i): ["x"] * 20 for i in range(1000)}
+        projections.clear()
+        with mock.patch.object(coordinator, "serialized_json", side_effect=lambda value:
+                projections.append(copy.deepcopy(value)) or serialize(value)):
+            bridge.completion_budget(intent, request, c, coordinator)
+        normal = len(serialize(projections[0]))
+        recovery = max(len(serialize(value)) for value in projections[1:])
+        padding = 1_000_000 - recovery + (recovery - normal) // 2 - 20
+        record["fixture_budget_metadata"]["padding"] = "x" * padding
+        intent["fixture_budget_metadata"]["padding"] = "x" * padding
+        coordinator.validate_record(record, "fixture")
+        delivery.validate_retained(record, self.state_root, c, e)
+        coordinator.serialized_json(record)
+        bridge.check_write_budget(intent, intent["revision"] + 1, c, coordinator)
+        projections.clear()
+        with mock.patch.object(coordinator, "serialized_json", side_effect=lambda value:
+                projections.append(copy.deepcopy(value)) or serialize(value)):
+            with self.assertRaisesRegex(coordinator.InputError, "exceed 1 MB"):
+                bridge.completion_budget(intent, request, c, coordinator)
+        # The normal completion fits; a concrete recovery outcome does not.
+        self.assertLessEqual(len(serialize(projections[0])), 1_000_000)
+        self.assertGreater(len(projections), 1)
+        self.assertLessEqual(len(c.canonical(projections[-1])), 900_000)
+        self.store_record(record)
+        before = self.task_path.read_bytes()
+        persist = mock.Mock()
+        repair = bridge.load("repair-apply")
+        original_load = bridge.load
+        with mock.patch.object(bridge, "load", side_effect=lambda name:
+                repair if name == "repair-apply" else original_load(name)), \
+                mock.patch.object(repair, "replace_one") as replace:
+            with self.assertRaisesRegex(Exception, "exceed 1 MB"):
+                bridge.run(record, request, self.state_root, persist, record["foreground_control"])
+            persist.assert_not_called()
+            replace.assert_not_called()
+        self.assertEqual(self.task_path.read_bytes(), before)
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+
+    def test_last_slot_cannot_reconcile_completed_application_instead_of_pending(self):
+        first = self.collected_two_file_proposal()
+        self.injected_apply(first, "before-first")
+        self.repair_cli(self.request("reconcile-owner-proposal", "settle-first"))
+        # Real second review/rework cycle at unchanged head is permitted after
+        # NOT_APPLIED_OBSERVED. Domain entrypoints create all history normally.
+        self.cli("state", "transition", "fixture", "Reviewing")
+        self.domain("review-evidence", "begin", {"base": self.head, "head": self.head,
+            "packet": c.digest(self.packet), "policy": "d" * 64,
+            "obligations": sorted(e.BASELINE)}, "begin-second")
+        self.domain("review-evidence", "assign", {"generation": 2, "run_id": "run-second",
+            "reviewer": "reviewer", "profile": "e" * 64, "obligations": sorted(e.BASELINE),
+            "adapter": "native-session", "session": "ses_second"}, "assign-second")
+        self.domain("review-evidence", "accept", {"generation": 2, "run_id": "run-second",
+            "packet": c.digest(self.packet), "policy": "d" * 64, "profile": "e" * 64,
+            "session": "ses_second", "coverage": dict.fromkeys(e.BASELINE, "reviewed"),
+            "findings": [], "dispositions": [{"finding_id": "F1", "resolution": "persists",
+                "counterevidence": "synthetic unchanged source"}], "limitations": ["claims only"]}, "accept-second")
+        self.cli("state", "transition", "fixture", "Rework")
+        self.correction_id = self.dispatch(self.request("prepare-correction", "prepare-second"))["domain_result"]["correction_id"]
+        self.cli("state", "claim", "fixture", "--owner", "writer", "--pid", str(os.getpid()))
+        self.cli("state", "transition", "fixture", "Implementing")
+        admission = self.request("admit-owner-proposal", "admit-second-owner")
+        admission["payload"]["session"] = "ses_owner_second"
+        self.proposal_id = self.dispatch(admission)["domain_result"]["admission_id"]
+        self.owner_bundle()
+        self.dispatch(self.request("collect-owner-proposal", "collect-second-owner"), bundle=True)
+        bridge = delivery.dependency("foreground-repair")
+        record = self.record()
+        while len(record["foreground_control"]["receipts"]) + bridge.count(record) < 62:
+            req = self.request("resume", "fill-second-" + str(record["revision"]))
+            req["expected_revision"] = record["revision"]
+            record, _, _ = delivery.dispatch(record, req, self.state_root)
+            record["revision"] += 1
+        self.store_record(record)
+        second = self.request("apply-owner-proposal", "apply-second")
+        self.injected_apply(second, "before-first")
+        coordinator = bridge.load("orchestrator-state")
+        coordinator.validate_record(self.record(), "fixture")
+        delivery.validate_retained(self.record(), self.state_root, c, e)
+        before = self.task_path.read_bytes()
+        self.assertEqual(self.dispatch()["receipt_count"], 63)
+        self.dispatch(self.request("reconcile-owner-proposal", "wrong-terminal-target"), expected=3)
+        self.assertEqual(self.task_path.read_bytes(), before)
+        observe = self.request("reconcile-owner-proposal", "settle-second")
+        observe["payload"]["apply_operation_id"] = "apply-second"
+        self.assertEqual(self.repair_cli(observe)["status"], "NOT_APPLIED_OBSERVED")
+        self.assertEqual(self.dispatch()["receipt_count"], 64)
+        self.assertFalse(bridge.pending(self.record()))
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+
     def test_pending_repair_keeps_last_slot_for_reconciliation(self):
         request = self.collected_two_file_proposal()
         record = self.record()
@@ -1137,6 +1299,7 @@ class ForegroundTests(unittest.TestCase):
         self.store_record(record)
         request = self.request("apply-owner-proposal")
         self.injected_apply(request, "before-first")  # 61 total receipts
+        self.assertEqual(self.dispatch()["receipt_count"], 61)
         self.dispatch(self.request("pause", "near-limit-pause"))  # 62
         self.dispatch(self.request("resume", "near-limit-resume"))  # 63
         saved = self.task_path.read_bytes()
@@ -1146,6 +1309,7 @@ class ForegroundTests(unittest.TestCase):
         self.assertEqual(self.repair_cli(request, expected=3)["status"], "REPAIR_RECONCILIATION_REQUIRED")
         result = self.repair_cli(self.request("reconcile-owner-proposal"))  # 64
         self.assertEqual(result["status"], "NOT_APPLIED_OBSERVED")
+        self.assertEqual(self.dispatch()["receipt_count"], 64)
         self.assertEqual(self.repair_cli(request)["status"], "NOT_APPLIED_OBSERVED")
         self.assertIsNotNone(self.record()["foreground_repairs"]["applications"][request["operation_id"]]["final"])
         self.assertEqual(self.target_bytes(), [self.source] * 2)

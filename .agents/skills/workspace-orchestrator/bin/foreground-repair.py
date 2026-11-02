@@ -38,6 +38,13 @@ def count(record):
     return len(state["applications"]) + len(state["reconciliations"])
 
 
+def targets_pending(record, request):
+    if request["action"] != "reconcile-owner-proposal":
+        return False
+    app = ledger(record)["applications"].get(request["payload"]["apply_operation_id"])
+    return app is not None and app["final"] is None
+
+
 def repair_id(request, c):
     return PREFIX + c.digest(c.canonical(request))
 
@@ -192,6 +199,64 @@ def validate(record, c, e):
     return events
 
 
+def check_write_budget(record, revision, c, coordinator):
+    # write_task replaces both fields. now() emits at most 27 ASCII characters
+    # (UTC ISO8601 with six microsecond digits); include its maximum wire size.
+    prospective = {**record, "revision": revision, "updated_at": "9999-12-31T23:59:59.999999Z"}
+    if revision >= 2**53 or len(c.canonical(prospective)) > 900_000:
+        raise c.Unverified("foreground repair canonical completion budget exhausted")
+    coordinator.serialized_json(prospective)  # same indent/escaping/newline/1MB gate as atomic_json
+
+
+def retain_reconciliation(value, request, c):
+    state = value["foreground_repairs"]
+    key = request["operation_id"]
+    app = state["applications"][request["payload"]["apply_operation_id"]]
+    item = value["repair_protocol"]["operations"][app["repair_operation_id"]]
+    end = value["revision"] + 1
+    state["reconciliations"][key] = {"request": copy.deepcopy(request),
+        "request_sha256": c.digest(c.canonical(request)), "resulting_revision": end,
+        "result": response(request, item, item["phase"], end)}
+    if item["phase"] in TERMINAL and app["final"] is None:
+        app["final"] = {"via": key, "resulting_revision": end,
+            "result": response(app["request"], item, item["phase"], end)}
+
+
+def completion_budget(value, request, c, coordinator):
+    """Size projections only: no domain validation on invented history or writes.
+
+    Project both normal second persist and each possible recovery receipt. Recovery
+    uses the maximum token/revision lengths allowed by the request contract. This
+    reserves concrete metadata, not a guessed byte margin. The live records still
+    pass their ordinary validators immediately before each actual persist.
+    """
+    key = request["operation_id"]
+    normal = copy.deepcopy(value)
+    app = normal["foreground_repairs"]["applications"][key]
+    item = normal["repair_protocol"]["operations"][app["repair_operation_id"]]
+    item["phase"] = "APPLIED_UNREVIEWED"
+    end = value["revision"] + 2
+    app["final"] = {"via": None, "resulting_revision": end,
+                    "result": response(request, item, item["phase"], end)}
+    check_write_budget(normal, end, c, coordinator)
+    # No request/token can exceed 80 ASCII characters. Select an unused maximal
+    # key so projection adds a receipt rather than replacing retained history.
+    operation = "r" * 80
+    while operation in ledger(value)["reconciliations"]:
+        operation = c.digest(operation.encode()) + operation[:16]
+    for phase in sorted(OBSERVED):
+        recovery = copy.deepcopy(value)
+        recovery["revision"] = 2**53 - 2
+        app = recovery["foreground_repairs"]["applications"][key]
+        recovery["repair_protocol"]["operations"][app["repair_operation_id"]]["phase"] = phase
+        reconcile_request = {"schema_version": 1, "task_id": request["task_id"],
+            "incarnation": request["incarnation"], "expected_revision": recovery["revision"],
+            "operation_id": operation, "action": "reconcile-owner-proposal",
+            "payload": {"apply_operation_id": key}}
+        retain_reconciliation(recovery, reconcile_request, c)
+        check_write_budget(recovery, recovery["revision"] + 1, c, coordinator)
+
+
 def run(record, request, root, persist, control):
     c, repair, proposal = [load(name) for name in ("review-collect", "repair-apply", "repair-proposal")]
     updated = copy.deepcopy(record)
@@ -200,12 +265,12 @@ def run(record, request, root, persist, control):
     state = updated.setdefault("foreground_repairs", copy.deepcopy(ledger(record)))
     key = request["operation_id"]
     fg, e = load("foreground-delivery"), load("review-evidence")
+    coordinator = load("orchestrator-state")
 
     def checked_persist(value):
         prospective = {**value, "revision": value["revision"] + 1}
         fg.validate_retained(prospective, root, c, e)
-        if prospective["revision"] >= 2**53 or len(c.canonical(prospective)) > 900_000:
-            raise c.Unverified("foreground repair revision or evidence budget exhausted")
+        check_write_budget(value, prospective["revision"], c, coordinator)
         persist(value)
 
     if request["action"] == "apply-owner-proposal":
@@ -237,9 +302,7 @@ def run(record, request, root, persist, control):
             item = value["repair_protocol"]["operations"][op]
             if calls == 1:
                 state["applications"][key] = app
-                # Reserve space/revision for the final receipt before any target write.
-                if len(c.canonical(value)) > 880_000 or value["revision"] + 2 >= 2**53:
-                    raise c.Unverified("insufficient durable completion budget")
+                completion_budget(value, request, c, coordinator)
             elif calls == 2 and item["phase"] == "APPLIED_UNREVIEWED":
                 app["final"] = {"via": None, "resulting_revision": value["revision"] + 1,
                     "result": response(request, item, item["phase"], value["revision"] + 1)}
@@ -265,14 +328,7 @@ def run(record, request, root, persist, control):
         if persisted:
             raise c.Unverified("unexpected reconciliation persist sequence")
         persisted = True
-        item = value["repair_protocol"]["operations"][op]
-        end = value["revision"] + 1
-        state["reconciliations"][key] = {"request": copy.deepcopy(request),
-            "request_sha256": c.digest(c.canonical(request)), "resulting_revision": end,
-            "result": response(request, item, item["phase"], end)}
-        if item["phase"] in TERMINAL and app["final"] is None:
-            app["final"] = {"via": key, "resulting_revision": end,
-                "result": response(app["request"], item, item["phase"], end)}
+        retain_reconciliation(value, request, c)
         checked_persist(value)
 
     repair.reconcile(updated, root, op, reconcile_persist)
