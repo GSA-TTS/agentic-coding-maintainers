@@ -4,7 +4,7 @@
 evaluation_fixture_stage() {
   local fixture=$1 outbox=$2 result=$3 checks=$4 destination size
   if [[ ! -d "$fixture" || -L "$fixture" || ! -f "$fixture/MANIFEST.md" || -L "$fixture/MANIFEST.md" ]]; then
-    echo 'UNVERIFIED: evaluation fixture or manifest is unavailable' >&2
+    builtin printf 'UNVERIFIED: evaluation fixture or manifest is unavailable; retained_active=%s; synthetic evaluator test data, operator disposal required\n' "$fixture" >&2
     return 3
   fi
   size="$(du -sk "$fixture")" || {
@@ -12,7 +12,7 @@ evaluation_fixture_stage() {
     return 3
   }
   if ! printf '\nExit: %s; checks: %s\nSize before staging (KiB and source): %s\n' "$result" "$checks" "$size" >> "$fixture/MANIFEST.md"; then
-    echo 'UNVERIFIED: evaluation fixture manifest could not be finalized' >&2
+    builtin printf 'UNVERIFIED: evaluation fixture manifest could not be finalized; retained_active=%s; synthetic evaluator test data, operator disposal required\n' "$fixture" >&2
     return 3
   fi
   destination="$(mktemp -d "$outbox/$(date -u +%Y-%m-%d)-evaluation.XXXXXX")" || {
@@ -33,6 +33,13 @@ evaluation_fixture_stage() {
     return 3
   fi
   printf 'evaluation_fixture_staged=%s\n' "$destination" >&2
+}
+
+evaluation_fixture_initial_manifest() {
+  if ! printf '# Evaluation test fixture\n\nCreated by tests/evaluate-workflow-test.sh. All contents are synthetic test data. No real maintainer evidence or user files are referenced. Safe for operator disposal.\n' > "$1/MANIFEST.md"; then
+    builtin printf 'UNVERIFIED: evaluation initial manifest failed; retained_active=%s; synthetic evaluator test data, operator disposal required\n' "$1" >&2
+    return 3
+  fi
 }
 
 evaluation_fixture_finish() {

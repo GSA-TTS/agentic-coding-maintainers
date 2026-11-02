@@ -39,13 +39,13 @@ source "$ROOT/tests/evaluation-fixture.sh"
 # Exercise the actual staging helper and exit trap in isolated subprocesses.
 # Faults are shell-local overrides or fixture-local metadata, not global hooks.
 REGRESSION="$(mktemp -d "$TEMP_ROOT/evaluation-disposal-check.XXXXXX")"
-printf '# Disposal regression fixtures\nAll items are synthetic, including retained failed staging attempts. Safe for operator disposal.\n' > "$REGRESSION/MANIFEST.md"
 FIXTURE="$REGRESSION"
 CHECKS="disposal_regressions"
 trap evaluation_fixture_finish EXIT
 trap 'exit 3' HUP INT TERM
+evaluation_fixture_initial_manifest "$REGRESSION" || exit 3
 mkdir "$REGRESSION/outbox"
-for mode in success abort manifest move lingering symlink; do
+for mode in success abort signal initial_manifest manifest move lingering symlink; do
   active="$REGRESSION/$mode"
   mkdir "$active"
   printf '# Synthetic evaluation fixture\nMode: %s. No user data. Safe for operator disposal.\n' "$mode" > "$active/MANIFEST.md"
@@ -58,6 +58,14 @@ for mode in success abort manifest move lingering symlink; do
     trap "exit 3" HUP INT TERM
     case "$MODE" in
       abort) exit 17 ;;
+      signal) kill -TERM "$$" ;;
+      initial_manifest)
+        # Preserve the initial file as evidence; force the first manifest write
+        # to fail on a fixture-local directory, never a user-selected path.
+        mv "$FIXTURE/MANIFEST.md" "$FIXTURE/prior-manifest.txt"
+        mkdir "$FIXTURE/MANIFEST.md"
+        evaluation_fixture_initial_manifest "$FIXTURE" || exit 3
+        ;;
       manifest) printf() { return 1; } ;;
       move) mv() { return 1; } ;;
       lingering) mv() { cp -R "$1" "$2"; } ;;
@@ -67,12 +75,16 @@ for mode in success abort manifest move lingering symlink; do
   rc=$?
   set -e
   case "$mode" in
-    success|abort)
+    success|abort|signal)
       expected=0; [[ "$mode" == abort ]] && expected=17
+      [[ "$mode" == signal ]] && expected=3
       [[ "$rc" -eq "$expected" && ! -e "$active" && ! -L "$active" && "$observed" == *evaluation_fixture_staged=* ]]
       ;;
     *) [[ "$rc" -eq 3 && "$observed" == *UNVERIFIED* && "$observed" != *evaluation_fixture_staged=* ]] ;;
   esac
+  if [[ "$mode" == initial_manifest ]]; then
+    [[ "$observed" == *"retained_active=$active"* && "$observed" == *"operator disposal required"* ]]
+  fi
   printf '%s\n' "$observed" > "$REGRESSION/$mode-result.txt"
 done
 # Staging the entire regression root preserves failed fixtures and any injected
@@ -85,7 +97,8 @@ FIXTURE="$(mktemp -d "$TEMP_ROOT/maintainer-evaluation-active.XXXXXX")"
 CHECKS="not_started"
 trap evaluation_fixture_finish EXIT
 trap 'exit 3' HUP INT TERM
-cat > "$FIXTURE/MANIFEST.md" <<'EOF'
+evaluation_fixture_initial_manifest "$FIXTURE" || exit 3
+cat >> "$FIXTURE/MANIFEST.md" <<'EOF'
 # Evaluation test fixture
 
 This fixture was created by `tests/evaluate-workflow-test.sh`. Depending
