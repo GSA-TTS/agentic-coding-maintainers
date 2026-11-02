@@ -22,7 +22,8 @@ PROPOSAL_ACTIONS = {"admit-owner-proposal", "collect-owner-proposal"}
 COLLECT_ACTIONS = {"collect-review", "collect-owner-proposal"}
 DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collected",
                   "admit-owner-proposal": "admit", "collect-owner-proposal": "collect"}
-ACTIONS = set(DOMAIN_ACTIONS) | {"prepare-correction", "pause", "resume", "status"}
+REPAIR_ACTIONS = {"apply-owner-proposal", "reconcile-owner-proposal"}
+ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | {"prepare-correction", "pause", "resume", "status"}
 PROPOSAL_FIELDS = {"correction_id", "session", "model", "agent", "binary_sha256",
                    "profile_sha256", "cwd", "sources"}
 
@@ -54,10 +55,13 @@ def validate_request(request, c, e):
     payload = request["payload"]
     expected = PROPOSAL_FIELDS if action == "admit-owner-proposal" else (
         {"admission_id", "artifact_sha256"} if action in COLLECT_ACTIONS else (
-        {"admission_id"} if action == "accept-review" else set()))
+        {"admission_id"} if action in {"accept-review", "apply-owner-proposal"} else (
+        {"apply_operation_id"} if action == "reconcile-owner-proposal" else set())))
     c.fields(payload, expected)
     if "admission_id" in expected:
         e.hash_value(payload["admission_id"])
+    if "apply_operation_id" in expected:
+        e.token(payload["apply_operation_id"])
     if "artifact_sha256" in expected:
         c.fields(payload["artifact_sha256"], set(c.ARTIFACTS))
         for value in payload["artifact_sha256"].values():
@@ -145,9 +149,15 @@ def validate_retained(record, root, c, e):
     # Validate artifacts even when there has not yet been an accepted report.
     if "review_protocol" in record:
         e.validate_protocol(record)
-    if "runtime_collections" in record or "collected_review_acceptances" in record:
+    has_collected = any("collection_origin" in report
+                        for generation in record.get("review_protocol", {}).get("generations", [])
+                        for report in generation["reports"].values())
+    if "runtime_collections" in record or "collected_review_acceptances" in record or has_collected:
         dependency("review-accept").validate_retained(record, root)
-    e.validate_collected_retention(record, root)
+    # Retention only: the shared mutation gate deliberately rejects pending repairs.
+    # Call its artifact validators directly without inventing settled phases.
+    if "repair_proposals" in record:
+        dependency("repair-proposal").validate(record, root)
     dependency("repair-apply").validate_retained(record, root)
     initialized = record.get("foreground_initialized")
     if "foreground_initialized" in record and initialized is not True:
@@ -172,6 +182,8 @@ def validate_retained(record, root, c, e):
         c.fields(receipt, {"request", "request_sha256", "reference", "result"})
         request = receipt["request"]
         validate_request(request, c, e)
+        if request["action"] in REPAIR_ACTIONS:
+            raise c.Unverified("repair receipts require the separate repair ledger")
         revision = request["expected_revision"] + 1
         if (request["operation_id"] != operation or request["task_id"] != record["task_id"]
                 or request["incarnation"] != identity or revision > record["revision"]
@@ -184,11 +196,12 @@ def validate_retained(record, root, c, e):
             raise c.Unverified("foreground receipt result differs from domain history")
         revisions.add(revision)
         ordered.append((revision, request["action"]))
+    ordered.extend(dependency("foreground-repair").validate(record, c, e))
     paused = False
     for _, action in sorted(ordered):
         if action in {"pause", "resume"}:
             paused = action == "pause"
-        elif paused:
+        elif paused and action != "reconcile-owner-proposal":
             raise c.Unverified("foreground action recorded while dispatcher paused")
     if state["paused"] != paused:
         raise c.Unverified("pause state differs from retained receipts")
@@ -272,6 +285,8 @@ def status(record, state):
         next_action = "TERMINAL_NO_DISPATCH"
     elif record["state"] not in {"Claimed", "Implementing", "Reviewing", "Rework"}:
         next_action = "COORDINATOR_READMISSION_REQUIRED"
+    elif dependency("repair-apply").pending(record) or dependency("foreground-repair").pending(record):
+        next_action = "REPAIR_RECONCILIATION_REQUIRED"
     elif state["paused"]:
         next_action = "RESUME_FOREGROUND"
     elif (boundary := owner_boundary(record)) is not None:
@@ -309,13 +324,14 @@ def status(record, state):
             "incarnation": dependency("candidate-binding").incarnation(record),
             "revision": record["revision"], "task_state": record["state"],
             "paused": state["paused"], "pause_scope": "dispatcher-only",
-            "receipt_count": len(state["receipts"]), "next_action": next_action,
+            "receipt_count": len(state["receipts"]) + dependency("foreground-repair").count(record),
+            "next_action": next_action,
             "review_claims": review, "candidate_ready": False,
             "execution_credit": False, "delivery_credit": False}
 
 
-def dispatch(record, request, root, bundle=None):
-    """Lock-free domain composition. Caller owns the sole coordinator lock/write."""
+def dispatch(record, request, root, bundle=None, persist=None):
+    """Caller holds the lock; repair owns its two durable writes via persist."""
     c, e = dependency("review-collect"), dependency("review-evidence")
     state = validate_retained(record, root, c, e)
     if request is None:
@@ -334,6 +350,10 @@ def dispatch(record, request, root, bundle=None):
         if prior["request"] != request:
             raise c.Unverified("operation ID reused with changed request")
         return record, copy.deepcopy(prior["result"]), False
+    repair_bridge = dependency("foreground-repair")
+    prior_result = repair_bridge.replay(record, request, c)
+    if prior_result is not None:
+        return record, prior_result, False
     if request["expected_revision"] != record["revision"]:
         raise c.Unverified("task revision changed")
     if action == "status":
@@ -342,14 +362,23 @@ def dispatch(record, request, root, bundle=None):
         raise c.Unverified("task is not admitted for foreground mutation")
     coordinator = dependency("orchestrator-state")
     coordinator.require_execution_stopped(record)
-    coordinator.require_repair_settled(record, root=root)
+    if action not in {"pause", "resume", "reconcile-owner-proposal"}:
+        coordinator.require_repair_settled(record, root=root)
+        if repair_bridge.pending(record):
+            raise c.Unverified("foreground repair requires reconciliation")
     if record["state"] != "Rework" and record.get("worker") is None:
         raise c.Unverified("active lifecycle lacks a worker; reconcile explicitly")
-    if len(state["receipts"]) >= MAX_RECEIPTS:
+    receipt_count = len(state["receipts"]) + repair_bridge.count(record)
+    if receipt_count >= MAX_RECEIPTS:
         raise c.Unverified("foreground receipt budget exhausted")
-    if state["paused"] and action not in {"pause", "resume"}:
+    if (not repair_bridge.targets_pending(record, request) and repair_bridge.pending(record)
+            and receipt_count >= MAX_RECEIPTS - 1):
+        raise c.Unverified("final receipt slot requires reconciliation of a pending application")
+    if state["paused"] and action not in {"pause", "resume", "reconcile-owner-proposal"}:
         raise c.Unverified("foreground dispatcher is paused")
     operation = request["operation_id"]
+    if operation.startswith(repair_bridge.PREFIX):
+        raise c.Unverified("reserved repair operation namespace")
     if (any(operation in record.get(table, {}).get("operations", {}) for table in
              ("review_protocol", "runtime_collections", "repair_protocol"))
             or operation in record.get("collected_review_acceptances", {})
@@ -357,6 +386,10 @@ def dispatch(record, request, root, bundle=None):
                    for item in record.get("repair_proposals", {}).values()
                    for entry in (item, item["collection"]) if entry is not None)):
         raise c.Unverified("operation identifier already used outside dispatcher")
+    if action in REPAIR_ACTIONS:
+        if persist is None:
+            raise c.Unverified("repair requires a lock-held persistence callback")
+        return record, repair_bridge.run(record, request, root, persist, state), False
     # Never hand the caller's object to an API that might return/mutate it.
     updated, reference = copy.deepcopy(record), None
     if action in DOMAIN_ACTIONS:
@@ -420,11 +453,12 @@ def main():
                 if (live != "alive" or start != worker["process_start"]
                         or worker["hostname"] != socket.gethostname() or worker["owner"] != record["owner"]):
                     raise c.Unverified("worker identity unavailable; reconcile explicitly")
-            updated, result, changed = dispatch(record, request, root, args.bundle)
+            updated, result, changed = dispatch(record, request, root, args.bundle,
+                persist=lambda value: coordinator.write_task(root, value))
             if changed:
                 coordinator.write_task(root, updated)
         print(json.dumps(result, sort_keys=True))
-        return 0
+        return 3 if result["status"] in {"REPAIR_RECONCILIATION_REQUIRED", "PARTIAL", "UNVERIFIED"} else 0
     except Exception:
         print(json.dumps({"status": "UNVERIFIED", "reason":
             "foreground action unavailable; verify request, revision, pause, ownership and retained evidence"}))
