@@ -167,13 +167,14 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
    bind it to the inspected commit after rechecking the remote head and verify
    the submitted review's commit afterward.
    Do not claim independent sign-off from an unverifiable or failed reviewer.
-   Evaluate merge readiness after a clean approval. The independent applicable
-   CODEOWNER who approved the current head may submit an eligible PR for merge
-   only under the consumer's applicable authority, guarded by that reviewed head
-   SHA. Human approval remains required in human-reviewed delivery mode. PR
-   closure requires its own applicable authorization. A
-   queue entry is not a completed merge; check the owning repository for the
-   terminal result.
+   Evaluate merge readiness after a clean approval. With an independent
+   applicable CODEOWNER approval at the current head, an authorized maintainer
+   may submit the eligible PR for merge under the consumer's applicable
+   authority; the submitter need not be the approving CODEOWNER. Guard the
+   submission by that approved head SHA. Human approval remains required in
+   human-reviewed delivery mode. PR closure requires its own applicable
+   authorization. A queue entry is not a completed merge; check the owning
+   repository for the terminal result.
 
 ### Legacy finding dispositions
 
