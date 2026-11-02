@@ -3,8 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVAL="$ROOT/scripts/evaluate-workflow.py"
 # Use Python's system temporary path, which is also the root the canonical
-# test-mode state tool accepts. A fixture is created in its FINAL dated path;
-# there is never a second active directory to move on failure or interrupt.
+# test-mode state tool accepts. Active fixtures are moved, never deleted, into
+# private dated disposal directories after their manifests are finalized.
 # Use the approved system temporary parent, independent of inherited Python
 # temp redirects. /tmp may be an OS-managed symlink on macOS; resolve it and
 # require the owner to be root or this user and a world-writable parent to be
@@ -33,24 +33,62 @@ info = os.lstat(sys.argv[1])
 assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
 PY
 export TMPDIR="$TEMP_ROOT/"
-FIXTURE="$(mktemp -d "$OUTBOX/$(date -u +%Y-%m-%d)-evaluation.XXXXXX")"
+# shellcheck source=tests/evaluation-fixture.sh
+source "$ROOT/tests/evaluation-fixture.sh"
+
+# Exercise the actual staging helper and exit trap in isolated subprocesses.
+# Faults are shell-local overrides or fixture-local metadata, not global hooks.
+REGRESSION="$(mktemp -d "$TEMP_ROOT/evaluation-disposal-check.XXXXXX")"
+printf '# Disposal regression fixtures\nAll items are synthetic, including retained failed staging attempts. Safe for operator disposal.\n' > "$REGRESSION/MANIFEST.md"
+FIXTURE="$REGRESSION"
+CHECKS="disposal_regressions"
+trap evaluation_fixture_finish EXIT
+trap 'exit 3' HUP INT TERM
+mkdir "$REGRESSION/outbox"
+for mode in success abort manifest move lingering symlink; do
+  active="$REGRESSION/$mode"
+  mkdir "$active"
+  printf '# Synthetic evaluation fixture\nMode: %s. No user data. Safe for operator disposal.\n' "$mode" > "$active/MANIFEST.md"
+  set +e
+  observed="$(HELPER="$ROOT/tests/evaluation-fixture.sh" FIXTURE="$active" OUTBOX="$REGRESSION/outbox" MODE="$mode" bash -c '
+    set -euo pipefail
+    source "$HELPER"
+    CHECKS=fixture_regression
+    trap evaluation_fixture_finish EXIT
+    trap "exit 3" HUP INT TERM
+    case "$MODE" in
+      abort) exit 17 ;;
+      manifest) printf() { return 1; } ;;
+      move) mv() { return 1; } ;;
+      lingering) mv() { cp -R "$1" "$2"; } ;;
+      symlink) mv() { command mv "$1" "$2"; ln -s "$2" "$1"; } ;;
+    esac
+  ' 2>&1)"
+  rc=$?
+  set -e
+  case "$mode" in
+    success|abort)
+      expected=0; [[ "$mode" == abort ]] && expected=17
+      [[ "$rc" -eq "$expected" && ! -e "$active" && ! -L "$active" && "$observed" == *evaluation_fixture_staged=* ]]
+      ;;
+    *) [[ "$rc" -eq 3 && "$observed" == *UNVERIFIED* && "$observed" != *evaluation_fixture_staged=* ]] ;;
+  esac
+  printf '%s\n' "$observed" > "$REGRESSION/$mode-result.txt"
+done
+# Staging the entire regression root preserves failed fixtures and any injected
+# symlink without following it or deleting its target.
+evaluation_fixture_stage "$REGRESSION" "$OUTBOX" 0 regression_cases_passed
+[[ ! -e "$REGRESSION" && ! -L "$REGRESSION" ]]
+trap - EXIT HUP INT TERM
+
+FIXTURE="$(mktemp -d "$TEMP_ROOT/maintainer-evaluation-active.XXXXXX")"
 CHECKS="not_started"
-finish_fixture() {
-  result=$?
-  trap - EXIT HUP INT TERM
-  if ! printf '\nExit: %s; checks: %s\n' "$result" "$CHECKS" >> "$FIXTURE/MANIFEST.md"; then
-    echo 'UNVERIFIED: evaluation fixture manifest could not be finalized' >&2
-    exit 3
-  fi
-  printf 'evaluation_fixture_staged=%s\n' "$FIXTURE" >&2
-  exit "$result"
-}
-trap finish_fixture EXIT
+trap evaluation_fixture_finish EXIT
 trap 'exit 3' HUP INT TERM
 cat > "$FIXTURE/MANIFEST.md" <<'EOF'
 # Evaluation test fixture
 
-This dated directory was created by `tests/evaluate-workflow-test.sh`. Depending
+This fixture was created by `tests/evaluate-workflow-test.sh`. Depending
 on where the run stopped, it may contain a malicious-validator sentinel that
 should never be imported, synthetic task state, and malformed synthetic task
 records used to assert UNVERIFIED results. No real maintainer evidence is
@@ -238,4 +276,7 @@ rc=$?
 set -e
 [[ "$rc" -eq 3 && "$linked" == *UNVERIFIED* ]]
 CHECKS="passed"
+evaluation_fixture_stage "$FIXTURE" "$OUTBOX" 0 "$CHECKS"
+[[ ! -e "$FIXTURE" && ! -L "$FIXTURE" ]]
+trap - EXIT HUP INT TERM
 printf 'evaluate-workflow tests: PASS\n'
