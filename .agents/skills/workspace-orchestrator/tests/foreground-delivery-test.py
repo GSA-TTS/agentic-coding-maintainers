@@ -7,9 +7,12 @@ exercise the handoff protocol; they are not model or execution evidence.
 
 import base64
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -59,13 +62,14 @@ class ForegroundTests(unittest.TestCase):
         self.git("init", "-q", "-b", "fixture", "--template=" + str(template))
         self.source = b"result = 1\n"
         (self.worktree / "source.py").write_bytes(self.source)
-        self.git("add", "source.py")
+        (self.worktree / "second.py").write_bytes(self.source)
+        self.git("add", "source.py", "second.py")
         self.git("commit", "-qm", "test: offline fixture")
         self.head = self.git("rev-parse", "HEAD").strip()
         self.cli("state", "create", "fixture", "--scope", "fixture:source", "--kind", "implementation",
                  "--repo", "fixture/project", "--branch", "fixture", "--worktree", str(self.worktree),
                  "--base-sha", self.head, "--head-sha", self.head, "--owned-path", "source.py",
-                 "--acceptance", "result must be bounded")
+                  "--owned-path", "second.py", "--acceptance", "result must be bounded")
         self.cli("state", "claim", "fixture", "--owner", "writer", "--pid", str(os.getpid()))
         self.cli("state", "transition", "fixture", "Reviewing")
         path_key = base64.b64encode(b"source.py").decode()
@@ -105,9 +109,29 @@ class ForegroundTests(unittest.TestCase):
 
     def cli(self, *args, expected=0):
         # Each invocation is a fresh public CLI process, including after pause.
+        env = self.env
+        if args[0] == "foreground-delivery":
+            # Test-local interpreter shim: still invoke run.sh, exactly once.
+            # The observer captures main's suppressed exception in that process;
+            # it never replays mutation or changes the expected return code.
+            directory = self.root / "diagnostic-bin"
+            directory.mkdir(exist_ok=True)
+            shim = directory / "python3"
+            launcher = Path(__file__).with_name("foreground-cli-diagnostic.py")
+            shim.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable)
+                            + " -I -B " + shlex.quote(str(launcher))
+                            + " " + str(expected) + ' "$@"\n')
+            shim.chmod(0o700)
+            env = {**self.env, "PATH": str(directory) + os.pathsep + self.env["PATH"]}
         process = subprocess.run(["bash", str(ROOT / "run.sh"), *args], cwd=self.root,
-            env=self.env, capture_output=True, text=True, timeout=20)
-        self.assertEqual(process.returncode, expected, process.stdout + process.stderr)
+            env=env, capture_output=True, text=True, timeout=20)
+        if process.returncode != expected:
+            # Only structural, bounded observer output is permitted in failures.
+            prefix = "FOREGROUND_FIXTURE_DIAGNOSTIC "
+            diagnostic = next((line for line in process.stderr.splitlines()
+                               if line.startswith(prefix) and len(line) <= 3100),
+                              "CLI diagnostic unavailable; output withheld")
+            self.assertEqual(process.returncode, expected, diagnostic)
         return json.loads(process.stdout)
 
     def record(self):
@@ -150,6 +174,10 @@ class ForegroundTests(unittest.TestCase):
                        "cwd": "/review", "sources": {"/candidate/source.py": "source.py"}}
         if action == "collect-owner-proposal":
             payload = {"admission_id": self.proposal_id}
+        if action == "apply-owner-proposal":
+            payload = {"admission_id": self.proposal_id}
+        if action == "reconcile-owner-proposal":
+            payload = {"apply_operation_id": "apply-owner-proposal"}
         if action in delivery.COLLECT_ACTIONS:
             payload["artifact_sha256"] = {name: c.digest(data) for name, data in self.bundle.items()}
         return {"schema_version": 1, "task_id": "fixture", "incarnation":
@@ -193,13 +221,19 @@ class ForegroundTests(unittest.TestCase):
     def owner_bundle(self, unable=False):
         admitted = self.record()["repair_proposals"][self.proposal_id]["admission"]
         final = json.dumps({"schema_version": 1, "status": "unable" if unable else "proposed",
-                           "replacements": [] if unable else [{"path": "source.py", "content": "result = 2\n"}],
+                           "replacements": [] if unable else [{"path": path, "content": "result = 2\n"}
+                               for path in admitted["sources"].values()],
                            "limitations": ["synthetic owner claims only"]})
         events = [{"type": "tool_use", "sessionID": "ses_owner", "part": {"tool": "read", "state": {
             "status": "completed", "input": {"path": "/candidate/source.py"},
             "output": "Read file /candidate/source.py, lines 1-1\n1: result = 1"}}},
             {"type": "text", "sessionID": "ses_owner", "part": {"text": final}},
             {"type": "step_finish", "sessionID": "ses_owner", "part": {"reason": "stop", "tokens": {"input": 100, "output": 50}}}]
+        if "/candidate/second.py" in admitted["sources"]:
+            second = copy.deepcopy(events[0])
+            second["part"]["state"]["input"]["path"] = "/candidate/second.py"
+            second["part"]["state"]["output"] = "Read file /candidate/second.py, lines 1-1\n1: result = 1"
+            events.insert(1, second)
         transcript = b"".join(c.canonical(event) for event in events)
         exported = c.canonical({"info": {"id": "ses_owner", "outcome": "succeeded", "agent": "owner",
             "model": {"providerID": "fixture", "id": "model"}, "tokens": {"input": 100, "output": 50}},
@@ -307,7 +341,7 @@ class ForegroundTests(unittest.TestCase):
                 repair.apply_repair(record, self.state_root, request, raw,
                                     lambda value: coordinator.write_task(self.state_root, value))
         self.assertEqual(self.record()["repair_protocol"]["operations"]["interrupted-repair"]["phase"], "APPLYING")
-        self.dispatch(expected=3)
+        self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
         result = self.cli("repair-apply", "fixture", "reconcile", "--operation-id", "interrupted-repair")
         self.assertEqual(result["status"], "NOT_APPLIED_OBSERVED")
         self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
@@ -787,6 +821,352 @@ class ForegroundTests(unittest.TestCase):
         self.assertEqual(self.task_path.read_bytes(), before)
         self.dispatch(self.request("pause"))
         self.dispatch(request, expected=3)
+
+    def collected_two_file_proposal(self):
+        self.prepare_owner()
+        request = self.request("admit-owner-proposal")
+        request["payload"]["sources"]["/candidate/second.py"] = "second.py"
+        self.proposal_id = self.dispatch(request)["domain_result"]["admission_id"]
+        self.owner_bundle()
+        self.dispatch(self.request("collect-owner-proposal"), bundle=True)
+        return self.request("apply-owner-proposal")
+
+    def injected_apply(self, request, failure=None):
+        """Only fault seams are mocked; main, locks, validators and writes are real."""
+        bridge = delivery.dependency("foreground-repair")
+        repair = bridge.load("repair-apply")
+        coordinator = delivery.dependency("orchestrator-state")
+        original_dependency, original_load = delivery.dependency, bridge.load
+        path = self.root / "injected-request.json"
+        path.write_bytes(c.canonical(request))
+        argv = ["foreground-delivery", "fixture", "--request", str(path)]
+        replacements, persists = [], []
+        original_replace, original_write = repair.replace_one, coordinator.write_task
+        def replace(root, entry, mode):
+            if failure == "before-first" or (failure == "between-files" and replacements):
+                raise OSError("injected target interruption")
+            original_replace(root, entry, mode)
+            replacements.append(entry["path"])
+        def write(root, value):
+            persists.append(copy.deepcopy(value))
+            if failure == "first-persist" and len(persists) == 1:
+                raise OSError("injected intent persistence failure")
+            if failure == "after-writes" and len(persists) == 2:
+                raise OSError("injected final persistence failure")
+            original_write(root, value)
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(delivery, "dependency", side_effect=lambda name:
+                    bridge if name == "foreground-repair" else coordinator if name == "orchestrator-state"
+                    else original_dependency(name)), \
+                mock.patch.object(bridge, "load", side_effect=lambda name:
+                    repair if name == "repair-apply" else original_load(name)), \
+                mock.patch.object(repair, "replace_one", side_effect=replace), \
+                mock.patch.object(coordinator, "write_task", side_effect=write), \
+                contextlib.redirect_stdout(output):
+            code = delivery.main()
+        self.assertEqual(code, 3 if failure else 0, output.getvalue())
+        return replacements, persists, json.loads(output.getvalue())
+
+    def repair_cli(self, request, expected=0):
+        path = self.root / "repair-foreground-request.json"
+        path.write_bytes(c.canonical(request))
+        return self.cli("foreground-delivery", "fixture", "--request", str(path), expected=expected)
+
+    def target_bytes(self):
+        return [(self.worktree / name).read_bytes() for name in ("source.py", "second.py")]
+
+    def test_apply_two_files_public_cli_pause_replay_and_fresh_head(self):
+        request = self.collected_two_file_proposal()
+        before = self.record()
+        self.dispatch(self.request("pause", "pause-before-apply"))
+        self.dispatch(self.request("apply-owner-proposal"), expected=3)
+        self.dispatch(self.request("resume", "resume-before-apply"))
+        request = self.request("apply-owner-proposal")
+        revision = self.record()["revision"]
+        result = self.repair_cli(request)
+        self.assertEqual(result["status"], "APPLIED_UNREVIEWED")
+        self.assertEqual(result["resulting_revision"], revision + 2)
+        self.assertEqual(self.record()["revision"], revision + 2)
+        self.assertEqual(self.target_bytes(), [b"result = 2\n"] * 2)
+        self.assertEqual(self.dispatch()["next_action"], "REPAIRED_CANDIDATE_REQUIRES_COMMIT_EXECUTION_AND_REVIEW")
+        for name in ("worker", "leases", "state", "head_sha"):
+            self.assertEqual(self.record()[name], before[name])
+        self.assertEqual(self.record()["foreground_control"]["receipts"] | before["foreground_control"]["receipts"],
+                         self.record()["foreground_control"]["receipts"])
+        self.dispatch(self.request("pause", "pause-after-apply"))
+        saved = self.task_path.read_bytes()
+        stats = [(self.worktree / name).stat().st_ino for name in ("source.py", "second.py")]
+        self.assertEqual(self.repair_cli(request), result)
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        self.assertEqual(stats, [(self.worktree / name).stat().st_ino for name in ("source.py", "second.py")])
+        reconcile = self.request("reconcile-owner-proposal")
+        reconciled = self.repair_cli(reconcile)
+        self.assertEqual(reconciled["status"], "APPLIED_UNREVIEWED")
+        saved = self.task_path.read_bytes()
+        self.assertEqual(self.repair_cli(reconcile), reconciled)
+        self.assertEqual(self.repair_cli(request), result)
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        coordinator = delivery.dependency("orchestrator-state")
+        with self.assertRaisesRegex(coordinator.UnknownError, "new committed head"):
+            coordinator.require_repair_settled(self.record(), new_review=True, root=self.state_root)
+        self.dispatch(self.request("resume", "resume-after-apply"))
+        self.cli("state", "transition", "fixture", "Reviewing")
+        generation = self.record()["review_protocol"]["generations"][-1]
+        path = self.root / "fresh-head-required.json"
+        path.write_bytes(c.canonical({"schema_version": 1, "operation_id": "same-head-review",
+            "expected_revision": self.record()["revision"], "action": "begin",
+            "payload": {name: generation[name] for name in ("base", "head", "packet", "policy", "obligations")}}))
+        self.cli("review-evidence", "fixture", "--request", str(path), expected=3)
+
+    def test_apply_exactly_two_persists_link_before_targets_and_final_receipt(self):
+        request = self.collected_two_file_proposal()
+        replacements, writes, result = self.injected_apply(request)
+        self.assertEqual(len(replacements), 2)
+        self.assertEqual(len(writes), 2)
+        app = writes[0]["foreground_repairs"]["applications"][request["operation_id"]]
+        self.assertIsNone(app["final"])
+        self.assertEqual(writes[0]["repair_protocol"]["operations"][app["repair_operation_id"]]["phase"], "APPLYING")
+        self.assertEqual(writes[1]["foreground_repairs"]["applications"][request["operation_id"]]["final"]["result"], result)
+        self.assertEqual(self.repair_cli(request), result)
+
+    def recover_interrupted(self, failure, expected_phase, replaced):
+        request = self.collected_two_file_proposal()
+        before = self.record()
+        replacements, writes, _ = self.injected_apply(request, failure)
+        self.assertEqual(len(replacements), replaced)
+        self.assertEqual(self.record()["revision"], before["revision"] + 1)
+        self.assertEqual(len(writes), 2 if failure == "after-writes" else 1)
+        app = self.record()["foreground_repairs"]["applications"][request["operation_id"]]
+        self.assertIsNone(app["final"])
+        self.assertEqual(self.record()["repair_protocol"]["operations"][app["repair_operation_id"]]["phase"], "APPLYING")
+        saved, contents = self.task_path.read_bytes(), self.target_bytes()
+        replay = self.repair_cli(request, expected=3)
+        self.assertEqual(replay["status"], "REPAIR_RECONCILIATION_REQUIRED")
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        self.assertEqual(self.target_bytes(), contents)
+        # Pending intent must still fence unrelated lifecycle and review mutations.
+        self.cli("state", "transition", "fixture", "Reviewing", expected=3)
+        self.dispatch(self.request("accept-review", "pending-accept"), expected=3)
+        self.dispatch(self.request("pause", "pause-pending"))
+        status = self.dispatch()
+        self.assertTrue(status["paused"])
+        self.assertEqual(status["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
+        for name in ("worker", "leases", "state"):
+            self.assertEqual(self.record()[name], before[name])
+        self.dispatch(self.request("resume", "resume-still-pending"))
+        self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
+        self.dispatch(self.request("pause", "pause-for-observation"))
+        reconciliation = self.request("reconcile-owner-proposal")
+        outcome = self.repair_cli(reconciliation, expected=3 if expected_phase == "PARTIAL" else 0)
+        self.assertEqual(outcome["status"], expected_phase)
+        self.assertEqual(self.target_bytes(), contents)  # observation only; no rollback/completion
+        saved = self.task_path.read_bytes()
+        self.assertEqual(self.repair_cli(reconciliation, expected=3 if expected_phase == "PARTIAL" else 0), outcome)
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        final = self.record()["foreground_repairs"]["applications"][request["operation_id"]]["final"]
+        if expected_phase == "PARTIAL":
+            self.assertIsNone(final)
+            self.assertEqual(self.repair_cli(request, expected=3), replay)
+            # Explicit operator completion, not controller rollback or automatic retry.
+            for name in ("source.py", "second.py"):
+                (self.worktree / name).write_bytes(b"result = 2\n")
+            next_request = self.request("reconcile-owner-proposal", "observe-completed")
+            self.assertEqual(self.repair_cli(next_request)["status"], "APPLIED_UNREVIEWED")
+            self.assertEqual(self.repair_cli(reconciliation, expected=3), outcome)
+        else:
+            self.assertEqual(self.repair_cli(request), final["result"])
+        self.dispatch(self.request("resume", "resume-pending"))
+        return request
+
+    def test_repair_interruption_before_first_target(self):
+        self.recover_interrupted("before-first", "NOT_APPLIED_OBSERVED", 0)
+
+    def test_repair_interruption_between_two_targets(self):
+        self.recover_interrupted("between-files", "PARTIAL", 1)
+
+    def test_repair_interruption_after_targets_before_final_persist(self):
+        self.recover_interrupted("after-writes", "APPLIED_UNREVIEWED", 2)
+
+    def test_repair_first_persist_failure_has_no_targets_or_receipt(self):
+        request = self.collected_two_file_proposal()
+        saved = self.task_path.read_bytes()
+        replacements, writes, _ = self.injected_apply(request, "first-persist")
+        self.assertEqual(replacements, [])
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+        self.assertEqual(self.repair_cli(request)["status"], "APPLIED_UNREVIEWED")
+
+    def test_repair_unverified_observation_and_external_terminal_need_explicit_link(self):
+        request = self.collected_two_file_proposal()
+        self.injected_apply(request, "before-first")
+        (self.worktree / "source.py").write_bytes(b"unrecognized operator edit\n")
+        reconciliation = self.request("reconcile-owner-proposal")
+        outcome = self.repair_cli(reconciliation, expected=3)
+        self.assertEqual(outcome["status"], "UNVERIFIED")
+        self.assertIsNone(self.record()["foreground_repairs"]["applications"][request["operation_id"]]["final"])
+        for name in ("source.py", "second.py"):
+            (self.worktree / name).write_bytes(self.source)
+        op = self.record()["foreground_repairs"]["applications"][request["operation_id"]]["repair_operation_id"]
+        self.cli("repair-apply", "fixture", "reconcile", "--operation-id", op)
+        self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
+        self.assertEqual(self.repair_cli(request, expected=3)["status"], "REPAIR_RECONCILIATION_REQUIRED")
+        self.dispatch(self.request("prepare-correction", "cannot-skip-finalization"), expected=3)
+        self.dispatch(self.request("pause", "pause-external-terminal"))
+        final = self.repair_cli(self.request("reconcile-owner-proposal", "link-external-terminal"))
+        self.assertEqual(final["status"], "NOT_APPLIED_OBSERVED")
+        self.assertEqual(self.repair_cli(reconciliation, expected=3), outcome)
+        self.assertEqual(self.repair_cli(request)["status"], "NOT_APPLIED_OBSERVED")
+
+    def test_repair_failed_reconciliation_persist_keeps_history_and_targets(self):
+        request = self.collected_two_file_proposal()
+        self.injected_apply(request, "before-first")
+        self.dispatch(self.request("pause", "pause-persist-failure"))
+        reconciliation = self.request("reconcile-owner-proposal")
+        saved = self.task_path.read_bytes()
+        replacements, writes, _ = self.injected_apply(reconciliation, "first-persist")
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(replacements, [])
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+        self.assertEqual(self.repair_cli(reconciliation)["status"], "NOT_APPLIED_OBSERVED")
+
+    def test_repair_latest_context_source_full_worker_and_namespace_guards(self):
+        request = self.collected_two_file_proposal()
+        self.dispatch(request, expected=3, bundle=True)
+        for patch in ({"expected_revision": 0}, {"operation_id": "begin"},
+                      {"operation_id": "fgrepair." + "a" * 64}, {"incarnation": "0" * 64},
+                      {"payload": {"admission_id": "0" * 64}}):
+            self.dispatch(request | patch, expected=3)
+        saved = self.record()
+        changed = copy.deepcopy(saved)
+        changed["worker"]["created_at"] = "2000-01-01T00:00:00Z"
+        self.store_record(changed)
+        self.dispatch(request, expected=3)
+        self.store_record(saved)
+        (self.worktree / "source.py").write_bytes(b"changed\n")
+        self.dispatch(request, expected=3)
+        (self.worktree / "source.py").write_bytes(self.source)
+        later = self.request("admit-owner-proposal", "later-proposal")
+        later["payload"]["session"] = "ses_later"
+        self.dispatch(later)
+        self.dispatch(self.request("apply-owner-proposal"), expected=3)
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+
+    def test_repair_link_loss_substitution_missing_artifacts_and_conflicting_replay(self):
+        request = self.collected_two_file_proposal()
+        result = self.repair_cli(request)
+        saved = self.record()
+        for damage in ("ledger", "application", "intent", "final", "request", "revision", "outcome"):
+            record = copy.deepcopy(saved)
+            app = record["foreground_repairs"]["applications"][request["operation_id"]]
+            if damage == "ledger":
+                del record["foreground_repairs"]
+            elif damage == "application":
+                record["foreground_repairs"]["applications"].clear()
+            elif damage == "intent":
+                record["repair_protocol"]["operations"].clear()
+            elif damage == "final":
+                app["final"]["result"]["delivery_credit"] = True
+            elif damage == "request":
+                app["request"]["payload"]["admission_id"] = "0" * 64
+                app["request_sha256"] = c.digest(c.canonical(app["request"]))
+            elif damage == "revision":
+                app["intent_revision"] += 1
+            else:
+                app["final"]["result"]["status"] = "NOT_APPLIED_OBSERVED"
+            self.store_record(record)
+            self.dispatch(expected=3)
+            self.dispatch(request, expected=3)
+        self.store_record(saved)
+        # Valid domain/control history must not steal the reserved repair ID.
+        record = copy.deepcopy(saved)
+        old = record["foreground_control"]["receipts"].pop("collect-owner-proposal")
+        op = record["foreground_repairs"]["applications"][request["operation_id"]]["repair_operation_id"]
+        collection = record["repair_proposals"][self.proposal_id]["collection"]
+        collection["request"]["operation_id"] = op
+        collection["request_sha256"] = c.digest(c.canonical(collection["request"]))
+        old["request"]["operation_id"] = op
+        old["request_sha256"] = c.digest(c.canonical(old["request"]))
+        old["result"]["operation_id"] = op
+        record["foreground_control"]["receipts"][op] = old
+        self.store_record(record)
+        self.dispatch(expected=3)
+        self.store_record(saved)
+        for sha in (result["domain_result"]["bundle_sha256"], c.digest(self.bundle["receipt.json"])):
+            artifact = self.state_root / "review-artifacts" / sha
+            artifact.rename(artifact.with_suffix(".missing"))
+            self.dispatch(expected=3)
+            self.dispatch(request, expected=3)
+            artifact.with_suffix(".missing").rename(artifact)
+        self.dispatch(request | {"expected_revision": self.record()["revision"]}, expected=3)
+        self.dispatch(self.request("pause", request["operation_id"]), expected=3)
+        self.assertEqual(self.repair_cli(request), result)
+
+    def test_repair_receipt_capacity_and_completion_byte_budget(self):
+        request = self.collected_two_file_proposal()
+        saved = self.record()
+        large = copy.deepcopy(saved)
+        large["next_action"] = "x" * 880_000
+        self.store_record(large)
+        self.dispatch(request, expected=3)
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+        self.store_record(saved)
+        record = self.record()
+        for index in range(delivery.MAX_RECEIPTS - len(record["foreground_control"]["receipts"])):
+            if len(record["foreground_control"]["receipts"]) == 63:
+                self.store_record(record)
+                self.dispatch(self.request("apply-owner-proposal"), expected=3)
+            control = self.request("resume", f"capacity-{index}")
+            control["expected_revision"] = record["revision"]
+            record, _, _ = delivery.dispatch(record, control, self.state_root)
+            record["revision"] += 1
+        self.store_record(record)
+        self.dispatch(self.request("apply-owner-proposal"), expected=3)
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+
+    def test_pending_repair_keeps_last_slot_for_reconciliation(self):
+        request = self.collected_two_file_proposal()
+        record = self.record()
+        while len(record["foreground_control"]["receipts"]) < 60:
+            control = self.request("resume", "fill-" + str(record["revision"]))
+            control["expected_revision"] = record["revision"]
+            record, _, _ = delivery.dispatch(record, control, self.state_root)
+            record["revision"] += 1
+        self.store_record(record)
+        request = self.request("apply-owner-proposal")
+        self.injected_apply(request, "before-first")  # 61 total receipts
+        self.dispatch(self.request("pause", "near-limit-pause"))  # 62
+        self.dispatch(self.request("resume", "near-limit-resume"))  # 63
+        saved = self.task_path.read_bytes()
+        self.dispatch(self.request("pause", "must-preserve-recovery"), expected=3)
+        self.dispatch(self.request("resume", "also-preserve-recovery"), expected=3)
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        self.assertEqual(self.repair_cli(request, expected=3)["status"], "REPAIR_RECONCILIATION_REQUIRED")
+        result = self.repair_cli(self.request("reconcile-owner-proposal"))  # 64
+        self.assertEqual(result["status"], "NOT_APPLIED_OBSERVED")
+        self.assertEqual(self.repair_cli(request)["status"], "NOT_APPLIED_OBSERVED")
+        self.assertIsNotNone(self.record()["foreground_repairs"]["applications"][request["operation_id"]]["final"])
+        self.assertEqual(self.target_bytes(), [self.source] * 2)
+
+    def test_unexpected_cli_exit_has_sanitized_same_invocation_diagnostic(self):
+        request = self.request("pause")
+        request["payload"] = {"private-diagnostic-canary": "must-never-be-printed"}
+        path = self.root / "diagnostic-request.json"
+        path.write_bytes(c.canonical(request))
+        before = self.task_path.read_bytes()
+        with self.assertRaises(AssertionError) as caught:
+            self.cli("foreground-delivery", "fixture", "--request", str(path))
+        message = str(caught.exception)
+        self.assertIn('"source": "same-invocation"', message)
+        self.assertIn('"exception": "Unverified"', message)
+        self.assertIn('"function": "fields"', message)
+        self.assertNotIn("private-diagnostic-canary", message)
+        self.assertNotIn("must-never-be-printed", message)
+        self.assertNotIn(str(self.root), message)
+        self.assertLess(len(message), 3200)
+        self.assertEqual(self.task_path.read_bytes(), before)
 
 
 if __name__ == "__main__":
