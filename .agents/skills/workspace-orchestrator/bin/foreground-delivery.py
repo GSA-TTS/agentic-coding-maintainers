@@ -18,8 +18,13 @@ from pathlib import Path
 
 MAX_RECEIPTS = 64
 MAX_REQUEST = 16_384
-ACTIONS = {"collect-review", "accept-review", "prepare-correction", "pause", "resume", "status"}
-DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collected"}
+PROPOSAL_ACTIONS = {"admit-owner-proposal", "collect-owner-proposal"}
+COLLECT_ACTIONS = {"collect-review", "collect-owner-proposal"}
+DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collected",
+                  "admit-owner-proposal": "admit", "collect-owner-proposal": "collect"}
+ACTIONS = set(DOMAIN_ACTIONS) | {"prepare-correction", "pause", "resume", "status"}
+PROPOSAL_FIELDS = {"correction_id", "session", "model", "agent", "binary_sha256",
+                   "profile_sha256", "cwd", "sources"}
 
 
 def dependency(name):
@@ -47,8 +52,9 @@ def validate_request(request, c, e):
     if not isinstance(action, str) or action not in ACTIONS:
         raise c.Unverified("unsupported foreground action")
     payload = request["payload"]
-    expected = {"admission_id", "artifact_sha256"} if action == "collect-review" else (
-        {"admission_id"} if action == "accept-review" else set())
+    expected = PROPOSAL_FIELDS if action == "admit-owner-proposal" else (
+        {"admission_id", "artifact_sha256"} if action in COLLECT_ACTIONS else (
+        {"admission_id"} if action == "accept-review" else set()))
     c.fields(payload, expected)
     if "admission_id" in expected:
         e.hash_value(payload["admission_id"])
@@ -56,6 +62,22 @@ def validate_request(request, c, e):
         c.fields(payload["artifact_sha256"], set(c.ARTIFACTS))
         for value in payload["artifact_sha256"].values():
             e.hash_value(value)
+    if action == "admit-owner-proposal":
+        for name in ("correction_id", "binary_sha256", "profile_sha256"):
+            e.hash_value(payload[name])
+        for name in ("session", "agent"):
+            e.token(payload[name])
+        e.text(payload["model"], 200)
+        c.absolute_guest_path(payload["cwd"])
+        sources = payload["sources"]
+        if not isinstance(sources, dict) or not 1 <= len(sources) <= 2:
+            raise c.Unverified("one or two proposal source mappings required")
+        repair = dependency("repair-apply")
+        for guest, relative in sources.items():
+            c.absolute_guest_path(guest)
+            repair.relative_path(relative)
+        if len(set(sources.values())) != len(sources):
+            raise c.Unverified("duplicate proposal source target")
     if len(c.canonical(request)) > MAX_REQUEST:
         raise c.Unverified("foreground request exceeds bound")
 
@@ -78,6 +100,22 @@ def acknowledgement(request, domain_result):
 def referenced_result(record, request, reference, c):
     """Resolve a receipt through already-validated authoritative domain history."""
     action, operation = request["action"], request["operation_id"]
+    if action in PROPOSAL_ACTIONS:
+        c.fields(reference, {"table", "key"})
+        if reference["table"] != "repair_proposals":
+            raise c.Unverified("invalid proposal reference")
+        key = reference["key"]
+        item = record.get("repair_proposals", {}).get(key)
+        entry = item if action == "admit-owner-proposal" else (item or {}).get("collection")
+        if (entry is None or entry["request"] != domain_request(request)
+                or entry["resulting_revision"] != request["expected_revision"] + 1):
+            raise c.Unverified("foreground receipt lost its proposal operation")
+        if action == "admit-owner-proposal":
+            return {"status": "PROPOSAL_ADMITTED", "admission_id": key,
+                    "context": item["admission"]["context"]}
+        if key != request["payload"]["admission_id"]:
+            raise c.Unverified("foreground proposal admission reference changed")
+        return {"status": entry["status"], "admission_id": key, "bundle_sha256": entry["bundle_sha256"]}
     if action in DOMAIN_ACTIONS:
         table = "runtime_collections" if action == "collect-review" else "collected_review_acceptances"
         if reference != {"table": table, "key": operation}:
@@ -127,6 +165,9 @@ def validate_retained(record, root, c, e):
     domain_revisions = {item["result"]["resulting_revision"]
                         for table in ("review_protocol", "runtime_collections")
                         for item in record.get(table, {}).get("operations", {}).values()}
+    domain_revisions.update(entry["resulting_revision"]
+                            for item in record.get("repair_proposals", {}).values()
+                            for entry in (item, item["collection"]) if entry is not None)
     for operation, receipt in state["receipts"].items():
         c.fields(receipt, {"request", "request_sha256", "reference", "result"})
         request = receipt["request"]
@@ -154,6 +195,69 @@ def validate_retained(record, root, c, e):
     return state
 
 
+def owner_boundary(record):
+    """Project the current repair boundary, never revive a historical proposal."""
+    ledger = record.get("repair_protocol", {})
+    prepared = [(key, item) for key, item in ledger.get("corrections", {}).items()
+                if item["cycle"] == record["rework_count"]]
+    if not prepared:
+        return None
+    key, correction = prepared[0]
+    operations = [item for item in ledger.get("operations", {}).values() if item["correction_id"] == key]
+    if operations:
+        if (record["head_sha"] != correction["head"]
+                and record["review_protocol"]["generations"][-1]["number"] > correction["generation"]):
+            return None
+        if any(item["phase"] == "APPLIED_UNREVIEWED" for item in operations):
+            return "REPAIRED_CANDIDATE_REQUIRES_COMMIT_EXECUTION_AND_REVIEW"
+        return "REPAIR_RECONCILIATION_REQUIRED"
+    matches = {"owner": "owner", "base_sha": "base", "head_sha": "head", "repo": "repo",
+               "branch": "branch", "worktree": "worktree", "owned_paths": "owned_paths",
+               "restricted_paths": "restricted_paths", "acceptance_criteria": "acceptance_criteria"}
+    protocol = record.get("review_protocol", {})
+    if (any(record[field] != correction[target] for field, target in matches.items())
+            or protocol.get("material_epoch") != correction["material_epoch"]
+            or protocol["generations"][-1]["number"] != correction["generation"]):
+        return "OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED"
+    if record["state"] == "Rework":
+        return "ORIGINAL_OWNER_RECLAIM"
+    if record["state"] == "Claimed":
+        return "ORIGINAL_OWNER_IMPLEMENTING_REQUIRED"
+    if (record["state"] != "Implementing" or not record.get("worker")
+            or record["worker"]["owner"] != correction["owner"]
+            or type(record["leases"].get("global_slot")) is not int
+            or type(record["leases"].get("implementation_lane")) is not int):
+        return "OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED"
+    try:
+        coordinator = dependency("orchestrator-state")
+        coordinator.require_execution_stopped(record)
+        coordinator.verify_worktree_identity(record, require_head=True)
+        coordinator.verify_clean_checkout(record["worktree"])
+    except Exception:
+        return "OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED"
+    proposals = [item for item in record.get("repair_proposals", {}).values()
+                 if item["admission"]["correction_id"] == key]
+    if not proposals:
+        return "ADMIT_OWNER_PROPOSAL"
+    latest = max(proposals, key=lambda item: item["resulting_revision"])
+    admitted = latest["admission"]
+    proposal = dependency("repair-proposal")
+    try:
+        context, sources = proposal.owner_context(record, key, admitted["sources"],
+                                                  dependency("review-collect"), dependency("repair-apply"))
+        if (context != admitted["context"] or sources != admitted["source_sha256"]
+                or record["worker"] != admitted["worker"]):
+            return "OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED"
+    except Exception:
+        return "OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED"
+    collection = latest["collection"]
+    if collection is None:
+        return "COLLECT_OWNER_PROPOSAL"
+    if collection["status"] == "UNABLE_OBSERVED":
+        return "OWNER_PROPOSAL_UNABLE_REQUIRES_OPERATOR"
+    return "COLLECTED_OWNER_BUNDLE_REQUIRES_GUARDED_APPLY"
+
+
 def status(record, state):
     e = dependency("review-evidence")
     review = e.assess(record)
@@ -163,10 +267,10 @@ def status(record, state):
         next_action = "COORDINATOR_READMISSION_REQUIRED"
     elif state["paused"]:
         next_action = "RESUME_FOREGROUND"
+    elif (boundary := owner_boundary(record)) is not None:
+        next_action = boundary
     elif record["state"] == "Rework":
-        prepared = any(item["cycle"] == record["rework_count"]
-                       for item in record.get("repair_protocol", {}).get("corrections", {}).values())
-        next_action = "ORIGINAL_OWNER_RECLAIM" if prepared else "PREPARE_CORRECTION"
+        next_action = "PREPARE_CORRECTION"
     elif review.get("unresolved_findings"):
         next_action = "OWNER_REWORK_ADMISSION_REQUIRED"
     else:
@@ -209,15 +313,15 @@ def dispatch(record, request, root, bundle=None):
     state = validate_retained(record, root, c, e)
     if request is None:
         if bundle is not None:
-            raise c.Unverified("bundle requires collect-review")
+            raise c.Unverified("bundle requires a collection action")
         return record, status(record, state), False
     validate_request(request, c, e)
     if (request["task_id"] != record["task_id"] or request["incarnation"] !=
             dependency("candidate-binding").incarnation(record)):
         raise c.Unverified("task incarnation changed")
     action = request["action"]
-    if bundle is not None and action != "collect-review":
-        raise c.Unverified("bundle requires collect-review")
+    if bundle is not None and action not in COLLECT_ACTIONS:
+        raise c.Unverified("bundle requires a collection action")
     prior = state["receipts"].get(request["operation_id"])
     if prior is not None:
         if prior["request"] != request:
@@ -240,24 +344,32 @@ def dispatch(record, request, root, bundle=None):
         raise c.Unverified("foreground dispatcher is paused")
     operation = request["operation_id"]
     if (any(operation in record.get(table, {}).get("operations", {}) for table in
-            ("review_protocol", "runtime_collections", "repair_protocol"))
-            or operation in record.get("collected_review_acceptances", {})):
+             ("review_protocol", "runtime_collections", "repair_protocol"))
+            or operation in record.get("collected_review_acceptances", {})
+            or any(entry["request"]["operation_id"] == operation
+                   for item in record.get("repair_proposals", {}).values()
+                   for entry in (item, item["collection"]) if entry is not None)):
         raise c.Unverified("operation identifier already used outside dispatcher")
     # Never hand the caller's object to an API that might return/mutate it.
     updated, reference = copy.deepcopy(record), None
     if action in DOMAIN_ACTIONS:
-        if action == "collect-review":
+        artifacts = None
+        if action in COLLECT_ACTIONS:
             if bundle is None:
-                raise c.Unverified("collect-review requires --bundle")
+                raise c.Unverified("collection requires --bundle")
             artifacts = {name: c.read_bytes(bundle / name) for name in c.ARTIFACTS}
+        if action in PROPOSAL_ACTIONS:
+            updated, result, changed = dependency("repair-proposal").apply(
+                updated, domain_request(request), root, artifacts=artifacts)
+            reference = {"table": "repair_proposals", "key": result["admission_id"]}
+        elif action == "collect-review":
             updated, result, changed = c.apply(updated, domain_request(request), root, artifacts=artifacts)
-            table = "runtime_collections"
+            reference = {"table": "runtime_collections", "key": operation}
         else:
             updated, result, changed = dependency("review-accept").apply(updated, domain_request(request), root)
-            table = "collected_review_acceptances"
+            reference = {"table": "collected_review_acceptances", "key": operation}
         if not changed:
             raise c.Unverified("unlinked domain replay cannot acquire a foreground receipt")
-        reference = {"table": table, "key": operation}
     elif action == "prepare-correction":
         updated, result = dependency("repair-apply").prepare(updated, root, request["expected_revision"])
         reference = {"table": "repair_protocol.corrections", "key": result["correction_id"]}
@@ -280,7 +392,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_id")
     parser.add_argument("--request", type=Path, help="one strict action; omit for read-only status")
-    parser.add_argument("--bundle", type=Path, help="collect-review runtime artifact directory")
+    parser.add_argument("--bundle", type=Path, help="review or owner-proposal runtime artifact directory")
     args = parser.parse_args()
     try:
         if not sys.flags.isolated or not sys.dont_write_bytecode:
