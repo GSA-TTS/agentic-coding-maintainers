@@ -285,6 +285,60 @@ class ForegroundTests(unittest.TestCase):
         self.dispatch(self.request("admit-owner-proposal", "terminal-owner-admit"), expected=3)
         self.dispatch(self.request("collect-owner-proposal", "terminal-owner-collect"), expected=3, bundle=True)
 
+    def test_not_applied_same_head_new_generation_clears_historical_boundary(self):
+        self.prepare_owner()
+        self.admit_owner()
+        collected = self.dispatch(self.request("collect-owner-proposal"), bundle=True)
+        sha = collected["domain_result"]["bundle_sha256"]
+        raw = (self.state_root / "review-artifacts" / sha).read_bytes()
+        request = {"schema_version": 1, "operation_id": "interrupted-repair",
+                   "expected_revision": self.record()["revision"],
+                   "correction_id": self.correction_id, "bundle_sha256": sha}
+        repair = delivery.dependency("repair-apply")
+        coordinator = delivery.dependency("orchestrator-state")
+        # Inject only the interruption. The production API publishes the bundle
+        # and durable APPLYING fence under the real coordinator lock/reservations.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                coordinator.CoordinatorLock(self.state_root), \
+                mock.patch.object(repair, "replace_one", side_effect=OSError("before first write")):
+            record = coordinator.read_task(self.state_root, "fixture")
+            coordinator.verify_reservations(self.state_root, record)
+            with self.assertRaisesRegex(OSError, "before first write"):
+                repair.apply_repair(record, self.state_root, request, raw,
+                                    lambda value: coordinator.write_task(self.state_root, value))
+        self.assertEqual(self.record()["repair_protocol"]["operations"]["interrupted-repair"]["phase"], "APPLYING")
+        self.dispatch(expected=3)
+        result = self.cli("repair-apply", "fixture", "reconcile", "--operation-id", "interrupted-repair")
+        self.assertEqual(result["status"], "NOT_APPLIED_OBSERVED")
+        self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
+        generation = self.record()["review_protocol"]["generations"][-1]
+        self.cli("state", "transition", "fixture", "Reviewing")
+        begun = self.domain("review-evidence", "begin",
+                            {name: generation[name] for name in ("base", "head", "packet", "policy", "obligations")},
+                            "same-head-new-generation")
+        self.assertEqual(begun["generation"], 2)
+        self.assertEqual(self.record()["head_sha"], self.head)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), self.head)
+        self.assertEqual((self.worktree / "source.py").read_bytes(), self.source)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(self.dispatch()["next_action"], "OWNER_REWORK_ADMISSION_REQUIRED")
+        # A numerically newer but stale generation must not clear the boundary.
+        saved = self.record()
+        stale = copy.deepcopy(saved)
+        stale["review_protocol"]["material_epoch"] += 1
+        self.store_record(stale)
+        self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
+        self.store_record(saved)
+        # Phase-specific projection guard: even a newer current generation at
+        # this head cannot clear APPLIED_UNREVIEWED. This projection-only copy
+        # is not persisted or presented as an admitted review generation.
+        applied = copy.deepcopy(saved)
+        applied["repair_protocol"]["operations"]["interrupted-repair"]["phase"] = "APPLIED_UNREVIEWED"
+        self.assertEqual(delivery.owner_boundary(applied), "REPAIRED_CANDIDATE_REQUIRES_COMMIT_EXECUTION_AND_REVIEW")
+        applied["head_sha"] = "1" * 40
+        applied["review_protocol"]["generations"][-1]["head"] = applied["head_sha"]
+        self.assertIsNone(delivery.owner_boundary(applied))
+
     def test_owner_pause_exact_replay_and_unable_outcome(self):
         self.prepare_owner()
         before = self.record()

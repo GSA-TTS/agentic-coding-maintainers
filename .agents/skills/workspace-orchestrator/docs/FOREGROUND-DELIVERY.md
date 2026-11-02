@@ -112,8 +112,10 @@ Status considers the prepared owner correction before unresolved review findings
 
 Status uses the latest admission for the current correction, not an older bundle
 or an earlier cycle. Settled repair history points to commit/execution/re-review
-or explicit reconciliation; once a new committed review generation exists, normal
-review status resumes. Terminal, readmission and dispatcher pause boundaries take
+or explicit reconciliation. A newer current review generation clears historical
+`NOT_APPLIED_OBSERVED` even at the same HEAD; `APPLIED_UNREVIEWED` additionally
+requires a changed committed head. A newer but stale generation clears neither.
+Normal review status then resumes. Terminal, readmission and dispatcher pause boundaries take
 precedence. Status is a read-only boundary projection, not authorization to execute
 the suggested step; mutations recheck all domain guards.
 

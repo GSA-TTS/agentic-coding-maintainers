@@ -205,8 +205,15 @@ def owner_boundary(record):
     key, correction = prepared[0]
     operations = [item for item in ledger.get("operations", {}).values() if item["correction_id"] == key]
     if operations:
-        if (record["head_sha"] != correction["head"]
-                and record["review_protocol"]["generations"][-1]["number"] > correction["generation"]):
+        e = dependency("review-evidence")
+        try:
+            newer_current = e.current(record)["number"] > correction["generation"]
+        except (e.Unverified, KeyError, TypeError):
+            newer_current = False
+        if newer_current and all(
+                item["phase"] == "NOT_APPLIED_OBSERVED" or (
+                    item["phase"] == "APPLIED_UNREVIEWED" and record["head_sha"] != item["head"])
+                for item in operations):
             return None
         if any(item["phase"] == "APPLIED_UNREVIEWED" for item in operations):
             return "REPAIRED_CANDIDATE_REQUIRES_COMMIT_EXECUTION_AND_REVIEW"
