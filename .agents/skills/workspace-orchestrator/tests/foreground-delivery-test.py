@@ -33,6 +33,11 @@ c, e = fixtures.collector, fixtures.evidence
 
 class ForegroundTests(unittest.TestCase):
     def setUp(self):
+        # Check the real installed package, not just the disposable task checkout.
+        # On a read-only mount cache writes fail silently; run this fixture from a
+        # writable sandbox copy to exercise the subprocess pollution regression.
+        self.package_inventory = {path.relative_to(ROOT) for path in ROOT.rglob("*")}
+        self.addCleanup(self.assert_package_inventory_unchanged)
         temporary = tempfile.TemporaryDirectory(prefix="foreground-production-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
@@ -46,7 +51,10 @@ class ForegroundTests(unittest.TestCase):
         home.mkdir()
         template = self.root / "empty-template"
         template.mkdir()
-        self.env.update(WORKSPACE_ORCHESTRATOR_ROOT=str(self.root), HOME=str(home),
+        # run.sh state -> orchestrator-state.sh launches a fresh Python without
+        # -B. The parent interpreter's -B is not inherited by that subprocess.
+        self.env.update(PYTHONDONTWRITEBYTECODE="1",
+                        WORKSPACE_ORCHESTRATOR_ROOT=str(self.root), HOME=str(home),
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         self.git("init", "-q", "-b", "fixture", "--template=" + str(template))
         self.source = b"result = 1\n"
@@ -83,6 +91,10 @@ class ForegroundTests(unittest.TestCase):
         self.set_bundle()
         self.assertNotIn("ORCHESTRATOR_TEST_MODE", self.env)
         self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def assert_package_inventory_unchanged(self):
+        self.assertEqual({path.relative_to(ROOT) for path in ROOT.rglob("*")}, self.package_inventory,
+                         "fixture subprocess changed the installed canonical package inventory")
 
     def git(self, *args):
         process = subprocess.run(["git", "-C", str(self.worktree), "-c", "user.name=Fixture",
@@ -132,7 +144,13 @@ class ForegroundTests(unittest.TestCase):
     def request(self, action, operation=None):
         record = self.record()
         payload = {"admission_id": self.admission_id} if action in {"collect-review", "accept-review"} else {}
-        if action == "collect-review":
+        if action == "admit-owner-proposal":
+            payload = {"correction_id": self.correction_id, "session": "ses_owner", "model": "fixture/model",
+                       "agent": "owner", "binary_sha256": "a" * 64, "profile_sha256": "b" * 64,
+                       "cwd": "/review", "sources": {"/candidate/source.py": "source.py"}}
+        if action == "collect-owner-proposal":
+            payload = {"admission_id": self.proposal_id}
+        if action in delivery.COLLECT_ACTIONS:
             payload["artifact_sha256"] = {name: c.digest(data) for name, data in self.bundle.items()}
         return {"schema_version": 1, "task_id": "fixture", "incarnation":
                 delivery.dependency("candidate-binding").incarnation(record), "expected_revision": record["revision"],
@@ -152,6 +170,354 @@ class ForegroundTests(unittest.TestCase):
             self.assertEqual(result["status"], "UNVERIFIED")
             self.assertEqual(self.task_path.read_bytes(), before)
         return result
+
+    def prepare_owner(self):
+        self.set_bundle([{"id": "F1", "invariant": "bounded result", "trigger": "call", "path": "source.py:1",
+                          "impact": "wrong result", "evidence": "synthetic observation"}])
+        self.dispatch(self.request("collect-review"), bundle=True)
+        self.dispatch(self.request("accept-review"))
+        self.assertEqual(self.dispatch()["next_action"], "OWNER_REWORK_ADMISSION_REQUIRED")
+        self.cli("state", "transition", "fixture", "Rework")
+        self.assertEqual(self.dispatch()["next_action"], "PREPARE_CORRECTION")
+        prepared = self.dispatch(self.request("prepare-correction"))
+        self.correction_id = prepared["domain_result"]["correction_id"]
+        self.assertEqual(self.dispatch()["next_action"], "ORIGINAL_OWNER_RECLAIM")
+        self.assertIsNone(self.record()["worker"])
+        self.dispatch(self.request("admit-owner-proposal"), expected=3)
+        self.cli("state", "claim", "fixture", "--owner", "writer", "--pid", str(os.getpid()))
+        self.assertEqual(self.dispatch()["next_action"], "ORIGINAL_OWNER_IMPLEMENTING_REQUIRED")
+        self.dispatch(self.request("admit-owner-proposal"), expected=3)
+        self.cli("state", "transition", "fixture", "Implementing")
+        self.assertEqual(self.dispatch()["next_action"], "ADMIT_OWNER_PROPOSAL")
+
+    def owner_bundle(self, unable=False):
+        admitted = self.record()["repair_proposals"][self.proposal_id]["admission"]
+        final = json.dumps({"schema_version": 1, "status": "unable" if unable else "proposed",
+                           "replacements": [] if unable else [{"path": "source.py", "content": "result = 2\n"}],
+                           "limitations": ["synthetic owner claims only"]})
+        events = [{"type": "tool_use", "sessionID": "ses_owner", "part": {"tool": "read", "state": {
+            "status": "completed", "input": {"path": "/candidate/source.py"},
+            "output": "Read file /candidate/source.py, lines 1-1\n1: result = 1"}}},
+            {"type": "text", "sessionID": "ses_owner", "part": {"text": final}},
+            {"type": "step_finish", "sessionID": "ses_owner", "part": {"reason": "stop", "tokens": {"input": 100, "output": 50}}}]
+        transcript = b"".join(c.canonical(event) for event in events)
+        exported = c.canonical({"info": {"id": "ses_owner", "outcome": "succeeded", "agent": "owner",
+            "model": {"providerID": "fixture", "id": "model"}, "tokens": {"input": 100, "output": 50}},
+            "messages": [{"type": "assistant", "finish": "stop", "content": [{"type": "text", "text": final}]}]})
+        receipt = {name: admitted[name] for name in ("model", "agent", "binary_sha256", "profile_sha256", "source_sha256")}
+        receipt.update(role="owner-proposal", context_sha256=c.digest(c.canonical(admitted["context"])),
+                       sessions=["ses_owner"], status="REVIEW_OBSERVED", candidate_ready=False, execution_credit=False,
+                       transcript_sha256=c.digest(transcript), stderr_sha256=c.digest(b""), returncode=0,
+                       export_returncode=0, export_failure=None, final_text=final)
+        self.bundle = {"receipt.json": c.canonical(receipt), "transcript.jsonl": transcript,
+                       "session-export.json": exported, "stderr.txt": b"", "export-stderr.txt": b""}
+        self.write_bundle()
+
+    def write_bundle(self):
+        for name, data in self.bundle.items():
+            (self.bundle_path / name).write_bytes(data)
+
+    def admit_owner(self):
+        request = self.request("admit-owner-proposal")
+        result = self.dispatch(request)
+        self.proposal_id = result["domain_result"]["admission_id"]
+        self.owner_bundle()
+        return request, result
+
+    def assert_candidate_unchanged(self, before):
+        self.assertEqual((self.worktree / "source.py").read_bytes(), self.source)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), self.head)
+        for field in ("worker", "leases", "state", "head_sha", "base_sha"):
+            self.assertEqual(self.record()[field], before[field])
+        self.assertEqual(self.record()["repair_protocol"]["operations"], {})
+
+    def test_owner_routing_from_review_preserves_v1_receipts_and_candidate(self):
+        self.prepare_owner()
+        before = self.record()
+        old_receipts = copy.deepcopy(before["foreground_control"]["receipts"])
+        admitted_request, admitted = self.admit_owner()
+        self.assertEqual(admitted["status"], "PROPOSAL_ADMITTED")
+        self.assertEqual(self.record()["revision"], before["revision"] + 1)
+        self.assertEqual(self.dispatch()["next_action"], "COLLECT_OWNER_PROPOSAL")
+        collect = self.request("collect-owner-proposal")
+        collected = self.dispatch(collect, bundle=True)
+        self.assertEqual(collected["status"], "PROPOSAL_COLLECTED")
+        self.assertEqual(self.record()["revision"], before["revision"] + 2)
+        sha = collected["domain_result"]["bundle_sha256"]
+        raw = (self.state_root / "review-artifacts" / sha).read_bytes()
+        self.assertEqual(c.digest(raw), sha)
+        self.assertEqual(c.decode(raw), {"schema_version": 1, "correction_id": self.correction_id,
+            "replacements": [{"path": "source.py", "before_sha256": c.digest(self.source),
+                              "after_base64": base64.b64encode(b"result = 2\n").decode()}]})
+        self.assertEqual(self.dispatch()["next_action"], "COLLECTED_OWNER_BUNDLE_REQUIRES_GUARDED_APPLY")
+        self.assertEqual(self.record()["foreground_control"]["schema_version"], 1)
+        for operation, receipt in old_receipts.items():
+            self.assertEqual(self.record()["foreground_control"]["receipts"][operation], receipt)
+            self.assertEqual(self.dispatch(receipt["request"]), receipt["result"])
+        saved = self.task_path.read_bytes()
+        for request, response in ((admitted_request, admitted), (collect, collected)):
+            self.assertEqual(self.dispatch(request), response)
+            self.assertEqual(self.task_path.read_bytes(), saved)
+            self.assertEqual(self.record()["foreground_control"]["receipts"][request["operation_id"]]["reference"],
+                             {"table": "repair_proposals", "key": self.proposal_id})
+            for flag in ("candidate_ready", "execution_credit", "delivery_credit", "current_applicability"):
+                self.assertIs(response[flag], False)
+        self.assert_candidate_unchanged(before)
+
+    def test_latest_owner_admission_and_terminal_history_do_not_revive_old_bundle(self):
+        self.prepare_owner()
+        admit, admitted = self.admit_owner()
+        collect = self.request("collect-owner-proposal")
+        collected = self.dispatch(collect, bundle=True)
+        next_request = self.request("admit-owner-proposal", "second-owner-admission")
+        next_request["payload"]["session"] = "ses_second_owner"
+        self.dispatch(next_request)
+        self.assertEqual(self.dispatch()["next_action"], "COLLECT_OWNER_PROPOSAL")
+        self.assertEqual(self.dispatch(collect), collected)
+        self.assertEqual(self.dispatch()["next_action"], "COLLECT_OWNER_PROPOSAL")
+        self.cli("state", "transition", "fixture", "Cancelled")
+        before = self.task_path.read_bytes()
+        self.assertEqual(self.dispatch(admit), admitted)
+        self.assertEqual(self.dispatch(collect), collected)
+        self.assertEqual(self.task_path.read_bytes(), before)
+        self.assertEqual(self.dispatch()["next_action"], "TERMINAL_NO_DISPATCH")
+        self.dispatch(self.request("admit-owner-proposal", "terminal-owner-admit"), expected=3)
+        self.dispatch(self.request("collect-owner-proposal", "terminal-owner-collect"), expected=3, bundle=True)
+
+    def test_not_applied_same_head_new_generation_clears_historical_boundary(self):
+        self.prepare_owner()
+        self.admit_owner()
+        collected = self.dispatch(self.request("collect-owner-proposal"), bundle=True)
+        sha = collected["domain_result"]["bundle_sha256"]
+        raw = (self.state_root / "review-artifacts" / sha).read_bytes()
+        request = {"schema_version": 1, "operation_id": "interrupted-repair",
+                   "expected_revision": self.record()["revision"],
+                   "correction_id": self.correction_id, "bundle_sha256": sha}
+        repair = delivery.dependency("repair-apply")
+        coordinator = delivery.dependency("orchestrator-state")
+        # Inject only the interruption. The production API publishes the bundle
+        # and durable APPLYING fence under the real coordinator lock/reservations.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                coordinator.CoordinatorLock(self.state_root), \
+                mock.patch.object(repair, "replace_one", side_effect=OSError("before first write")):
+            record = coordinator.read_task(self.state_root, "fixture")
+            coordinator.verify_reservations(self.state_root, record)
+            with self.assertRaisesRegex(OSError, "before first write"):
+                repair.apply_repair(record, self.state_root, request, raw,
+                                    lambda value: coordinator.write_task(self.state_root, value))
+        self.assertEqual(self.record()["repair_protocol"]["operations"]["interrupted-repair"]["phase"], "APPLYING")
+        self.dispatch(expected=3)
+        result = self.cli("repair-apply", "fixture", "reconcile", "--operation-id", "interrupted-repair")
+        self.assertEqual(result["status"], "NOT_APPLIED_OBSERVED")
+        self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
+        generation = self.record()["review_protocol"]["generations"][-1]
+        self.cli("state", "transition", "fixture", "Reviewing")
+        begun = self.domain("review-evidence", "begin",
+                            {name: generation[name] for name in ("base", "head", "packet", "policy", "obligations")},
+                            "same-head-new-generation")
+        self.assertEqual(begun["generation"], 2)
+        self.assertEqual(self.record()["head_sha"], self.head)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), self.head)
+        self.assertEqual((self.worktree / "source.py").read_bytes(), self.source)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(self.dispatch()["next_action"], "OWNER_REWORK_ADMISSION_REQUIRED")
+        # A numerically newer but stale generation must not clear the boundary.
+        saved = self.record()
+        stale = copy.deepcopy(saved)
+        stale["review_protocol"]["material_epoch"] += 1
+        self.store_record(stale)
+        self.assertEqual(self.dispatch()["next_action"], "REPAIR_RECONCILIATION_REQUIRED")
+        self.store_record(saved)
+        # Phase-specific projection guard: even a newer current generation at
+        # this head cannot clear APPLIED_UNREVIEWED. This projection-only copy
+        # is not persisted or presented as an admitted review generation.
+        applied = copy.deepcopy(saved)
+        applied["repair_protocol"]["operations"]["interrupted-repair"]["phase"] = "APPLIED_UNREVIEWED"
+        self.assertEqual(delivery.owner_boundary(applied), "REPAIRED_CANDIDATE_REQUIRES_COMMIT_EXECUTION_AND_REVIEW")
+        applied["head_sha"] = "1" * 40
+        applied["review_protocol"]["generations"][-1]["head"] = applied["head_sha"]
+        self.assertIsNone(delivery.owner_boundary(applied))
+
+    def test_owner_pause_exact_replay_and_unable_outcome(self):
+        self.prepare_owner()
+        before = self.record()
+        self.dispatch(self.request("pause", "pause-admission"))
+        self.dispatch(self.request("admit-owner-proposal"), expected=3)
+        self.dispatch(self.request("resume", "resume-admission"))
+        request, admitted = self.admit_owner()
+        self.owner_bundle(unable=True)
+        self.dispatch(self.request("pause", "pause-collection"))
+        self.assertEqual(self.dispatch(request), admitted)
+        self.dispatch(self.request("collect-owner-proposal"), expected=3, bundle=True)
+        self.dispatch(self.request("resume", "resume-collection"))
+        collect = self.request("collect-owner-proposal")
+        result = self.dispatch(collect, bundle=True)
+        self.assertEqual(result["status"], "UNABLE_OBSERVED")
+        self.assertIsNone(result["domain_result"]["bundle_sha256"])
+        self.assertFalse(result["candidate_ready"])
+        self.assertEqual(self.dispatch()["next_action"], "OWNER_PROPOSAL_UNABLE_REQUIRES_OPERATOR")
+        self.dispatch(self.request("pause", "pause-after-unable"))
+        saved = self.task_path.read_bytes()
+        self.assertEqual(self.dispatch(collect), result)
+        self.assertEqual(self.dispatch(request), admitted)
+        self.assertEqual(self.task_path.read_bytes(), saved)
+        self.assertEqual(self.dispatch()["next_action"], "RESUME_FOREGROUND")
+        self.assert_candidate_unchanged(before)
+        artifact = self.state_root / "review-artifacts" / c.digest(self.bundle["receipt.json"])
+        artifact.rename(artifact.with_suffix(".missing"))
+        self.dispatch(expected=3)
+        self.dispatch(collect, expected=3)
+        self.dispatch(request, expected=3)
+
+    def test_owner_missing_stale_wrong_role_and_source_refused(self):
+        self.correction_id = "0" * 64
+        self.dispatch(self.request("admit-owner-proposal"), expected=3)
+        self.prepare_owner()
+        before = self.record()
+        request = self.request("admit-owner-proposal")
+        for payload in ({"correction_id": "0" * 64}, {"session": "ses_fixed"},
+                        {"sources": {}}, {"sources": {"/candidate/other.py": "other.py"}},
+                        {"sources": {"/candidate/source.py": "../source.py"}}, {"role": "reviewer"}):
+            with self.subTest(payload=payload):
+                changed = copy.deepcopy(request)
+                changed["payload"].update(payload)
+                self.dispatch(changed, expected=3)
+        self.dispatch(request | {"expected_revision": request["expected_revision"] - 1}, expected=3)
+        self.dispatch(request, expected=3, bundle=True)
+        admitted_request, admitted = self.admit_owner()
+        self.dispatch(self.request("pause", admitted_request["operation_id"]), expected=3)
+        changed = copy.deepcopy(admitted_request)
+        changed["payload"]["session"] = "ses_changed"
+        self.dispatch(changed, expected=3)
+        collect = self.request("collect-owner-proposal")
+        self.dispatch(collect, expected=3)
+        self.dispatch(collect | {"expected_revision": collect["expected_revision"] - 1}, expected=3, bundle=True)
+        changed = copy.deepcopy(collect)
+        changed["payload"]["admission_id"] = "0" * 64
+        self.dispatch(changed, expected=3, bundle=True)
+        changed = copy.deepcopy(collect)
+        changed["payload"]["artifact_sha256"]["receipt.json"] = "0" * 64
+        self.dispatch(changed, expected=3, bundle=True)
+        saved_bundle = copy.deepcopy(self.bundle)
+        for field, value in (("role", "review"), ("sessions", ["ses_fixed"]), ("context_sha256", "0" * 64),
+                             ("source_sha256", {"/candidate/source.py": "0" * 64})):
+            self.bundle = copy.deepcopy(saved_bundle)
+            receipt = c.decode(self.bundle["receipt.json"])
+            receipt[field] = value
+            self.bundle["receipt.json"] = c.canonical(receipt)
+            self.write_bundle()
+            self.dispatch(self.request("collect-owner-proposal"), expected=3, bundle=True)
+        self.bundle = saved_bundle
+        self.write_bundle()
+        (self.worktree / "source.py").write_bytes(b"result = 9\n")
+        self.dispatch(collect, expected=3, bundle=True)
+        self.assertEqual(self.dispatch()["next_action"], "OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED")
+        # Replay acknowledges the original admission, not these dirty bytes.
+        self.assertEqual(self.dispatch(admitted_request), admitted)
+        (self.worktree / "source.py").write_bytes(self.source)
+        missing = self.bundle_path / "session-export.json"
+        missing.rename(missing.with_suffix(".missing"))
+        self.dispatch(collect, expected=3, bundle=True)
+        missing.with_suffix(".missing").rename(missing)
+        self.dispatch(collect, bundle=True)
+        self.assert_candidate_unchanged(before)
+
+    def test_owner_retained_domain_and_artifact_loss_refuse_status_and_replay(self):
+        self.prepare_owner()
+        admit, _ = self.admit_owner()
+        collect = self.request("collect-owner-proposal")
+        result = self.dispatch(collect, bundle=True)
+        saved = self.record()
+        for damage in ("ledger", "admission", "collection", "request", "reference", "result"):
+            record = copy.deepcopy(saved)
+            if damage == "ledger":
+                del record["repair_proposals"]
+            elif damage == "admission":
+                del record["repair_proposals"][self.proposal_id]
+            elif damage == "collection":
+                record["repair_proposals"][self.proposal_id]["collection"] = None
+            elif damage == "request":
+                item = record["repair_proposals"][self.proposal_id]["collection"]
+                item["request"]["operation_id"] = "different"
+                item["request_sha256"] = c.digest(c.canonical(item["request"]))
+            elif damage == "reference":
+                record["foreground_control"]["receipts"][collect["operation_id"]]["reference"]["key"] = "0" * 64
+            else:
+                record["foreground_control"]["receipts"][collect["operation_id"]]["result"]["domain_result"]["status"] = "UNABLE_OBSERVED"
+            self.store_record(record)
+            self.dispatch(expected=3)
+            self.dispatch(admit, expected=3)
+            self.dispatch(collect, expected=3)
+        self.store_record(saved)
+        for sha in (result["domain_result"]["bundle_sha256"], c.digest(self.bundle["receipt.json"]),
+                    c.digest(self.bundle["transcript.jsonl"])):
+            artifact = self.state_root / "review-artifacts" / sha
+            raw = artifact.read_bytes()
+            artifact.chmod(0o600)
+            artifact.write_bytes(b"corrupt")
+            self.dispatch(expected=3)
+            self.dispatch(collect, expected=3)
+            artifact.write_bytes(raw)
+            missing = artifact.with_suffix(".missing")
+            artifact.rename(missing)
+            self.dispatch(expected=3)
+            self.dispatch(admit, expected=3)
+            missing.rename(artifact)
+        self.assertEqual(self.dispatch(collect), result)
+
+    def test_owner_external_operation_collision_and_stale_context(self):
+        self.prepare_owner()
+        request = self.request("admit-owner-proposal", "external-admission")
+        result = self.domain("repair-proposal", "admit", request["payload"], request["operation_id"])
+        self.proposal_id = result["admission_id"]
+        self.owner_bundle()
+        self.assertEqual(self.dispatch()["next_action"], "COLLECT_OWNER_PROPOSAL")
+        self.dispatch(request, expected=3)
+        self.dispatch(self.request("pause", "external-admission"), expected=3)
+        collect = self.request("collect-owner-proposal", "external-collection")
+        self.domain("repair-proposal", "collect", collect["payload"], collect["operation_id"],
+                    "--bundle", str(self.bundle_path))
+        self.dispatch(collect, expected=3)
+        self.dispatch(self.request("pause", "external-collection"), expected=3)
+        self.assertEqual(self.dispatch()["next_action"], "COLLECTED_OWNER_BUNDLE_REQUIRES_GUARDED_APPLY")
+        saved = self.record()
+        for field in ("material_epoch", "head_sha", "owner"):
+            record = copy.deepcopy(saved)
+            if field == "material_epoch":
+                record["review_protocol"][field] += 1
+            elif field == "head_sha":
+                record[field] = "0" * 40
+            else:
+                record["owner"] = "other-owner"
+            self.store_record(record)
+            self.dispatch(self.request("admit-owner-proposal", "stale-admit"), expected=3)
+            if field == "owner":
+                self.dispatch(expected=3)  # Worker identity remains bound to writer.
+            else:
+                self.assertEqual(self.dispatch()["next_action"], "OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED")
+        self.store_record(saved)
+
+    def test_owner_worker_and_reservation_guards_still_apply(self):
+        self.prepare_owner()
+        admit, _ = self.admit_owner()
+        collect = self.request("collect-owner-proposal")
+        saved = self.record()
+        for field in ("owner", "hostname", "process_start"):
+            record = copy.deepcopy(saved)
+            record["worker"][field] = "different"
+            self.store_record(record)
+            self.dispatch(expected=3)
+            self.dispatch(admit, expected=3)
+            self.dispatch(collect, expected=3, bundle=True)
+        self.store_record(saved)
+        reservation = self.state_root / "implementation" / f'{saved["leases"]["implementation_lane"]}.lock' / "owner.json"
+        reservation.rename(reservation.with_suffix(".missing"))
+        self.dispatch(expected=3)
+        self.dispatch(collect, expected=3, bundle=True)
+        reservation.with_suffix(".missing").rename(reservation)
+        self.dispatch(collect, bundle=True)
+        self.assert_candidate_unchanged(saved)
 
     def test_collect_pause_restart_resume_accept_and_exact_replay(self):
         original = self.record()

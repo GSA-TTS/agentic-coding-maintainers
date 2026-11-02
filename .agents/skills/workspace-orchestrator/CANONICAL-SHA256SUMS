@@ -5,7 +5,7 @@ e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA25
 8017c4e84ef573f63732aa0b660298794a70429ec74bb109c7dc18be23bb5300  ./bin/candidate-binding.py
 ff1f72d12091f046b2ba40b6c8054452ab9ce72df3d5b522456dd888a0514d92  ./bin/execution-observe.py
 9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
-d29a20e0abcd16bd33e16f23e6ce0b64bd3b067a778da41c8c8101cf2c8bd789  ./bin/foreground-delivery.py
+2e727e2f8e1a299f26a9aae7ea49fbe90dcb8b2513418982a0c11c25fefcda6e  ./bin/foreground-delivery.py
 978f11baea2e36e52246c1ba0636071b18db711a0ef9ba4c43b27f385efe05b6  ./bin/monitor-journal.py
 dd73225fa0e5da3ab25836719ceb9c6bf01378c07487886b3e48393065a34ca8  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
@@ -22,7 +22,7 @@ eb60ebeac23bf003c39f7650fc9d784909f3424c6fec76d2504ccb4d744c9c20  ./bin/review-p
 3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
 bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTION-OBSERVER.md
 438fba1a0be38b6b6a16acc701f9e4923fd154320735e802b90c7ff1a7b1a061  ./docs/EXECUTION-PLAN.md
-b080e21442fa84213c1d449afc7ce7419c0904ed0d274d9411fcf6d2e249a719  ./docs/FOREGROUND-DELIVERY.md
+a02ebfeebcf9a601fe17f141948712cd616c898c1ab75b1a5694db77045af947  ./docs/FOREGROUND-DELIVERY.md
 3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
 ba8d134ae3a0dba93249f97823032760a745aacf0b251a8e87a0ce1e53228382  ./docs/MAINTAINER-SERVICE.md
 4e0812b7e8a0ed0862c275a81971dd857c5c39e4329f59eab9fbcf62c16e313e  ./docs/OPERATOR-GUIDE.md
@@ -45,7 +45,7 @@ a850aa1f41361161e31a4e6b4ad547ff78b404051e39dc71b9cab78173185bed  ./run.sh
 507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py
 088c2edbc8305b2a1d49f389fccec47f27403dd34b74a90e625b2b44c8ceccff  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
-fe6c676ee053927603611a76b011623710a0161edfe7ed5d98d49d93a6f82e2a  ./tests/foreground-delivery-test.py
+eb5a252477cb84f3af4ce751a507657cd31cdf472ac4456fbfa995f16e7d9a09  ./tests/foreground-delivery-test.py
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
 8ce5076dba28c115920af104121fe93cf7cdc1d2fe74b73009de55f9ebd8c98d  ./tests/monitor-journal-test.py
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh
