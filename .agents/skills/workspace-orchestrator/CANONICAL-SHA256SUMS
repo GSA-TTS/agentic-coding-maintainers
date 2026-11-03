@@ -25,7 +25,7 @@ f19900a2f33673adccfa5b668859a9b3a7393275d066f5d8775aee28f45cc153  ./bin/review-p
 3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
 bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTION-OBSERVER.md
 438fba1a0be38b6b6a16acc701f9e4923fd154320735e802b90c7ff1a7b1a061  ./docs/EXECUTION-PLAN.md
-1af868cd70eeccc5a089734a584766ab870b8ad1a43cbc9901a62302fa2c2131  ./docs/FOREGROUND-DELIVERY.md
+4554505eddf7529e349294b6ce81b30725039fae631a92d67d7242523d983417  ./docs/FOREGROUND-DELIVERY.md
 3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
 ba8d134ae3a0dba93249f97823032760a745aacf0b251a8e87a0ce1e53228382  ./docs/MAINTAINER-SERVICE.md
 4e0812b7e8a0ed0862c275a81971dd857c5c39e4329f59eab9fbcf62c16e313e  ./docs/OPERATOR-GUIDE.md
@@ -49,8 +49,8 @@ a850aa1f41361161e31a4e6b4ad547ff78b404051e39dc71b9cab78173185bed  ./run.sh
 088c2edbc8305b2a1d49f389fccec47f27403dd34b74a90e625b2b44c8ceccff  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
-6860cc491ac9a4633bdb75c66464df2dfb99ba0380a0881662cc0ee5d4e543ca  ./tests/foreground-cli-diagnostic.py
-a3780cfbf49befbf824a5f3b762e6008033a3c34e93fcd8f418c94ee7c496fc7  ./tests/foreground-delivery-test.py
+7aea73038feaae9b905e4f3146b280028dba2c512304de0a6d719048743c4a61  ./tests/foreground-cli-diagnostic.py
+ef69ea360aa45e948c630ef956402dc627b32056a133232c7689333048d1fa77  ./tests/foreground-delivery-test.py
 1a68af3feaf26d8d90e7b409b3b807f5144d2669730b03b5ce1f2145e70ed2fc  ./tests/foreground-review-cases.py
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
 8ce5076dba28c115920af104121fe93cf7cdc1d2fe74b73009de55f9ebd8c98d  ./tests/monitor-journal-test.py

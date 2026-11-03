@@ -411,6 +411,62 @@ exit. Exception messages, task contents, runtime stdout/stderr, host paths and
 worker identity values are withheld. Production failure responses are unchanged.
 Executable fixture shims require sandbox `TMPDIR=/work/tmp`, not no-exec `/tmp`.
 
+The diagnostic launcher reuses compiled code for installed `bin/` source within
+one CLI process. Every import still reads its source and executes a fresh module
+namespace; this does not cache modules, mutable evidence, Git observations or
+profile/policy digests. The key includes path and compiler optimization mode,
+and reuse requires identical actual source bytes. Same-size/same-mtime changes
+miss; deleted files still fail. At most 32 latest source/code pairs are retained,
+each source at most 1 MB. Other paths and oversized sources use the original
+compiler. The original loader is restored on success and failure, and nothing
+is written to disk. Public entrypoints, assertions, fresh fixtures and production
+code remain unchanged. Tests cover source changes, namespace isolation, missing
+files, scope, compiler options, bounds and restoration.
+
+### Foreground test performance measurement
+
+Measured from base `fc5107b` in network-off Docker, pinned
+`python:3.12-bookworm@sha256:a5bab0ff300f91231c2e68bf73a8a8d60762ac39ce1c50eaf6803e4c38a9062b`,
+2 CPUs / 2 GB / 512 PIDs, non-root, read-only candidate mount and writable
+container copy of `.agents/`. `TMPDIR=/work` keeps executable fixture shims off
+no-exec `/tmp`. No candidate code ran on the host.
+
+Each sample launched `python3 -I -B tests/foreground-delivery-test.py -k CASE -v`
+in a new process with a fresh fixture. Cases alternated, three samples each in
+one container per variant. Times below are outer monotonic elapsed seconds,
+including interpreter startup; profiling was a separate fourth replay run.
+
+| Case (test suffix) | Baseline samples | Compile-reuse samples | Median change |
+|---|---|---|---|
+| `fresh_cli_original_base_union_one_revision_and_historical_replay` | 13.598, 14.517, 14.139 | 9.713, 9.448, 9.819 | 14.139 → 9.713 (31.3% faster) |
+| `fresh_inherited_findings_wait_for_current_report` | 20.904, 22.377, 21.405 | 17.418, 17.251, 17.107 | 21.405 → 17.251 (19.4% faster) |
+
+An observer-disabled ablation in a disposable container copy gave medians 12.937
+and 20.713 seconds. That experiment did not justify removing same-invocation
+diagnostics; tracing remains enabled. Aggregated cProfile results from the replay
+case's 20 foreground CLI subprocesses identified repeated compilation as the
+larger cost: 1,865 compile calls / 6.885 seconds before, 791 / 2.600 seconds after.
+Overall profiled time fell from 9.660 to 5.296 seconds; subprocess launches stayed
+at 558. Source and evidence validation were not skipped.
+
+Observed verification after the change:
+
+```text
+foreground-delivery-test.py -k diagnostic -v
+Ran 3 tests in 1.764s
+OK
+foreground-delivery-test.py -v
+Ran 61 tests in 517.410s
+OK
+```
+
+All 59 previous tests and assertions remain; two isolated compile-reuse tests
+were added. This is a local measurement, not a hosted-CI timing guarantee. There
+was no paired local full-suite baseline; the previously reported hosted 546-second
+run is a different environment and cannot establish the full-suite speedup.
+The workflow and its ten-minute timeout remain unchanged; whole-job headroom
+must be measured by the next hosted run.
+
 Next rollout gates remain: explicit model/sandbox provisioning, controlled local
 effect dispatch and lifecycle operation replay, longer foreground continuation,
 live PR/check collection, and human approval. The human-approved delivery lane
