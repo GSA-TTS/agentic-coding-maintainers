@@ -70,8 +70,8 @@ edits and deletion still invalidate/fail through the normal path.
 The regression proves fresh module state and loader restoration after successful
 test completion, test assertion failure, and setup failure. Existing cache-edit,
 deletion, scope, optimization-option, bounds and cleanup tests remain. The exact
-72 baseline test IDs and execution multiplicities are preserved; one regression
-is added. No runtime code, assertions, timeout, CI permissions or test-mode
+72 baseline test IDs and execution multiplicities are preserved; one cache-isolation
+regression plus three benchmark regressions are added (76 tests total). No runtime code, assertions, timeout, CI permissions or test-mode
 bypass changes are made.
 
 ## Timing method and results
