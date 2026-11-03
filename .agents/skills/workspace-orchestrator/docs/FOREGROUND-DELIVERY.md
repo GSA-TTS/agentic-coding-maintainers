@@ -147,8 +147,24 @@ live reservations, correction scope, cycle and post-application material epoch.
 The application must be final `APPLIED_UNREVIEWED`, including explicit successful
 reconciliation, and linked to the latest collected proposal for that correction.
 
+Fresh adoption reads bounded hermetic `git config --null --get-all remote.origin.url`
+output and requires exactly one configured URL matching the task repository.
+Accepted forms are `https://github.com/OWNER/REPO`,
+`ssh://git@github.com/OWNER/REPO`, and `git@github.com:OWNER/REPO`, with optional
+`.git` suffix and case-insensitive owner/repository matching. Credentials, custom
+ports, query strings, other hosts/protocols, absent and multiple URLs are refused.
+This checks configured identity without applying `insteadOf` URL rewrites or
+contacting GitHub; historical status/replay does not inspect current origin.
+
 The helper reads the actual raw commit (tags are refused), requires its single
-parent to be the repair's original head, and compares the entire raw tree diff.
+parent to be the repair's original head, and compares the entire tree inventory.
+For BOTH original and new commits it extracts the root tree ID from authenticated
+commit bytes, reads and hashes every root/descendant raw tree object, then parses
+its entries. Full inventories are derived only from these authenticated bytes,
+not `diff-tree`/`ls-tree` output or unbounded `git fsck`. Duplicate names, invalid
+ordering, unsafe paths, unsupported modes, empty descendant trees and truncated
+object IDs fail closed. A parseable loose tree stored under the wrong object hash
+is refused before adoption and during retained status/replay validation.
 Exactly the retained one or two modified `100644` paths must appear. Before blob
 SHA-256 and after raw bytes must equal the retained bundle; raw object IDs are
 independently recomputed. Additions, removals, renames, executable/mode changes,
@@ -162,12 +178,15 @@ assume-unchanged and skip-worktree bits cannot hide bytes. Symlinks, gitlinks,
 special files, untracked directories, and oversized inventories fail closed.
 The helper reuses the installed bounded Git object reader: all inherited `GIT_`
 variables are stripped, global/system configuration, hooks, fsmonitor, lazy fetch
-and replacement objects are disabled, protocols are denied, and raw diff commands
-disable external diff and textconv. No clean/smudge or attributes conversion is
+and replacement objects are disabled and protocols are denied. The comparison
+invokes no diff driver or textconv. No clean/smudge or attributes conversion is
 used. Each Git read is limited to 15 seconds; aggregate checks allow 1,100 Git
 calls, 16 MB observed bytes, 512 tracked files, 1,024 filesystem entries and 60
 seconds checked between reads (an in-flight read can take its remaining 15-second
-bound). Individual tracked files are capped at 1 MB; repair blobs at 262,144 bytes.
+bound). Each complete tree inventory additionally permits at most 512 tree
+visits and 32 directory levels; all tree reads share the Git operation/byte/time
+budgets. Individual tracked files are capped at 1 MB; repair blobs and individual
+raw tree objects at 262,144 bytes.
 
 One atomic coordinator write advances task head and material epoch, advances an
 existing legacy disposition epoch, clears reviewers/reviewed SHA/validation, and
@@ -178,7 +197,8 @@ slot and checks both canonical 900 KB and durable 1 MB serialization budgets
 before writing. Pause blocks new adoption; exact historical retry stays read-only.
 A second operation cannot adopt the same application again.
 
-Status and replay validate those retained Git objects and the witness rather than
+Status and replay validate those retained Git objects (including both complete
+tree hierarchies) and the witness rather than
 the current checkout. Later heads or dirty bytes do not reapply adoption, advance
 epochs, or acquire fresh credit. Missing/corrupt retained objects, artifacts or
 references produce UNVERIFIED, including historical replay. Objects must therefore

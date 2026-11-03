@@ -44,6 +44,7 @@ class Git:
         self.path = Path(path)
         self.reader = load("review-packet")
         self.calls = self.bytes = 0
+        self.inventories = {}
         self.deadline = time.monotonic() + MAX_SECONDS
 
     def charge(self, size):
@@ -71,6 +72,64 @@ class Git:
         return raw
 
 
+def tree_inventory(git, commit):
+    """Derive paths only from hash-verified root and descendant raw trees."""
+    headers = commit.split(b"\n\n", 1)
+    require(len(headers) == 2, "malformed raw commit")
+    roots = [line[5:] for line in headers[0].split(b"\n") if line.startswith(b"tree ")]
+    require(len(roots) == 1, "one raw commit tree required")
+    root = roots[0].decode("ascii")
+    if root in git.inventories:
+        return git.inventories[root]
+    files, trees = {}, 0
+
+    def walk(oid, prefix=b"", depth=0):
+        nonlocal trees
+        trees += 1
+        require(trees <= MAX_FILES and depth <= 32, "tree inventory exceeds bound")
+        raw = git.obj(oid, "tree")
+        require(raw or not prefix, "empty descendant tree unsupported")
+        offset, names, previous = 0, set(), None
+        width = len(oid) // 2
+        while offset < len(raw):
+            git.charge(0)
+            space = raw.index(b" ", offset)
+            end = raw.index(b"\0", space + 1)
+            mode, name = raw[offset:space], raw[space + 1:end]
+            require(mode in {b"40000", b"100644", b"100755"} and name
+                    and b"/" not in name and name not in {b".", b".."}
+                    and name.lower() != b".git" and name not in names,
+                    "unsupported raw tree entry")
+            order = name + (b"/" if mode == b"40000" else b"\0")
+            require(previous is None or previous < order, "noncanonical tree ordering")
+            previous = order
+            names.add(name)
+            require(end + 1 + width <= len(raw), "truncated tree object ID")
+            child = raw[end + 1:end + 1 + width].hex()
+            offset = end + 1 + width
+            path = prefix + name
+            if mode == b"40000":
+                walk(child, path + b"/", depth + 1)
+            else:
+                require(len(files) < MAX_FILES, "tree file inventory exceeds bound")
+                files[path] = (mode, child)
+    walk(root)
+    git.inventories[root] = files
+    return files
+
+
+def verify_origin(git, repository):
+    # Read configured values, not get-url (which applies insteadOf rewrites).
+    raw = git.run("config", "--null", "--get-all", "remote.origin.url", limit=4096)
+    values = raw.split(b"\0")
+    require(len(values) == 2 and values[1] == b"", "exactly one origin URL required")
+    url = values[0].decode("ascii")
+    match = re.fullmatch(r"(?:https://github\.com/|ssh://git@github\.com/|git@github\.com:)"
+                         r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?", url)
+    require(match is not None and match[1].casefold() == repository.casefold(),
+            "current GitHub origin differs from task repository")
+
+
 def links(record, request):
     key = request["payload"]["apply_operation_id"]
     app = record.get("foreground_repairs", {}).get("applications", {}).get(key)
@@ -90,24 +149,24 @@ def links(record, request):
 def comparison(git, item, head):
     original = item["head"]
     require(head != original, "new repair head required")
-    git.obj(original, "commit")
+    old_commit = git.obj(original, "commit")
     commit = git.obj(head, "commit")
     headers = commit.split(b"\n\n", 1)
     require(len(headers) == 2, "malformed raw commit")
     parents = [line[7:] for line in headers[0].split(b"\n") if line.startswith(b"parent ")]
     require(parents == [original.encode()], "repair commit must have exactly the original head as parent")
-    raw = git.run("diff-tree", "-r", "--no-commit-id", "--raw", "-z", "--no-renames",
-                  "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--no-abbrev",
-                  original, head, "--", limit=4096)
-    parts = raw.split(b"\0")
-    require(parts.pop() == b"" and len(parts) == 2 * len(item["entries"]), "entire repair diff must match bundle")
+    old_tree, new_tree = tree_inventory(git, old_commit), tree_inventory(git, commit)
+    require(old_tree.keys() == new_tree.keys(), "repair adds or removes paths")
     changes = {}
-    for offset in range(0, len(parts), 2):
-        mode1, mode2, before, after, status = parts[offset].decode("ascii").split()
-        path = parts[offset + 1].decode("ascii")
-        require(mode1 == ":100644" and mode2 == "100644" and status == "M" and path not in changes,
+    raw = b""
+    for path in sorted(old_tree):
+        if old_tree[path] == new_tree[path]:
+            continue
+        (mode1, before), (mode2, after) = old_tree[path], new_tree[path]
+        require(mode1 == mode2 == b"100644",
                 "only retained ordinary modified files permitted")
-        changes[path] = (before, after)
+        changes[path.decode("ascii")] = (before, after)
+        raw += b":100644 100644 " + before.encode() + b" " + after.encode() + b" M\0" + path + b"\0"
     require(set(changes) == {entry["path"] for entry in item["entries"]}, "repair paths differ")
     files = []
     for entry, saved in zip(item["entries"], item["before"]):
@@ -132,21 +191,19 @@ def clean_checkout(git, record, head, item):
     require(git.run("symbolic-ref", "--quiet", "HEAD") == ("refs/heads/" + record["branch"] + "\n").encode(),
             "actual worktree branch differs")
     require(git.run("rev-parse", "--verify", "HEAD", limit=100) == (head + "\n").encode(), "actual HEAD differs")
-    tree = git.run("ls-tree", "-r", "-z", "--full-tree", head, limit=262_144)
+    expected = tree_inventory(git, git.obj(head, "commit"))
     index = git.run("ls-files", "--stage", "-z", limit=262_144)
-    expected, indexed = {}, {}
-    for output, target, is_tree in ((tree, expected, True), (index, indexed, False)):
-        parts = output.split(b"\0")
-        require(parts.pop() == b"" and len(parts) <= MAX_FILES, "checkout inventory exceeds bound")
-        for part in parts:
-            metadata, path = part.split(b"\t", 1)
-            fields = metadata.split()
-            mode, oid = (fields[0], fields[2]) if is_tree else (fields[0], fields[1])
-            require(len(fields) == 3 and (fields[1] == b"blob" if is_tree else fields[2] == b"0")
-                    and mode in {b"100644", b"100755"}, "unsupported tree/index entry")
-            git.reader.name_record(path)
-            require(path not in target and path.split(b"/")[0].lower() != b".git", "duplicate/unsafe checkout path")
-            target[path] = (mode, oid.decode("ascii"))
+    indexed = {}
+    parts = index.split(b"\0")
+    require(parts.pop() == b"" and len(parts) <= MAX_FILES, "checkout inventory exceeds bound")
+    for part in parts:
+        metadata, path = part.split(b"\t", 1)
+        fields = metadata.split()
+        require(len(fields) == 3 and fields[2] == b"0" and fields[0] in {b"100644", b"100755"},
+                "unsupported index entry")
+        git.reader.name_record(path)
+        require(path not in indexed, "duplicate checkout path")
+        indexed[path] = (fields[0], fields[1].decode("ascii"))
     require(expected == indexed, "index differs from committed tree")
     seen, count = set(), 0
     # Include ignored and untracked files; never invoke status, clean/smudge, or
@@ -229,6 +286,7 @@ def adopt(record, request, root):
                     == request["payload"]["apply_operation_id"]
                     for r in record["foreground_control"]["receipts"].values()), "application already adopted")
     git = Git(record["worktree"])
+    verify_origin(git, record["repo"])
     witness = comparison(git, item, request["payload"]["head"])
     clean_checkout(git, record, request["payload"]["head"], item)
     record["head_sha"] = request["payload"]["head"]

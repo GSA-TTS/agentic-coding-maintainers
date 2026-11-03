@@ -6,12 +6,25 @@ import io
 import json
 import os
 import sys
+import zlib
 from unittest import mock
 
 
 def install(base, delivery, c):
     class AdoptionTests(base):
         # Inherit fixture methods, but the loader below selects only adoption cases.
+        def git(self, *args):
+            if args[:2] == ("commit", "-qm") and not hasattr(self, "head"):
+                # Unchanged descendant tree is part of BOTH complete inventories.
+                directory = self.worktree / "nested"
+                directory.mkdir()
+                (directory / "keep.txt").write_bytes(b"retained context\n")
+                super().git("add", "nested/keep.txt")
+            result = super().git(*args)
+            if args[0] == "init":
+                super().git("remote", "add", "origin", "https://github.com/fixture/project.git")
+            return result
+
         def prepare_adoption(self):
             self.repair_cli(self.collected_two_file_proposal())
             self.git("add", "source.py", "second.py")
@@ -213,7 +226,7 @@ def install(base, delivery, c):
                 elif damage == "scope":
                     record["owned_paths"] = ["other"]
                 elif damage == "worker":
-                    record["worker"]["worker_id"] = "different"
+                    record["worker"]["worker_id"] = "d" * 32
                 elif damage == "owner":
                     record["owner"] = "different"
                 else:
@@ -247,6 +260,150 @@ def install(base, delivery, c):
                 record["revision"] += 1
             self.store_record(record)
             self.dispatch(self.adopt_request(), expected=3)
+
+        def test_adopt_changed_valid_worker_reaches_identity_guard(self):
+            request = self.prepare_adoption()
+            saved = self.record()
+            changed = copy.deepcopy(saved)
+            changed["worker"]["worker_id"] = "d" * 32
+            self.assertNotEqual(changed["worker"]["worker_id"], saved["worker"]["worker_id"])
+            coordinator = delivery.dependency("orchestrator-state")
+            coordinator.validate_record(changed, "fixture")
+            coordinator.verify_reservations(self.state_root, changed)
+            helper = delivery.dependency("foreground-adopt")
+            with self.assertRaisesRegex(ValueError, "current original owner, worker"):
+                helper.adopt(copy.deepcopy(changed), request, self.state_root)
+            self.store_record(changed)
+            original_dependency = delivery.dependency
+            path = self.root / "changed-worker-request.json"
+            path.write_bytes(c.canonical(request))
+            with mock.patch.dict(os.environ, self.env, clear=True), \
+                    mock.patch.object(sys, "argv", ["foreground-delivery", "fixture", "--request", str(path)]), \
+                    mock.patch.object(delivery, "dependency", side_effect=lambda name: coordinator if name == "orchestrator-state" else original_dependency(name)), \
+                    mock.patch.object(coordinator, "write_task", wraps=coordinator.write_task) as writes, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(delivery.main(), 3)
+                writes.assert_not_called()
+            self.dispatch(request, expected=3)
+            self.store_record(saved)
+            self.dispatch(request)
+
+        def test_adopt_origin_exact_one_github_binding_and_history(self):
+            request = self.prepare_adoption()
+            for url in ("https://github.com/other/project.git", "https://example.com/fixture/project",
+                        "http://github.com/fixture/project", "https://github.com.evil/fixture/project",
+                        "https://user@github.com/fixture/project", "ssh://git@github.com:2222/fixture/project",
+                        "https://github.com/fixture/project?x=y", "file:///fixture/project"):
+                self.git("remote", "set-url", "origin", url)
+                self.dispatch(request, expected=3)
+            self.git("config", "--unset-all", "remote.origin.url")
+            self.dispatch(request, expected=3)
+            self.git("config", "--add", "remote.origin.url", "https://github.com/fixture/project.git")
+            self.git("config", "--add", "remote.origin.url", "https://github.com/fixture/project.git")
+            self.dispatch(request, expected=3)
+            self.git("config", "--unset-all", "remote.origin.url")
+            self.git("config", "--add", "remote.origin.url", "https://github.com/fixture/project.git")
+            helper = delivery.dependency("foreground-adopt")
+            for url in ("https://github.com/FIXTURE/Project.git", "ssh://git@github.com/fixture/project.git",
+                        "git@github.com:fixture/project", "https://github.com/fixture/project"):
+                self.git("remote", "set-url", "origin", url)
+                helper.verify_origin(helper.Git(self.worktree), "fixture/project")
+            result = self.dispatch(request)
+            self.git("remote", "set-url", "origin", "https://github.com/other/project")
+            self.assertEqual(self.dispatch(request), result)
+            self.git("config", "--unset-all", "remote.origin.url")
+            self.assertEqual(self.dispatch(request), result)
+            self.assertEqual(self.dispatch()["status"], "FOREGROUND_STATUS")
+
+        def substituted_tree(self, oid, descendant):
+            path = self.worktree / ".git/objects" / oid[:2] / oid[2:]
+            original = path.read_bytes()
+            loose = zlib.decompress(original)
+            before, after = (b"keep.txt\0", b"weep.txt\0") if descendant else (b"nested\0", b"mested\0")
+            self.assertIn(before, loose)
+            substituted = loose.replace(before, after, 1)
+            self.assertNotEqual(substituted, loose)
+            header, raw = substituted.split(b"\0", 1)
+            self.assertEqual(header, b"tree " + str(len(raw)).encode())
+            # Prove the fixture is structurally parseable directly; Git versions
+            # may reject its incorrect object hash before returning any bytes.
+            offset, names, previous = 0, set(), None
+            while offset < len(raw):
+                space = raw.index(b" ", offset)
+                end = raw.index(b"\0", space + 1)
+                mode, name = raw[offset:space], raw[space + 1:end]
+                self.assertIn(mode, (b"40000", b"100644", b"100755"))
+                self.assertTrue(name)
+                self.assertNotIn(b"/", name)
+                self.assertNotIn(name, names | {b".", b"..", b".git"})
+                names.add(name)
+                order = name + (b"/" if mode == b"40000" else b"\0")
+                if previous is not None:
+                    self.assertLess(previous, order)
+                previous = order
+                offset = end + 1 + len(oid) // 2
+                self.assertLessEqual(offset, len(raw))
+            self.assertEqual(offset, len(raw))
+            self.assertIn(after[:-1], names)
+            return path, original, substituted, raw
+
+        def test_adopt_parseable_wronghash_root_and_descendant_trees(self):
+            request = self.prepare_adoption()
+            roots = [self.git("rev-parse", head + "^{tree}").strip() for head in (self.head, self.adopted_head)]
+            descendant = self.git("rev-parse", self.head + ":nested").strip()
+            @contextlib.contextmanager
+            def corrupt(oid):
+                path, original, substituted, _ = self.substituted_tree(oid, oid == descendant)
+                mode = path.stat().st_mode & 0o777
+                try:
+                    path.chmod(0o600)
+                    path.write_bytes(zlib.compress(substituted))
+                    yield
+                finally:
+                    path.write_bytes(original)
+                    path.chmod(mode)
+
+            # Even an assertion/helper failure inside the corruption scope must
+            # restore the object before the next observation/adoption.
+            original = self.substituted_tree(roots[0], False)[1]
+            with self.assertRaisesRegex(RuntimeError, "injected helper failure"):
+                with corrupt(roots[0]):
+                    raise RuntimeError("injected helper failure")
+            self.assertEqual(self.substituted_tree(roots[0], False)[1], original)
+
+            for oid in [*roots, descendant]:
+                with self.subTest(phase="fresh", oid=oid), corrupt(oid):
+                    self.dispatch(request, expected=3)
+            result = self.dispatch(request)
+            for oid in [*roots, descendant]:
+                with self.subTest(phase="retained", oid=oid), corrupt(oid):
+                    self.dispatch(expected=3)
+                    self.dispatch(request, expected=3)
+            self.assertEqual(self.dispatch(request), result)
+
+        def test_adopt_readable_wronghash_tree_rejected_by_own_hash_check(self):
+            self.prepare_adoption()
+            roots = [self.git("rev-parse", head + "^{tree}").strip() for head in (self.head, self.adopted_head)]
+            descendant = self.git("rev-parse", self.head + ":nested").strip()
+            helper = delivery.dependency("foreground-adopt")
+            item = next(iter(self.record()["repair_protocol"]["operations"].values()))
+            for oid in [*roots, descendant]:
+                with self.subTest(oid=oid):
+                    _, _, _, raw = self.substituted_tree(oid, oid == descendant)
+                    git = helper.Git(self.worktree)
+                    read = git.reader.git_bytes
+                    def readable(repo, *args, **kwargs):
+                        if args == ("cat-file", "tree", oid):
+                            return raw
+                        return read(repo, *args, **kwargs)
+                    with mock.patch.object(git.reader, "git_bytes", side_effect=readable) as reader:
+                        with self.assertRaisesRegex(ValueError, "raw object hash mismatch"):
+                            git.obj(oid, "tree")
+                        reader.assert_any_call(git.path, "cat-file", "tree", oid, limit=262_144)
+                        # The complete comparison must reach the same guard for
+                        # both root trees and the unchanged descendant tree.
+                        with self.assertRaisesRegex(ValueError, "raw object hash mismatch"):
+                            helper.comparison(git, item, self.adopted_head)
 
         def test_adopt_one_write_failure_and_comparison_limits(self):
             request = self.prepare_adoption()
