@@ -42,7 +42,7 @@ def open_directory(path):
         raise
 
 
-def read_regular(parent, name, limit, immutable=False):
+def read_regular(parent, name, limit, immutable=False, durable=False):
     fd = os.open(name, READ, dir_fd=parent)
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
@@ -53,6 +53,8 @@ def read_regular(parent, name, limit, immutable=False):
                       "materialized file permissions differ")
         raw = handle.read(limit + 1)
         h.require(len(raw) <= limit, "file grew beyond bound")
+        if durable:
+            os.fsync(handle.fileno())
         return raw
 
 
@@ -96,6 +98,7 @@ def plan(value, output_root, runner, binary, output, python, profile=None):
     argv = [python, "-I", "-B", runner, "--binary", binary, "--binary-sha256", runtime["binary_sha256"],
             "--cwd", runtime["cwd"], "--model=" + runtime["model"], "--agent=" + runtime["agent"],
             "--session=" + runtime["session"], "--context", "/review-input/context.json", "--output", output,
+            "--source-map", "/review-input/source-map.json",
             "--role", "review", "--isolated-guest"]
     if profile is not None:
         h.require(not PurePosixPath(profile).is_relative_to(root), "profile collides with materialization root")
@@ -117,6 +120,7 @@ def tree(value, planned):
     files = {"candidate/" + source["guest_path"][len("/candidate/"):]: h.encoded(source["content_base64"])
              for source in value["sources"]}
     files["metadata/context.json"] = h.canonical(value["context"])
+    files["metadata/source-map.json"] = h.canonical(h.load("review-source-map").from_bundle(value))
     files["metadata/plan.json"] = h.canonical(planned)
     manifest = {"status": "STAGED_NONREADY_UNLESS_COMPLETE_REPLAY_VALIDATES", "bundle_sha256": h.digest(h.canonical(value)),
                 "files": {name: h.digest(raw) for name, raw in sorted(files.items())},
@@ -130,7 +134,7 @@ def tree(value, planned):
     return files, directories
 
 
-def verify_tree(fd, files, directories, prefix=""):
+def verify_tree(fd, files, directories, prefix="", durable=False):
     private(fd)
     expected = {name[len(prefix):].split("/")[0] for name in files.keys() | directories if name.startswith(prefix)}
     h.require(set(os.listdir(fd)) == expected, "existing tree is incomplete or contains extras; no merge")
@@ -139,12 +143,14 @@ def verify_tree(fd, files, directories, prefix=""):
         if relative in directories:
             child = os.open(name, DIRECTORY, dir_fd=fd)
             try:
-                verify_tree(child, files, directories, relative + "/")
+                verify_tree(child, files, directories, relative + "/", durable=durable)
             finally:
                 os.close(child)
         else:
-            h.require(read_regular(fd, name, h.MAX_BUNDLE, immutable=True) == files[relative],
+            h.require(read_regular(fd, name, h.MAX_BUNDLE, immutable=True, durable=durable) == files[relative],
                       "existing bytes differ; no overwrite")
+    if durable:
+        os.fsync(fd)
 
 
 def materialize(value, output_root, runner, binary, output, python="/usr/bin/python3", profile=None):
@@ -162,6 +168,10 @@ def materialize(value, output_root, runner, binary, output, python="/usr/bin/pyt
         except FileExistsError:
             fd = os.open(path.name, DIRECTORY, dir_fd=parent)
             verify_tree(fd, files, directories)
+            # An earlier READY write/final fsync may have failed after bytes became
+            # visible. Complete all durability work, including the root's parent.
+            verify_tree(fd, files, directories, durable=True)
+            os.fsync(parent)
             return planned
         fd = os.open(path.name, DIRECTORY, dir_fd=parent)
         os.fchmod(fd, 0o700)
@@ -194,6 +204,7 @@ def materialize(value, output_root, runner, binary, output, python="/usr/bin/pyt
                 if name != ".":
                     os.close(handle)
         verify_tree(fd, files, directories)
+        os.fsync(parent)
         return planned
     finally:
         if fd is not None:

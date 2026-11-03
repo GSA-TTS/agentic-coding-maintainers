@@ -56,3 +56,14 @@ review credit. Do not copy a developer's complete home/config into the guest.
 Docker separately runs the protocol and repository tests. The manual real
 review/owner-fix/re-review trial and this runnable adapter do not establish an
 unattended acq workflow, task admission, live GitHub publication or merge authority.
+# Source-map option
+
+Handed-off plans pass `--source-map /review-input/source-map.json`. The installed
+runner requires trusted sibling `review-source-map.py` and `review-handoff.py`.
+The strict map preserves original path bytes, selected before/after sides and
+base/head/packet identity separately from admitted context. Its complete source
+inventory must match actual source hashes. The runner includes it as untrusted
+prompt data, hashes it before/after invocation, and binds the initial digest in
+`source_map_sha256`. Changed maps yield UNVERIFIED. This option is review-only.
+See [source handoff](REVIEW-HANDOFF.md) for schema, layout and legacy collection
+compatibility; a map is not runtime isolation or authenticity evidence.

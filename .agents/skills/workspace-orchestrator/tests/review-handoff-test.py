@@ -58,6 +58,9 @@ class HandoffTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), h.encoded(source["content_base64"]))
             self.assertEqual(path.stat().st_mode & 0o777, 0o400)
         self.assertEqual((self.root / "metadata/context.json").read_bytes(), h.canonical(self.value["context"]))
+        mapping = h.load("review-source-map")
+        self.assertEqual((self.root / "metadata/source-map.json").read_bytes(), h.canonical(mapping.from_bundle(self.value)))
+        self.assertIn("/review-input/source-map.json", planned["runner_argv"])
         self.assertEqual([item["destination"] for item in planned["mounts"]], ["/candidate", "/review-input"])
         self.assertIn("/review", planned["mkdir_guest"])
         self.assertFalse(planned["candidate_ready"])
@@ -171,6 +174,50 @@ class HandoffTests(unittest.TestCase):
         result = self.run_materialize(profile=str(profile))
         self.assertIn("--model=--untrusted-option", result["runner_argv"])
         self.assertTrue(result["profile_verified"])
+
+    def test_discovery_names_refused_at_every_depth_with_candidate_cwd(self):
+        self.value["runtime"]["cwd"] = "/candidate"
+        for name in ("opencode.json", "opencode.jsonc", ".opencode", ".agents", ".claude", "AGENTS.md",
+                     "CLAUDE.md", "CLAUDE.local.md", ".claude.json", ".mcp.json", "AGENTS.override.md",
+                     ".github", ".cursor", "GEMINI.md", "OpEnCoDe.JsOn", "agents.MD"):
+            for prefix in ("/candidate/", "/candidate/deep/nested/"):
+                for suffix in ("", "/source.py"):
+                    value = copy.deepcopy(self.value)
+                    value["sources"][0]["guest_path"] = prefix + name + suffix
+                    with self.subTest(name=name, prefix=prefix, suffix=suffix), self.assertRaises(ValueError):
+                        self.run_materialize(value)
+                    self.assertFalse(self.root.exists())
+        result = self.run_materialize()
+        self.assertNotIn("/review", result["mkdir_guest"])
+
+    def test_replay_completes_ready_root_and_parent_durability(self):
+        parent = self.parent
+        for failure in ("READY.json", "root", "parent"):
+            self.root = parent / failure.replace(".", "-")
+            ready = self.root / "READY.json"
+            original = os.fsync
+            def fail(fd):
+                if ready.exists():
+                    target = ready if failure == "READY.json" else self.root if failure == "root" else parent
+                    if os.fstat(fd).st_ino == target.stat().st_ino:
+                        raise OSError("injected durability failure")
+                original(fd)
+            with self.subTest(failure=failure):
+                with mock.patch.object(m.os, "fsync", side_effect=fail), self.assertRaises(OSError):
+                    self.run_materialize()
+                self.assertTrue(ready.exists())
+                before = {p: (p.stat().st_ino, p.read_bytes()) for p in self.root.rglob("*") if p.is_file()}
+                with mock.patch.object(m.os, "fsync", side_effect=fail), self.assertRaises(OSError):
+                    self.run_materialize()
+                synced = set()
+                def recover(fd):
+                    synced.add(os.fstat(fd).st_ino)
+                    original(fd)
+                with mock.patch.object(m.os, "fsync", side_effect=recover):
+                    self.run_materialize()
+                self.assertEqual(before, {p: (p.stat().st_ino, p.read_bytes()) for p in before})
+                expected = {p.stat().st_ino for p in self.root.rglob("*")} | {self.root.stat().st_ino, parent.stat().st_ino}
+                self.assertTrue(expected <= synced)
 
 
 if __name__ == "__main__":

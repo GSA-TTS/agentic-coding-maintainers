@@ -106,6 +106,34 @@ class CollectionTests(unittest.TestCase):
         for data in bundle.values():
             self.assertEqual((self.state_root / "review-artifacts" / collector.digest(data)).read_bytes(), data)
 
+    def test_optional_source_map_must_bind_all_admitted_selections(self):
+        result = self.apply(self.admit, packet=self.packet)
+        admitted = self.record["runtime_collections"]["admissions"][result["admission_id"]]
+        mapping = collector.load_module("review-source-map")
+        source_map = mapping.from_admission(admitted)
+        runner = collector.load_module("review-run")
+        artifacts = self.bundle()
+        # Backward compatibility remains explicit: no map field is legacy.
+        collector.verify_bundle(admitted, artifacts, runner)
+        for damage in ("side", "path_base64", "head", "missing", "null"):
+            changed = copy.deepcopy(source_map)
+            if damage == "side":
+                changed["sources"][0]["side"] = "before"
+            elif damage == "path_base64":
+                changed["sources"][0]["path_base64"] = base64.b64encode(b"other.py").decode()
+            elif damage == "head":
+                changed["head"] = "c" * 40
+            else:
+                changed["sources"] = []
+            receipt = collector.decode(artifacts["receipt.json"])
+            receipt["source_map_sha256"] = None if damage == "null" else collector.digest(collector.canonical(changed))
+            artifacts["receipt.json"] = collector.canonical(receipt)
+            with self.subTest(damage=damage), self.assertRaises(collector.Unverified):
+                collector.verify_bundle(admitted, artifacts, runner)
+        receipt["source_map_sha256"] = collector.digest(collector.canonical(source_map))
+        artifacts["receipt.json"] = collector.canonical(receipt)
+        self.assertEqual(self.apply(self.collection(result, artifacts), artifacts=artifacts)["status"], "OBSERVATION_COLLECTED")
+
     def test_substitution_and_cancelled_attempt_refused(self):
         admitted = self.apply(self.admit, packet=self.packet)
         bundle = self.bundle()

@@ -81,8 +81,18 @@ def guest_path(value):
     path = PurePosixPath(value)
     require(str(path) == value and value.startswith("/candidate/") and ".." not in path.parts
             and len(path.parts) <= 32 and all(re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", p)
-            and p not in {".", "..", ".git"} for p in path.parts[2:]), "unexportable source destination")
+            and p not in {".", "..", ".git"} and not discovery_name(p)
+            for p in path.parts[2:]), "unexportable source destination")
     return value
+
+
+def discovery_name(component):
+    """Bounded layout denial, not an assertion that runtime discovery is disabled."""
+    name = component.casefold()
+    return (name in {".git", ".agent", "agent.md", "gemini.md", ".gemini", ".cursor", ".cursorrules",
+                     ".github", ".mcp.json", "mcp.json"}
+            or name.startswith((".opencode", ".agents", ".claude"))
+            or any(name == stem or name.startswith(stem + ".") for stem in ("opencode", "agents", "claude")))
 
 
 def obligations(value):

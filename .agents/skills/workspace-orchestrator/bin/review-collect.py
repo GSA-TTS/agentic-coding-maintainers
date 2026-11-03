@@ -190,6 +190,13 @@ def verify_bundle(admitted: dict[str, Any], artifacts: dict[str, bytes], runner)
     if set(artifacts) != set(ARTIFACTS) or any(len(data) > LIMIT for data in artifacts.values()):
         raise Unverified("incomplete or oversized runtime bundle")
     receipt = decode(artifacts["receipt.json"])
+    # Legacy receipts without a map remain valid. If present, bind the complete
+    # admitted path/side/hash/comparison projection; never accept a partial map.
+    if "source_map_sha256" in receipt:
+        mapping = load_module("review-source-map")
+        expected_map = digest(canonical(mapping.from_admission(admitted)))
+        if receipt["source_map_sha256"] != expected_map:
+            raise Unverified("runtime source mapping differs from controller admission")
     if receipt.get("role", "review") != "review":
         raise Unverified("owner output cannot count as independent review")
     expected_context = digest(canonical(admitted["context"])) if "context" in admitted else None

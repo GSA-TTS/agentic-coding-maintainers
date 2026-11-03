@@ -69,9 +69,20 @@ collisions are refused. Cwd is exactly `/candidate` or `/review`. In particular,
 v1 refuses them rather than silently rewriting the admission. Sessions must match
 the existing runner's `ses_…` format.
 
+Discovery/control names are also refused case-insensitively in **every** destination
+component, including when cwd is `/candidate`: `opencode`, `agents`, `claude` and
+their dot-suffixed variants (including `opencode.json/jsonc`, `AGENTS.md`,
+`AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`); `.opencode*`, `.agents*`,
+`.claude*`; and `.agent`, `agent.md`, `.git`, `.github`, `.mcp.json`, `mcp.json`,
+`.cursor`, `.cursorrules`, `.gemini`, `GEMINI.md`. Such destinations are rejected,
+never remapped. This is a bounded allowed-layout restriction, **not** a claim that
+all discovery is disabled: installed profiles, runtime/global configuration,
+ancestor directories outside the mount and future tool conventions remain the
+operator's responsibility. Original repository names remain untrusted metadata.
+
 ## Guest materialization
 
-Install trusted `review-materialize.py` and `review-handoff.py` together outside
+Install trusted `review-materialize.py`, `review-handoff.py` and `review-source-map.py` together outside
 candidate mounts. Example (all CLI paths are trusted operator choices):
 
 ```bash
@@ -96,7 +107,7 @@ There is no archive extraction. Complete validation, including an optional
 profile's exact admitted hash, happens before any output-root creation.
 
 The layout is `candidate/<admitted relative destination>` plus separate
-`metadata/context.json` and `metadata/plan.json`. Root `MANIFEST.json` is written
+`metadata/context.json`, `metadata/source-map.json` and `metadata/plan.json`. Root `MANIFEST.json` is written
 first and describes every payload file and disposal ownership. `READY.json` is
 written last after file verification and fsync, and means only materialized plan,
 never candidate readiness. A replay checks the entire tree, not just the marker.
@@ -104,6 +115,12 @@ An I/O failure preserves partial artifacts; missing READY or any failed replay i
 nonready. A failure before the first manifest write can leave an empty/partial
 root: the CLI explicitly reports preserving that chosen root for disposal.
 The operator must dispose of failed roots; retry never repairs one in place.
+For an already complete, byte-identical tree, replay verifies everything and then
+fsyncs **every regular file, every directory bottom-up, and the output root's
+parent** before success. This completes durability after an earlier READY-file,
+final-directory or parent fsync failure left visible bytes. A persistent fsync
+failure remains UNVERIFIED; replay does not change any bytes or merge missing
+files. A READY marker alone proves neither validation nor durability.
 
 The emitted plan mounts `candidate/` read-only at **`/candidate`** and `metadata/`
 read-only at **`/review-input`**. `mkdir_guest` explicitly lists the mount points
@@ -112,6 +129,33 @@ filesystem work outside the chosen output root. Runner argv uses these exact
 guest source paths and `/review-input/context.json`. Python, runner, binary,
 profile and output absolute paths come only from CLI, never the bundle. Arguments
 remain an array of data; no shell string, subprocess or network API is used.
+
+### Selected-source provenance through the runner
+
+`review-source-map.py` defines a separate strict canonical JSON object with exactly
+`schema_version: 1`, `base`, `head`, `packet`, and `sources`. Each source has exactly
+`guest_path`, `side` (`before`/`after`), `path_base64` (original repository path
+bytes, including non-UTF-8 bytes), and `sha256`. It is at most 200,000 bytes and
+contains 1–20 entries, sorted by guest path when projected. There are no arbitrary
+extras, duplicate destinations, truncated inventories or inferred paths.
+
+The plan always supplies `--source-map /review-input/source-map.json`.
+`review-run.py` validates its complete path/hash inventory against the actual
+`source_manifest` before invoking the runtime. It includes the explicit mapping
+as **untrusted JSON data** in the prompt, explaining that `before` belongs to
+`base` and `after` to `head`, without inferring provenance from guest filenames.
+It hashes map bytes before and after invocation; changed bytes downgrade the
+receipt. `source_map_sha256` binds the initial canonical bytes. This leaves the
+admitted context bytes and `context_sha256` entirely unchanged.
+
+Collection compatibility is explicit: historical receipts without
+`source_map_sha256` remain legacy-compatible. When the field exists (including on
+every run using a handed-off plan), the collector recomputes the **entire** map
+from the admitted source selections, hashes, original base, head and packet;
+null, partial, altered-side/path or altered-comparison digests are refused.
+Read-only export records no receipt, so the collector cannot distinguish a legacy
+run from a worker that omits the optional map field. This is consistency binding,
+not proof that a model obeyed the mapping or that worker artifacts are authentic.
 
 ### Limitations
 
