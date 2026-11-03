@@ -29,6 +29,7 @@ def load(path, name):
 
 
 ROOT = Path(__file__).resolve().parents[1]
+diagnostic = load(Path(__file__).with_name("foreground-cli-diagnostic.py"), "foreground_diagnostic")
 delivery = load(ROOT / "bin/foreground-delivery.py", "foreground_delivery")
 fixtures = load(Path(__file__).with_name("review-collect-test.py"), "collection_fixtures")
 c, e = fixtures.collector, fixtures.evidence
@@ -36,6 +37,10 @@ c, e = fixtures.collector, fixtures.evidence
 
 class ForegroundTests(unittest.TestCase):
     def setUp(self):
+        # Direct helper calls reload installed modules too, especially when filling
+        # receipt history. Reuse only compiled bytes for this one test; unittest
+        # restores the loader after all cleanups, even when setUp itself fails.
+        self.enterContext(diagnostic.compiled_installed_sources())
         # Check the real installed package, not just the disposable task checkout.
         # On a read-only mount cache writes fail silently; run this fixture from a
         # writable sandbox copy to exercise the subprocess pollution regression.
@@ -1334,6 +1339,38 @@ class ForegroundTests(unittest.TestCase):
 
 
 class DiagnosticCompileTests(unittest.TestCase):
+    def test_parent_compile_context_is_per_fixture_and_restored_on_failure(self):
+        from importlib.machinery import SourceFileLoader
+        original = SourceFileLoader.source_to_code
+        contexts = []
+
+        class Fixture(ForegroundTests):
+            def git(self, *args):
+                if failure == "setup":
+                    raise RuntimeError("fixture setup failure")
+                return super().git(*args)
+
+            def runTest(self):
+                contexts.append(SourceFileLoader.source_to_code)
+                self.assertIsNot(contexts[-1], original)
+                first = delivery.dependency("candidate-binding")
+                first.fixture_mutation = True
+                second = delivery.dependency("candidate-binding")
+                self.assertIsNot(first, second)
+                self.assertFalse(hasattr(second, "fixture_mutation"))
+                if failure == "test":
+                    self.fail("fixture test failure")
+
+        for failure in (None, "test", "setup"):
+            with self.subTest(failure=failure):
+                result = unittest.TestResult()
+                Fixture().run(result)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(len(result.errors), int(failure == "setup"))
+                self.assertEqual(len(result.failures), int(failure == "test"))
+                self.assertIs(SourceFileLoader.source_to_code, original)
+        self.assertIsNot(contexts[0], contexts[1])
+
     def test_diagnostic_profile_launcher_preserves_failed_exit(self):
         with tempfile.TemporaryDirectory(prefix="foreground-profile-exit-") as temporary:
             directory = Path(temporary)
