@@ -320,6 +320,8 @@ def validate_retained(state: dict[str, Any], store: Path, record: dict[str, Any]
         if operation["result"]["status"] == "ASSIGNED"
     }
     for operation_id, operation in state["operations"].items():
+        if operation_id.startswith(("fgreview.", "fgassign.")):
+            raise Unverified("review namespace belongs to evidence operations")
         fields(operation, {"request", "request_sha256", "result"})
         request = operation["request"]
         request_header(request, evidence)
@@ -369,6 +371,7 @@ def validate_retained(state: dict[str, Any], store: Path, record: dict[str, Any]
             superseded_at = generations[number]["admission_revision"] + 1
             if seen[("admit", key)] >= superseded_at or seen.get(("collect", key), 0) >= superseded_at:
                 raise Unverified("collection operation mutated a superseded generation")
+    evidence.validate_prepared_links(record, state["operations"], "fgadmit.")
 
 
 def apply(record: dict[str, Any], request: dict[str, Any], root: Path,
@@ -450,6 +453,8 @@ def main() -> int:
         if not sys.flags.isolated or not sys.dont_write_bytecode:
             raise Unverified("invoke with python3 -I -B")
         request = decode(read_bytes(args.request, 100_000))
+        if str(request.get("operation_id", "")).startswith(("fgreview.", "fgassign.", "fgadmit.")):
+            raise Unverified("reserved foreground review namespace")
         packet = read_bytes(args.packet, PACKET_LIMIT) if args.packet else None
         artifacts = {name: read_bytes(args.bundle / name) for name in ARTIFACTS} if args.bundle else None
         coordinator = load_module("orchestrator-state")

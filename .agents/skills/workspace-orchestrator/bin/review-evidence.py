@@ -228,6 +228,109 @@ def finding_history(record: dict[str, Any]) -> dict[str, Any]:
     return history
 
 
+def finding_history_at(record, revision):
+    """Project accepted reports only as of the admission's actual input revision."""
+    protocol = record["review_protocol"]
+    accepted = {(op["result"]["generation"], op["result"]["run_id"])
+                for op in protocol["operations"].values()
+                if op["request"]["action"] == "accept" and op["result"]["resulting_revision"] <= revision}
+    generations = [{**g, "acceptance_order": [run for run in g["acceptance_order"]
+                    if (g["number"], run) in accepted]} for g in protocol["generations"]]
+    return finding_history({"review_protocol": {"generations": generations}})
+
+
+def prepared_assignment(record, request):
+    """Pure retained linkage/derivation; never import a foreground validator."""
+    receipts = record.get("foreground_control", {}).get("receipts", {})
+    prepare = receipts[request["payload"]["prepare_operation_id"]]
+    if (prepare["request"]["action"] != "prepare-repaired-review"
+            or prepare["result"]["resulting_revision"] > request["expected_revision"]):
+        raise Unverified("assignment requires prior exact preparation")
+    domain = record["review_protocol"]["operations"][prepare["reference"]["key"]]
+    if domain["request"]["action"] != "begin" or domain["result"] != prepare["result"]["domain_result"]:
+        raise Unverified("prepared generation link differs")
+    generation = record["review_protocol"]["generations"][domain["result"]["generation"] - 1]
+    payload = {name: request["payload"][name] for name in ("run_id", "reviewer", "profile", "session")}
+    payload.update(generation=generation["number"], obligations=generation["obligations"], adapter="native-session")
+    if payload["reviewer"] == generation["owner"] or any(
+            p["admission"]["session"] == payload["session"] for p in record.get("repair_proposals", {}).values()):
+        raise Unverified("independent reviewer and non-owner session required")
+    return prepare, generation, payload
+
+
+def prepared_admission(record, request):
+    receipts = record.get("foreground_control", {}).get("receipts", {})
+    assignment = receipts[request["payload"]["assign_operation_id"]]
+    if (assignment["request"]["action"] != "assign-prepared-review"
+            or assignment["result"]["resulting_revision"] > request["expected_revision"]):
+        raise Unverified("admission requires prior exact foreground assignment")
+    prepare, generation, assigned = prepared_assignment(record, assignment["request"])
+    domain = record["review_protocol"]["operations"][assignment["reference"]["key"]]
+    if (domain["request"]["action"] != "assign" or domain["request"]["payload"] != assigned
+            or domain["result"] != assignment["result"]["domain_result"]
+            or generation["assignments"].get(assigned["run_id"]) != assigned):
+        raise Unverified("assignment link differs")
+    adoption = receipts[prepare["request"]["payload"]["adopt_operation_id"]]
+    application = record["foreground_repairs"]["applications"][adoption["request"]["payload"]["apply_operation_id"]]
+    repair = record["repair_protocol"]["operations"][application["repair_operation_id"]]
+    correction = record["repair_protocol"]["corrections"][repair["correction_id"]]
+    context = {"acceptance_criteria": correction["acceptance_criteria"],
+               "obligations": generation["obligations"],
+               "finding_history": finding_history_at(record, request["expected_revision"])}
+    if len(canonical(context) + b"\n") > 50_000:
+        raise Unverified("review context exceeds 50000 bytes; no truncation")
+    payload = {name: request["payload"][name] for name in ("binary_sha256", "model", "agent", "cwd", "sources")}
+    payload.update(generation=generation["number"], run_id=assigned["run_id"], context=context)
+    return prepare, generation, payload
+
+
+def validate_prepared_links(record, operations, prefix):
+    """Reverse reserved links in the supplied domain projection, no recursive imports."""
+    receipts = record.get("foreground_control", {}).get("receipts", {})
+    assign = prefix == "fgassign."
+    action = "assign-prepared-review" if assign else "admit-prepared-review"
+    parent = "prepare_operation_id" if assign else "assign_operation_id"
+    table = "review_protocol.operations" if assign else "runtime_collections.operations"
+    used = set()
+    for key, domain in operations.items():
+        if not key.startswith(prefix):
+            continue
+        matches = [r for r in receipts.values() if isinstance(r, dict)
+                   and isinstance(r.get("reference"), dict) and r["reference"].get("key") == key]
+        if record.get("foreground_initialized") is not True or len(matches) != 1:
+            raise Unverified("orphan reserved prepared review operation")
+        receipt = matches[0]
+        fields(receipt, {"request", "request_sha256", "reference", "result"})
+        request = receipt["request"]
+        fields(request, {"schema_version", "task_id", "incarnation", "expected_revision", "operation_id", "action", "payload"})
+        fields(request["payload"], {parent} | ({"run_id", "reviewer", "profile", "session"} if assign else
+               {"binary_sha256", "model", "agent", "cwd", "sources"}))
+        token(request["operation_id"])
+        token(request["payload"][parent])
+        digest = hashlib.sha256(canonical(request) + b"\n").hexdigest()
+        identity = hashlib.sha256(canonical({"task_id": record["task_id"], "created_at": record["created_at"],
+                                           "scope_token": record["leases"]["scope_token"]})).hexdigest()
+        if (type(request["schema_version"]) is not int or request["schema_version"] != 1
+                or type(request["expected_revision"]) is not int or request["expected_revision"] < 0
+                or request["action"] != action or request["task_id"] != record["task_id"]
+                or request["incarnation"] != identity or receipt["request_sha256"] != digest
+                or key != prefix + digest or request["operation_id"].startswith(("fgreview.", "fgassign.", "fgadmit."))
+                or receipts.get(request["operation_id"]) != receipt):
+            raise Unverified("prepared review request binding differs")
+        _, generation, payload = (prepared_assignment if assign else prepared_admission)(record, request)
+        reference = {"table": table, "key": key, parent: request["payload"][parent], "packet": generation["packet"]}
+        expected = {"schema_version": 1, "operation_id": key, "expected_revision": request["expected_revision"],
+                    "action": "assign" if assign else "admit", "payload": payload}
+        if (receipt["reference"] != reference or domain["request"] != expected
+                or receipt["result"]["domain_result"] != domain["result"]
+                or receipt["result"]["resulting_revision"] != domain["result"]["resulting_revision"]):
+            raise Unverified("prepared review domain binding differs")
+        # Multiple independently assigned runs are allowed; each assignment admits once.
+        if not assign and request["payload"][parent] in used:
+            raise Unverified("foreground assignment admitted twice")
+        used.add(request["payload"][parent])
+
+
 def assess(record: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {"status": "UNVERIFIED", "review_process": "UNVERIFIED",
                               "candidate_ready": False, "execution_credit": False, "delivery_credit": False}
@@ -387,6 +490,8 @@ def validate_protocol(record: dict[str, Any]) -> None:
     revisions: set[int] = set()
     for operation_id, receipt in operations.items():
         token(operation_id)
+        if operation_id.startswith("fgadmit."):
+            raise Unverified("admission namespace belongs to collection operations")
         fields(receipt, {"request_sha256", "request", "result"})
         hash_value(receipt["request_sha256"])
         request = receipt["request"]
@@ -462,6 +567,7 @@ def validate_protocol(record: dict[str, Any]) -> None:
             if not mutation_revisions[(index, "assign", run_id)] < accepted < next_created:
                 raise Unverified("report receipt violates assignment chronology")
     validate_foreground_links(record)
+    validate_prepared_links(record, operations, "fgassign.")
 
 
 def validate_foreground_links(record):
@@ -583,7 +689,7 @@ def main() -> int:
             result = correction_request(record) if args.correction else assess(record)
         else:
             request = read_request(args.request)
-            if str(request.get("operation_id", "")).startswith("fgreview."):
+            if str(request.get("operation_id", "")).startswith(("fgreview.", "fgassign.", "fgadmit.")):
                 raise Unverified("reserved foreground review namespace")
             if isinstance(request.get("payload"), dict) and "collection_origin" in request["payload"]:
                 raise Unverified("collection provenance requires the collected-acceptance controller")

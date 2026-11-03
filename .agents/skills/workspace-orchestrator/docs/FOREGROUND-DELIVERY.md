@@ -53,6 +53,8 @@ never substitute a new revision into an old request to bypass a refusal.
 | `reconcile-owner-proposal` | apply_operation_id | Existing foreground application; current revision and ownership; allowed while paused; observes only, never resumes writes |
 | `adopt-owner-repair-head` | apply_operation_id, head (full commit object ID) | Operator has committed exactly the applied repair on the original owner's branch; final APPLIED_UNREVIEWED application and current original-owner context required; no `--bundle` |
 | `prepare-repaired-review` | adopt_operation_id | Current original owner and adopted head; authenticate and retain a direct original-task-base packet, begin a fresh claims generation in one task write; no `--bundle` |
+| `assign-prepared-review` | prepare_operation_id, run_id, reviewer, profile, session | Exact retained preparation; assign all generation obligations through native-session; distinct reviewer and non-owner session |
+| `admit-prepared-review` | assign_operation_id, binary_sha256, model, agent, cwd, sources | Exact retained foreground assignment and prepared packet; derive bounded admission context; no `--bundle` |
 | `pause` / `resume` | empty object | Current nonterminal admitted task; changes only foreground control |
 | `status` | empty object, or omit request entirely | Reads retained task/domain evidence; no state initialization |
 
@@ -266,6 +268,68 @@ mutation. Missing packets, objects, domain/adoption links or substituted content
 produce UNVERIFIED. Retained Git objects must remain available; no GC pinning is
 introduced.
 
+### Assign and admit the prepared review
+
+Use two separate v1 requests, each with its own operation ID and current revision:
+
+```json
+{"prepare_operation_id":"prepare-1","run_id":"review-1","reviewer":"independent-reviewer","profile":"<SHA-256>","session":"ses_review_1"}
+```
+
+The `assign-prepared-review` payload above resolves the exact preparation receipt
+to its generation and authenticated retained packet. It calls
+`review-evidence.apply(assign)` with **all** generation obligations and
+`adapter: native-session`. The reviewer must differ from the generation owner;
+no retained owner-proposal session may be reused. This records an assignment,
+not a launched process or reserved worker slot.
+
+```json
+{"assign_operation_id":"assign-1","binary_sha256":"<SHA-256>","model":"provider/model","agent":"reviewer","cwd":"/review","sources":{"/candidate/source.py":{"path_base64":"c291cmNlLnB5","side":"after"}}}
+```
+
+`admit-prepared-review` resolves that exact foreground assignment and calls
+`review-collect.apply(admit)` with the prepared packet. `sources` follows the
+existing 1–20 packet-backed guest-path selection contract. Selecting fewer files
+never narrows assignment or context obligations. Caller-supplied context,
+generation, obligations, adapter and packet overrides are refused.
+
+The derived `context` contains `acceptance_criteria` from the retained correction,
+the complete generation `obligations`, and complete `finding_history` (including
+dispositions) **as of the admission request's input revision**. Its canonical
+JSON including newline must fit 50,000 bytes; otherwise admission refuses without
+truncation. Later accepted reports do not change this historical context. Runtime
+collection checks the context digest, session, profile and selected source hashes
+through the existing collection validator. Collection and acceptance remain
+separate requests/revisions, and resolving a prior finding requires a fresh
+review disposition.
+
+Both actions recheck preparation's original-owner, full-worker, reservations,
+Implementing state, cycle, scope, head, current generation, epoch, configured
+origin and entire clean-checkout guards. Pause and stale revisions refuse new
+operations. Historical replay validates retained packets/objects and historical
+context; it never recaptures source or today's policy or requires a clean current
+checkout. The existing CLI live-worker/reservation checks still apply.
+
+Each action stages its reference for prospective domain validation, then makes
+one coordinator task write containing the ordinary domain operation and foreground
+receipt. Domain IDs are reserved as `fgassign.<full-request SHA-256>` and
+`fgadmit.<full-request SHA-256>`. Structural reverse links use pure retained
+derivations without importing foreground validators; forward validation checks
+the exact domain request/result and packet reference. Missing/replaced links fail
+closed. The only shared revisions are each action's own linked domain operation
+and receipt; assignment and admission always have distinct durable revisions.
+Failure between them leaves an assignment without admission. A failed admission
+task write can leave an unreferenced immutable artifact, which grants no credit.
+Exact retry uses retained history; ambiguous persistence requires inspection.
+
+Status adds bounded `preparation_progress`: preparation ID, generation, assignment
+and admission counts, pending foreground assignment IDs, and an informational
+`ASSIGN_PREPARED_REVIEW`, `ADMIT_PREPARED_REVIEW`, or `PREPARATION_COMPLETE` boundary.
+This field does not replace `review_claims` or the top-level `next_action`; current
+findings and persists dispositions still request owner rework. Existing receipt,
+generation, assignment and task-byte bounds apply. These actions neither launch a
+model nor provision credentials, runtime, capacity or new controller policy.
+
 ### Next boundaries
 
 Status considers the prepared owner correction before unresolved review findings:
@@ -466,6 +530,30 @@ was no paired local full-suite baseline; the previously reported hosted 546-seco
 run is a different environment and cannot establish the full-suite speedup.
 The workflow and its ten-minute timeout remain unchanged; whole-job headroom
 must be measured by the next hosted run.
+
+The eight prepared-assignment/admission cases reuse one real CLI-created
+repair/preparation prefix within their test class. Each case restores the
+authoritative task snapshot; the read-only source objects and immutable artifact
+store are shared. Each request still uses a fresh public CLI process and existing
+same-invocation diagnostics. No production module or validation result is cached.
+This avoids eight repeated repair-prefix setups while preserving distinct durable
+assign/admit/collect/accept revisions. Other fixture classes remain unchanged.
+Focused sandbox verification (same pinned Python 3.12 image and limits above):
+
+```text
+foreground-delivery-test.py -k test_admission_ -k test_fresh_ -v
+Ran 16 tests in 112.231s — OK
+review-evidence-test.py -v
+Ran 18 tests in 3.637s — OK
+review-collect-test.py -v
+Ran 13 tests in 2.669s — OK
+review-accept-test.py -v
+Ran 22 tests in 6.302s — OK
+```
+
+The full suite and ten-minute hosted-job budget are unmeasured for this addition;
+the timeout is unchanged. No model, credential or capacity claim follows from
+these synthetic runtime observations.
 
 Next rollout gates remain: explicit model/sandbox provisioning, controlled local
 effect dispatch and lifecycle operation replay, longer foreground continuation,

@@ -1394,6 +1394,8 @@ def load_tests(loader, tests, pattern):
     tests.addTests(adoption(name) for name in loader.getTestCaseNames(adoption) if name.startswith("test_adopt_"))
     fresh = load(Path(__file__).with_name("foreground-review-cases.py"), "foreground_review_cases").install(adoption, delivery, c)
     tests.addTests(fresh(name) for name in loader.getTestCaseNames(fresh) if name.startswith("test_fresh_"))
+    admission = load(Path(__file__).with_name("foreground-admission-cases.py"), "foreground_admission_cases").install(fresh, delivery, c)
+    tests.addTests(admission(name) for name in loader.getTestCaseNames(admission) if name.startswith("test_admission_"))
     return tests
 
 

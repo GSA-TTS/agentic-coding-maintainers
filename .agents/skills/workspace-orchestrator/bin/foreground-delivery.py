@@ -23,7 +23,8 @@ COLLECT_ACTIONS = {"collect-review", "collect-owner-proposal"}
 DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collected",
                   "admit-owner-proposal": "admit", "collect-owner-proposal": "collect"}
 REPAIR_ACTIONS = {"apply-owner-proposal", "reconcile-owner-proposal"}
-ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head", "prepare-repaired-review"}
+PREPARED_ACTIONS = {"assign-prepared-review", "admit-prepared-review"}
+ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | PREPARED_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head", "prepare-repaired-review"}
 PROPOSAL_FIELDS = {"correction_id", "session", "model", "agent", "binary_sha256",
                    "profile_sha256", "cwd", "sources"}
 
@@ -57,14 +58,35 @@ def validate_request(request, c, e):
         {"admission_id", "artifact_sha256"} if action in COLLECT_ACTIONS else (
         {"admission_id"} if action in {"accept-review", "apply-owner-proposal"} else (
         {"apply_operation_id"} if action == "reconcile-owner-proposal" else set())))
+    if action in PREPARED_ACTIONS:
+        expected = ({"prepare_operation_id", "run_id", "reviewer", "profile", "session"} if action == "assign-prepared-review"
+                    else {"assign_operation_id", "binary_sha256", "model", "agent", "cwd", "sources"})
     c.fields(payload, expected)
+    if action == "assign-prepared-review":
+        for name in ("prepare_operation_id", "run_id", "reviewer"):
+            e.token(payload[name])
+        e.hash_value(payload["profile"])
+        e.text(payload["session"], 256)
+    elif action == "admit-prepared-review":
+        e.token(payload["assign_operation_id"])
+        e.hash_value(payload["binary_sha256"])
+        e.text(payload["model"], 200)
+        e.token(payload["agent"])
+        c.absolute_guest_path(payload["cwd"])
+        if not isinstance(payload["sources"], dict) or not 1 <= len(payload["sources"]) <= 20:
+            raise c.Unverified("one to twenty packet sources required")
+        for guest, selection in payload["sources"].items():
+            c.absolute_guest_path(guest)
+            c.fields(selection, {"path_base64", "side"})
+            if selection["side"] not in {"before", "after"} or not isinstance(selection["path_base64"], str):
+                raise c.Unverified("invalid packet source selection")
     if "admission_id" in expected:
         e.hash_value(payload["admission_id"])
     if "apply_operation_id" in expected:
         e.token(payload["apply_operation_id"])
     if "adopt_operation_id" in expected:
         e.token(payload["adopt_operation_id"])
-    if request["operation_id"].startswith("fgreview."):
+    if request["operation_id"].startswith(("fgreview.", "fgassign.", "fgadmit.")):
         raise c.Unverified("reserved foreground review namespace")
     if "head" in expected:
         if not isinstance(payload["head"], str) or not dependency("foreground-adopt").OID.fullmatch(payload["head"]):
@@ -111,6 +133,8 @@ def acknowledgement(request, domain_result):
 def referenced_result(record, request, reference, c, root):
     """Resolve a receipt through already-validated authoritative domain history."""
     action, operation = request["action"], request["operation_id"]
+    if action in PREPARED_ACTIONS:
+        return dependency("foreground-admission").retained(record, request, reference)
     if action == "prepare-repaired-review":
         return dependency("foreground-review").retained(record, request, reference, root)
     if action == "adopt-owner-repair-head":
@@ -200,7 +224,7 @@ def validate_retained(record, root, c, e):
                 or request["incarnation"] != identity or revision > record["revision"]
                 or revision in revisions or c.digest(c.canonical(request)) != receipt["request_sha256"]):
             raise c.Unverified("foreground receipt binding mismatch")
-        if request["action"] not in set(DOMAIN_ACTIONS) | {"prepare-repaired-review"} and revision in domain_revisions:
+        if request["action"] not in set(DOMAIN_ACTIONS) | PREPARED_ACTIONS | {"prepare-repaired-review"} and revision in domain_revisions:
             raise c.Unverified("foreground control revision collides with domain history")
         result = referenced_result(record, request, receipt["reference"], c, root)
         if c.canonical(receipt["result"]) != c.canonical(acknowledgement(request, result)):
@@ -343,6 +367,7 @@ def status(record, state):
             "paused": state["paused"], "pause_scope": "dispatcher-only",
             "receipt_count": len(state["receipts"]) + dependency("foreground-repair").count(record),
             "next_action": next_action,
+            "preparation_progress": dependency("foreground-admission").progress(record),
             "review_claims": review, "candidate_ready": False,
             "execution_credit": False, "delivery_credit": False}
 
@@ -435,6 +460,8 @@ def dispatch(record, request, root, bundle=None, persist=None):
         result, reference = dependency("foreground-adopt").adopt(updated, request, root)
     elif action == "prepare-repaired-review":
         updated, result, reference = dependency("foreground-review").prepare(updated, request, root)
+    elif action in PREPARED_ACTIONS:
+        updated, result, reference = dependency("foreground-admission").apply(updated, request, root)
     elif action in DOMAIN_ACTIONS:
         artifacts = None
         if action in COLLECT_ACTIONS:
@@ -468,7 +495,7 @@ def dispatch(record, request, root, bundle=None, persist=None):
     validate_retained({**updated, "revision": record["revision"] + 1}, root, c, e)
     if len(c.canonical(updated)) > 900_000:
         raise c.Unverified("task evidence budget exceeded")
-    if action in {"adopt-owner-repair-head", "prepare-repaired-review"}:
+    if action in PREPARED_ACTIONS | {"adopt-owner-repair-head", "prepare-repaired-review"}:
         repair_bridge.check_write_budget(updated, record["revision"] + 1, c, coordinator)
     return updated, response, True
 

@@ -173,27 +173,33 @@ def retained(record, request, reference, root):
     return domain["result"]
 
 
-def prepare(record, request, root):
-    c, e, adopt = load("review-collect"), load("review-evidence"), load("foreground-adopt")
+def fresh_guard(record, request, root, generation=None):
+    adopt = load("foreground-adopt")
     adoption, item, proposal, correction = links(record, request)
     require(record["state"] == "Implementing" and record["kind"] == "implementation"
             and record["worker"] == item["worker"] == proposal["admission"]["worker"]
             and record["owner"] == correction["owner"] == item["worker"]["owner"]
             and record["rework_count"] == item["cycle"]
             and record["review_protocol"]["material_epoch"] == item["epoch"] + 1
-            and record["review_protocol"]["generations"][-1]["number"] == correction["generation"]
+            and record["review_protocol"]["generations"][-1]["number"] == (correction["generation"] if generation is None else generation)
             and all(type(record["leases"].get(k)) is int for k in ("global_slot", "implementation_lane")),
             "current original owner, worker, cycle, epoch or generation differs")
     head = adoption["request"]["payload"]["head"]
     require(record["head_sha"] == head, "adopted head differs")
     for field in ("base", "repo", "branch", "worktree", "owned_paths", "restricted_paths", "acceptance_criteria"):
         require(record[{"base": "base_sha"}.get(field, field)] == correction[field], "current correction scope differs")
-    require(not any(r["request"]["action"] == ACTION and r["request"]["payload"] == request["payload"]
-                    for r in record["foreground_control"]["receipts"].values()), "adoption already prepared")
     load("orchestrator-state").verify_reservations(root, record)
     git = adopt.Git(record["worktree"])
     adopt.verify_origin(git, record["repo"])
     adopt.clean_checkout(git, record, head, item)
+    return git, item, head
+
+
+def prepare(record, request, root):
+    c, e, adopt = load("review-collect"), load("review-evidence"), load("foreground-adopt")
+    require(not any(r["request"]["action"] == ACTION and r["request"]["payload"] == request["payload"]
+                    for r in record["foreground_control"]["receipts"].values()), "adoption already prepared")
+    git, item, head = fresh_guard(record, request, root)
     capture = load("review-packet")
     packet = capture.capture(git.path, record["repo"], record["base_sha"], head, "direct",
         read=lambda repo, *args, limit=capture.MAX_OUTPUT: git.run(*args, limit=limit))
