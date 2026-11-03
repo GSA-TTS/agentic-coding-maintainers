@@ -254,7 +254,10 @@ again. Ambiguous task-write outcomes require reading retained history.
 One coordinator write persists the new generation, normal begin receipt and
 foreground receipt, advancing revision once. The canonical 900 KB and serialized
 1 MB task budgets apply; packet actual/canonical bytes are capped at 8 MB and
-changed files at 200. Capture, authenticated comparison and both current checks
+changed files at 200. Capture reads without an explicit limit (including the full
+diff) retain the packet reader's 8 MB output ceiling; explicit per-read limits,
+including the 256,000-byte blob ceiling, remain in force.
+Capture, authenticated comparison and both current checks
 share adoption's 16 MB / 1,100 Git-call / 60-second budget (a read already in
 flight retains its 15-second bound). Historical packet verification uses bounded
 raw-object reads, never a new capture or today's policy. Exact replay after later
@@ -279,7 +282,7 @@ Status considers the prepared owner correction before unresolved review findings
 | Pending domain repair or foreground finalization, including while paused | `REPAIR_RECONCILIATION_REQUIRED` |
 | Adopted current repair head without a newer current review generation | `PREPARE_REPAIRED_REVIEW` |
 | Prepared fresh generation with missing coverage or inherited unresolved findings, without current findings/persists report | `FRESH_EXECUTION_AND_INDEPENDENT_REVIEW_REQUIRED` |
-| Current generation reports new findings or that an inherited finding persists | `OWNER_REWORK_ADMISSION_REQUIRED` |
+| Unresolved current-generation finding or unresolved finding whose latest current disposition is persists | `OWNER_REWORK_ADMISSION_REQUIRED` |
 | Owner/correction scope, head, generation, lease, checkout or admitted source context no longer matches | `OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED` |
 
 Status uses the latest admission for the current correction, not an older bundle
@@ -287,7 +290,10 @@ or an earlier cycle. Settled repair history points to commit/execution/re-review
 or explicit reconciliation. A newer current review generation clears historical
 `NOT_APPLIED_OBSERVED` even at the same HEAD; `APPLIED_UNREVIEWED` additionally
 requires a changed committed head. A newer but stale generation clears neither.
-Normal review status then resumes. Terminal and readmission boundaries take
+Normal review status then resumes. A later refutation or fix of a current finding
+or persists disposition removes that finding's rework signal without deleting
+reports. Other inherited findings still awaiting current dispositions keep the
+fresh independent-review boundary. Terminal and readmission boundaries take
 precedence; pending repair takes precedence over dispatcher pause. Status is a
 read-only boundary projection, not authorization to execute
 the suggested step; mutations recheck all domain guards.

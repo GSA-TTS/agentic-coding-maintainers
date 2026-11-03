@@ -358,9 +358,15 @@ def fresh_review_pending(record):
                for r in record.get("foreground_control", {}).get("receipts", {}).values()):
         return False
     assessment = e.assess(record)
-    return not any(report["findings"] or any(d["resolution"] == "persists" for d in report["dispositions"])
-                   for report in generation["reports"].values()) and (
-                       assessment.get("unresolved_findings") or assessment.get("review_process") != "CLAIMS_COMPLETE")
+    unresolved = set(assessment.get("unresolved_findings", []))
+    current_findings, latest_dispositions = set(), {}
+    for run_id in generation["acceptance_order"]:
+        report = generation["reports"][run_id]
+        current_findings.update(finding["id"] for finding in report["findings"])
+        latest_dispositions.update((d["finding_id"], d["resolution"]) for d in report["dispositions"])
+    persists = {identifier for identifier, resolution in latest_dispositions.items() if resolution == "persists"}
+    return not (unresolved & (current_findings | persists)) and (
+        bool(unresolved) or assessment.get("review_process") != "CLAIMS_COMPLETE")
 
 
 def dispatch(record, request, root, bundle=None, persist=None):

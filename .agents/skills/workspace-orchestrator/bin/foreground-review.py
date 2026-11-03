@@ -194,8 +194,9 @@ def prepare(record, request, root):
     git = adopt.Git(record["worktree"])
     adopt.verify_origin(git, record["repo"])
     adopt.clean_checkout(git, record, head, item)
-    packet = load("review-packet").capture(git.path, record["repo"], record["base_sha"], head, "direct",
-        read=lambda repo, *args, **kwargs: git.run(*args, **kwargs))
+    capture = load("review-packet")
+    packet = capture.capture(git.path, record["repo"], record["base_sha"], head, "direct",
+        read=lambda repo, *args, limit=capture.MAX_OUTPUT: git.run(*args, limit=limit))
     verify_packet(packet, git, record["repo"], record["base_sha"], head)
     obligations = obligation_union(record, packet, len(record["review_protocol"]["generations"]))
     packet_key = retain(root, packet)

@@ -1,5 +1,6 @@
 """Fresh-review cases reuse the real owner/application/adoption CLI fixture."""
 
+import base64
 import contextlib
 import copy
 import io
@@ -16,13 +17,20 @@ def install(base, delivery, c):
                 directory = self.worktree / "base-only"
                 directory.mkdir()
                 (directory / "context.txt").write_bytes(b"original base context\n")
+                large_diff = self._testMethodName == "test_fresh_large_diff_preserves_capture_limit"
+                if large_diff:
+                    for name in ("large-one.txt", "large-two.txt"):
+                        (directory / name).write_bytes((b"before " + b"a" * 92 + b"\n") * 1024)
                 super().git("add", "base-only")
                 super().git(*args)
                 self.original_base = super().git("rev-parse", "HEAD").strip()
                 self.head = self.original_base
                 (directory / "context.txt").write_bytes(b"implementation context\n")
+                if large_diff:
+                    for name in ("large-one.txt", "large-two.txt"):
+                        (directory / name).write_bytes((b"after  " + b"b" * 92 + b"\n") * 1024)
                 (self.worktree / "auth-policy.txt").write_bytes(b"implementation outside repair\n")
-                super().git("add", "auth-policy.txt", "base-only/context.txt")
+                super().git("add", "auth-policy.txt", "base-only")
             return super().git(*args)
 
         def cli(self, *args, **kwargs):
@@ -47,6 +55,11 @@ def install(base, delivery, c):
             request = self.request("prepare-repaired-review", "fresh")
             request["payload"] = {"adopt_operation_id": "adopt"}
             return request
+
+        def set_bundle(self, findings=None):
+            if findings and self._testMethodName == "test_fresh_inherited_findings_wait_for_current_report":
+                findings = [*findings, {**findings[0], "id": "F3"}]
+            return super().set_bundle(findings)
 
         def test_fresh_cli_original_base_union_one_revision_and_historical_replay(self):
             request = self.prepare_fresh()
@@ -132,6 +145,27 @@ def install(base, delivery, c):
                 "obligations": sorted(delivery.dependency("review-evidence").BASELINE)}, "manual-new")
             request["expected_revision"] = self.record()["revision"]
             self.dispatch(request, expected=3)
+
+        def test_fresh_large_diff_preserves_capture_limit(self):
+            request = self.prepare_fresh()
+            helper = delivery.dependency("foreground-review")
+            capture = helper.load("review-packet")
+            packet = capture.capture(self.worktree, "fixture/project", self.original_base, self.adopted_head, "direct")
+            diff_bytes = len(base64.b64decode(packet["diff_base64"], validate=True))
+            self.assertGreater(diff_bytes, 262_144)
+            self.assertLess(len(c.canonical(packet)), capture.MAX_OUTPUT)
+            large = [entry for entry in packet["files"] if entry["path_utf8"].startswith("base-only/large-")]
+            self.assertEqual(len(large), 2)
+            for entry in large:
+                for side in ("before", "after"):
+                    self.assertEqual(entry[side]["bytes"], 102_400)
+                    self.assertLess(entry[side]["bytes"], capture.MAX_BLOB)
+            before = self.record()
+            result = self.dispatch(request)
+            self.assertEqual(result["domain_result"]["status"], "BEGUN")
+            self.assertEqual(self.record()["revision"], before["revision"] + 1)
+            generation = self.record()["review_protocol"]["generations"][-1]
+            self.assertEqual(helper.read_packet(self.state_root, generation["packet"]), packet)
 
         def test_fresh_missing_objects_packet_substitution_and_orphans(self):
             request = self.prepare_fresh()
@@ -289,6 +323,28 @@ def install(base, delivery, c):
                     "findings": findings, "dispositions": dispositions, "limitations": []}, "accept-" + run)
             report("coverage", [], [])
             self.assertTrue(e.assess(self.record())["unresolved_findings"])
+            self.assertEqual(self.dispatch()["next_action"], "FRESH_EXECUTION_AND_INDEPENDENT_REVIEW_REQUIRED")
+            report("new-finding", [], [{"id": "F2", "invariant": "current invariant", "trigger": "inspection",
+                "path": "source.py:1", "impact": "current defect", "evidence": "synthetic current observation"}])
+            self.assertEqual(self.dispatch()["next_action"], "OWNER_REWORK_ADMISSION_REQUIRED")
+            def disposition(resolution):
+                return [{"finding_id": "F2", "resolution": resolution, "counterevidence": "current inspection"}]
+            report("refute-new", disposition("refuted"), [])
+            self.assertEqual(set(e.assess(self.record())["unresolved_findings"]), {"F1", "F3"})
+            self.assertEqual(self.dispatch()["next_action"], "FRESH_EXECUTION_AND_INDEPENDENT_REVIEW_REQUIRED")
+            report("persists-new", disposition("persists"), [])
+            self.assertEqual(self.dispatch()["next_action"], "OWNER_REWORK_ADMISSION_REQUIRED")
+            retained_reports = copy.deepcopy(self.record()["review_protocol"]["generations"][-1]["reports"])
+            report("refute-persists", disposition("refuted"), [])
+            self.assertEqual(set(e.assess(self.record())["unresolved_findings"]), {"F1", "F3"})
+            self.assertEqual(self.dispatch()["next_action"], "FRESH_EXECUTION_AND_INDEPENDENT_REVIEW_REQUIRED")
+            current_reports = self.record()["review_protocol"]["generations"][-1]["reports"]
+            for run_id, retained in retained_reports.items():
+                self.assertEqual(current_reports[run_id], retained)
+            report("persists-inherited", [{"finding_id": "F3", "resolution": "persists", "counterevidence": "current inspection"}], [])
+            self.assertEqual(self.dispatch()["next_action"], "OWNER_REWORK_ADMISSION_REQUIRED")
+            report("refute-inherited", [{"finding_id": "F3", "resolution": "refuted", "counterevidence": "later inspection"}], [])
+            self.assertEqual(e.assess(self.record())["unresolved_findings"], ["F1"])
             self.assertEqual(self.dispatch()["next_action"], "FRESH_EXECUTION_AND_INDEPENDENT_REVIEW_REQUIRED")
             finding = e.assess(self.record())["unresolved_findings"][0]
             report("persists", [{"finding_id": finding, "resolution": "persists", "counterevidence": "current inspection"}], [])
