@@ -461,6 +461,67 @@ def validate_protocol(record: dict[str, Any]) -> None:
         for run_id, accepted in zip(order, accepted_revisions):
             if not mutation_revisions[(index, "assign", run_id)] < accepted < next_created:
                 raise Unverified("report receipt violates assignment chronology")
+    validate_foreground_links(record)
+
+
+def validate_foreground_links(record):
+    """Structural reverse links only; no foreground imports or recursive replay.
+
+    Historical projections can carry later foreground receipts, so only domain
+    markers present in this projection require a counterpart. The dispatcher
+    validates the other direction and retained packet bytes.
+    """
+    operations = record.get("review_protocol", {}).get("operations", {})
+    receipts = record.get("foreground_control", {}).get("receipts", {})
+    used = set()
+    for key, domain in operations.items():
+        if not key.startswith("fgreview."):
+            continue
+        matches = [r for r in receipts.values() if isinstance(r, dict)
+                   and isinstance(r.get("reference"), dict) and r["reference"].get("key") == key]
+        if record.get("foreground_initialized") is not True or len(matches) != 1:
+            raise Unverified("orphan reserved foreground review operation")
+        receipt = matches[0]
+        fields(receipt, {"request", "request_sha256", "reference", "result"})
+        request = receipt["request"]
+        fields(request, {"schema_version", "task_id", "incarnation", "expected_revision", "operation_id", "action", "payload"})
+        fields(request["payload"], {"adopt_operation_id"})
+        token(request["operation_id"])
+        token(request["payload"]["adopt_operation_id"])
+        hash_value(request["incarnation"])
+        identity = hashlib.sha256(canonical({"task_id": record["task_id"], "created_at": record["created_at"],
+                                           "scope_token": record["leases"]["scope_token"]})).hexdigest()
+        digest = hashlib.sha256(canonical(request) + b"\n").hexdigest()
+        if (type(request["schema_version"]) is not int or request["schema_version"] != 1
+                or request["action"] != "prepare-repaired-review" or request["task_id"] != record["task_id"]
+                or request["incarnation"] != identity
+                or receipt["request_sha256"] != digest or key != "fgreview." + digest
+                or request["operation_id"].startswith("fgreview.")
+                or receipts.get(request["operation_id"]) != receipt
+                or domain["request"]["action"] != "begin"
+                or type(request["expected_revision"]) is not int
+                or request["expected_revision"] != domain["request"]["expected_revision"]):
+            raise Unverified("foreground review request binding differs")
+        reference = receipt["reference"]
+        fields(reference, {"table", "key", "adopt_operation_id", "packet"})
+        adoption_id = request["payload"]["adopt_operation_id"]
+        adoption = receipts.get(adoption_id)
+        if (adoption_id in used or adoption is None or adoption["request"]["action"] != "adopt-owner-repair-head"
+                or adoption["result"]["resulting_revision"] > request["expected_revision"]
+                or reference != {"table": "review_protocol.operations", "key": key,
+                    "adopt_operation_id": adoption_id, "packet": domain["request"]["payload"]["packet"]}
+                or receipt["result"]["domain_result"] != domain["result"]):
+            raise Unverified("foreground review adoption/domain binding differs")
+        used.add(adoption_id)
+        application = record["foreground_repairs"]["applications"][adoption["request"]["payload"]["apply_operation_id"]]
+        item = record["repair_protocol"]["operations"][application["repair_operation_id"]]
+        correction = record["repair_protocol"]["corrections"][item["correction_id"]]
+        generation = record["review_protocol"]["generations"][domain["result"]["generation"] - 1]
+        if (generation["number"] != correction["generation"] + 1
+                or generation["head"] != adoption["request"]["payload"]["head"]
+                or generation["base"] != correction["base"] or generation["owner"] != correction["owner"]
+                or generation["material_epoch"] != item["epoch"] + 1):
+            raise Unverified("foreground review generation binding differs")
 
 
 def load_coordinator():
@@ -522,6 +583,8 @@ def main() -> int:
             result = correction_request(record) if args.correction else assess(record)
         else:
             request = read_request(args.request)
+            if str(request.get("operation_id", "")).startswith("fgreview."):
+                raise Unverified("reserved foreground review namespace")
             if isinstance(request.get("payload"), dict) and "collection_origin" in request["payload"]:
                 raise Unverified("collection provenance requires the collected-acceptance controller")
             with coordinator.CoordinatorLock(root):

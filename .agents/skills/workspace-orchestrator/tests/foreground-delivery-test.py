@@ -1333,10 +1333,67 @@ class ForegroundTests(unittest.TestCase):
         self.assertEqual(self.task_path.read_bytes(), before)
 
 
+class DiagnosticCompileTests(unittest.TestCase):
+    def test_diagnostic_compile_reuse_reads_edits_and_fresh_globals(self):
+        diagnostic = load(Path(__file__).with_name("foreground-cli-diagnostic.py"), "diagnostic")
+        from importlib.machinery import SourceFileLoader
+        original = SourceFileLoader.source_to_code
+        with tempfile.TemporaryDirectory(prefix="foreground-compile-") as temporary:
+            directory = Path(temporary)
+            path = directory / "helper.py"
+            path.write_bytes(b"value = 1\nitems = []\n")
+            stamp = path.stat()
+            with mock.patch.object(diagnostic, "BIN", directory), \
+                    mock.patch.object(SourceFileLoader, "source_to_code", autospec=True, side_effect=original) as compile_source:
+                with diagnostic.compiled_installed_sources():
+                    first = load(path, "helper_one")
+                    first.items.append("mutated")
+                    second = load(path, "helper_two")
+                    self.assertIsNot(first, second)
+                    self.assertEqual(second.items, [])
+                    self.assertEqual(compile_source.call_count, 1)
+                    path.write_bytes(b"value = 2\nitems = []\n")
+                    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                    self.assertEqual(load(path, "helper_changed").value, 2)
+                    self.assertEqual(compile_source.call_count, 2)
+                    path.rename(directory / "missing.py")
+                    with self.assertRaises(FileNotFoundError):
+                        load(path, "helper_missing")
+                self.assertIs(SourceFileLoader.source_to_code, compile_source)
+            self.assertIs(SourceFileLoader.source_to_code, original)
+
+    def test_diagnostic_compile_scope_options_bounds_and_restoration(self):
+        diagnostic = load(Path(__file__).with_name("foreground-cli-diagnostic.py"), "diagnostic")
+        from importlib.machinery import SourceFileLoader
+        original = SourceFileLoader.source_to_code
+        source = b"assert False\nvalue = 1\n"
+        path = str(diagnostic.BIN / "helper.py")
+        loader = SourceFileLoader("helper", path)
+        with mock.patch.object(SourceFileLoader, "source_to_code", autospec=True, side_effect=original) as compile_source:
+            with self.assertRaisesRegex(RuntimeError, "restore observer"), diagnostic.compiled_installed_sources():
+                code = loader.source_to_code(source, path)
+                self.assertIs(loader.source_to_code(source, path), code)
+                self.assertIsNot(loader.source_to_code(source, path, _optimize=1), code)
+                self.assertEqual(compile_source.call_count, 2)
+                other = str(diagnostic.BIN.parent / "outside.py")
+                self.assertIsNot(loader.source_to_code(source, other), loader.source_to_code(source, other))
+                large = b"#" + b"x" * 1_000_000
+                self.assertIsNot(loader.source_to_code(large, path), loader.source_to_code(large, path))
+                for index in range(30):
+                    loader.source_to_code(source, str(diagnostic.BIN / (str(index) + ".py")))
+                overflow = str(diagnostic.BIN / "overflow.py")
+                self.assertIsNot(loader.source_to_code(source, overflow), loader.source_to_code(source, overflow))
+                raise RuntimeError("restore observer")
+            self.assertIs(SourceFileLoader.source_to_code, compile_source)
+        self.assertIs(SourceFileLoader.source_to_code, original)
+
+
 def load_tests(loader, tests, pattern):
     cases = load(Path(__file__).with_name("foreground-adopt-cases.py"), "foreground_adopt_cases")
     adoption = cases.install(ForegroundTests, delivery, c)
     tests.addTests(adoption(name) for name in loader.getTestCaseNames(adoption) if name.startswith("test_adopt_"))
+    fresh = load(Path(__file__).with_name("foreground-review-cases.py"), "foreground_review_cases").install(adoption, delivery, c)
+    tests.addTests(fresh(name) for name in loader.getTestCaseNames(fresh) if name.startswith("test_fresh_"))
     return tests
 
 

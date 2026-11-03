@@ -59,7 +59,7 @@ def install(base, delivery, c):
                 self.assertEqual(after[field], expected)
             for field in ("worker", "leases", "state", "base_sha"):
                 self.assertEqual(after[field], before[field])
-            self.assertEqual(self.dispatch()["next_action"], "ADOPTED_REPAIR_REQUIRES_FRESH_EXECUTION_AND_REVIEW")
+            self.assertEqual(self.dispatch()["next_action"], "PREPARE_REPAIRED_REVIEW")
             self.dispatch(self.adopt_request("adopt-again"), expected=3)
             reference = after["foreground_control"]["receipts"]["adopt"]["reference"]
             self.assertEqual(len(reference["comparison"]["files"]), 2)

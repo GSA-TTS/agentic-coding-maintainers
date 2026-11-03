@@ -52,6 +52,7 @@ never substitute a new revision into an old request to bypass a refusal.
 | `apply-owner-proposal` | admission_id | Latest admission for the current prepared correction has a retained collected bundle; exact owner worker, context, source hashes and clean checkout still match; no `--bundle` |
 | `reconcile-owner-proposal` | apply_operation_id | Existing foreground application; current revision and ownership; allowed while paused; observes only, never resumes writes |
 | `adopt-owner-repair-head` | apply_operation_id, head (full commit object ID) | Operator has committed exactly the applied repair on the original owner's branch; final APPLIED_UNREVIEWED application and current original-owner context required; no `--bundle` |
+| `prepare-repaired-review` | adopt_operation_id | Current original owner and adopted head; authenticate and retain a direct original-task-base packet, begin a fresh claims generation in one task write; no `--bundle` |
 | `pause` / `resume` | empty object | Current nonterminal admitted task; changes only foreground control |
 | `status` | empty object, or omit request entirely | Reads retained task/domain evidence; no state initialization |
 
@@ -209,6 +210,62 @@ Exclusive cooperative ownership is still required against concurrent filesystem
 changes. Successful adoption reports `REPAIR_HEAD_ADOPTED_UNREVIEWED`; fresh
 execution and independent review remain required.
 
+### Prepare the adopted head for independent review
+
+Submit the v1 foreground envelope with `action: "prepare-repaired-review"` and
+`payload: {"adopt_operation_id": "<foreground adoption ID>"}`. The original owner
+must remain Implementing with the same full worker identity, live reservations,
+cycle, correction scope and post-adoption material epoch. A later generation,
+changed head, paused dispatcher or second preparation of the same adoption is
+refused. The operation grants no reviewer, model, execution, commit or lifecycle
+authority.
+
+Preparation checks the configured origin and complete clean checkout using the
+adoption reader, then captures a **direct original task base → adopted head**
+packet. This includes implementation changes outside the repaired files. Both
+commits and every root/descendant tree in their inventories are independently
+hash-authenticated, including the original base that adoption did not inspect.
+The packet's changed path set, statuses, before/after modes, object IDs, byte
+counts, hashes and content must equal the raw-tree-derived comparison and
+hash-authenticated blobs. Capture output alone is insufficient. Nonregular tree
+entries fail closed. The textual diff is supplementary; authenticated file sides
+are the source evidence. Current origin and checkout are checked again after
+packet retention; cooperative ownership is still required against concurrent
+changes after that observation.
+
+The new obligation list is the sorted union of baseline IDs, fresh packet IDs
+and IDs from **every** prior generation. More than 32 fails closed with no waiver.
+All findings, reports and dispositions remain in history. The normal
+`review-evidence.apply(begin)` API creates its ordinary domain receipt using
+`fgreview.<SHA256(canonical full foreground request)>`. This namespace is
+reserved. Structural reverse-link validation in the evidence API requires the
+matching foreground receipt, adoption and generation without importing the
+foreground dispatcher or recursively replaying it. The dispatcher additionally
+validates the retained packet and forward links.
+
+The canonical packet is retained at the private state root's
+`review-packets/<digest>.json`, with mode `0400`. File, containing directory and
+parent-directory fsync complete before task commit, including an existing-object
+retry. Publication failure or an invalid existing object blocks the task write.
+A failed task write may leave a valid content-addressed packet; deterministic
+retry validates it and completes durability before trying the single task write
+again. Ambiguous task-write outcomes require reading retained history.
+
+One coordinator write persists the new generation, normal begin receipt and
+foreground receipt, advancing revision once. The canonical 900 KB and serialized
+1 MB task budgets apply; packet actual/canonical bytes are capped at 8 MB and
+changed files at 200. Capture reads without an explicit limit (including the full
+diff) retain the packet reader's 8 MB output ceiling; explicit per-read limits,
+including the 256,000-byte blob ceiling, remain in force.
+Capture, authenticated comparison and both current checks
+share adoption's 16 MB / 1,100 Git-call / 60-second budget (a read already in
+flight retains its 15-second bound). Historical packet verification uses bounded
+raw-object reads, never a new capture or today's policy. Exact replay after later
+heads, pause or dirty checkout returns the historical domain result without
+mutation. Missing packets, objects, domain/adoption links or substituted content
+produce UNVERIFIED. Retained Git objects must remain available; no GC pinning is
+introduced.
+
 ### Next boundaries
 
 Status considers the prepared owner correction before unresolved review findings:
@@ -223,7 +280,9 @@ Status considers the prepared owner correction before unresolved review findings
 | Latest current proposal yielded a retained bundle | `COLLECTED_OWNER_BUNDLE_REQUIRES_GUARDED_APPLY` |
 | Latest current proposal reported inability | `OWNER_PROPOSAL_UNABLE_REQUIRES_OPERATOR` |
 | Pending domain repair or foreground finalization, including while paused | `REPAIR_RECONCILIATION_REQUIRED` |
-| Adopted current repair head without a newer current review generation | `ADOPTED_REPAIR_REQUIRES_FRESH_EXECUTION_AND_REVIEW` |
+| Adopted current repair head without a newer current review generation | `PREPARE_REPAIRED_REVIEW` |
+| Prepared fresh generation with missing coverage or inherited unresolved findings, without current findings/persists report | `FRESH_EXECUTION_AND_INDEPENDENT_REVIEW_REQUIRED` |
+| Unresolved current-generation finding or unresolved finding whose latest current disposition is persists | `OWNER_REWORK_ADMISSION_REQUIRED` |
 | Owner/correction scope, head, generation, lease, checkout or admitted source context no longer matches | `OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED` |
 
 Status uses the latest admission for the current correction, not an older bundle
@@ -231,7 +290,10 @@ or an earlier cycle. Settled repair history points to commit/execution/re-review
 or explicit reconciliation. A newer current review generation clears historical
 `NOT_APPLIED_OBSERVED` even at the same HEAD; `APPLIED_UNREVIEWED` additionally
 requires a changed committed head. A newer but stale generation clears neither.
-Normal review status then resumes. Terminal and readmission boundaries take
+Normal review status then resumes. A later refutation or fix of a current finding
+or persists disposition removes that finding's rework signal without deleting
+reports. Other inherited findings still awaiting current dispositions keep the
+fresh independent-review boundary. Terminal and readmission boundaries take
 precedence; pending repair takes precedence over dispatcher pause. Status is a
 read-only boundary projection, not authorization to execute
 the suggested step; mutations recheck all domain guards.
@@ -348,6 +410,62 @@ Python main with tracing; it never retries a request or changes its expected
 exit. Exception messages, task contents, runtime stdout/stderr, host paths and
 worker identity values are withheld. Production failure responses are unchanged.
 Executable fixture shims require sandbox `TMPDIR=/work/tmp`, not no-exec `/tmp`.
+
+The diagnostic launcher reuses compiled code for installed `bin/` source within
+one CLI process. Every import still reads its source and executes a fresh module
+namespace; this does not cache modules, mutable evidence, Git observations or
+profile/policy digests. The key includes path and compiler optimization mode,
+and reuse requires identical actual source bytes. Same-size/same-mtime changes
+miss; deleted files still fail. At most 32 latest source/code pairs are retained,
+each source at most 1 MB. Other paths and oversized sources use the original
+compiler. The original loader is restored on success and failure, and nothing
+is written to disk. Public entrypoints, assertions, fresh fixtures and production
+code remain unchanged. Tests cover source changes, namespace isolation, missing
+files, scope, compiler options, bounds and restoration.
+
+### Foreground test performance measurement
+
+Measured from base `fc5107b` in network-off Docker, pinned
+`python:3.12-bookworm@sha256:a5bab0ff300f91231c2e68bf73a8a8d60762ac39ce1c50eaf6803e4c38a9062b`,
+2 CPUs / 2 GB / 512 PIDs, non-root, read-only candidate mount and writable
+container copy of `.agents/`. `TMPDIR=/work` keeps executable fixture shims off
+no-exec `/tmp`. No candidate code ran on the host.
+
+Each sample launched `python3 -I -B tests/foreground-delivery-test.py -k CASE -v`
+in a new process with a fresh fixture. Cases alternated, three samples each in
+one container per variant. Times below are outer monotonic elapsed seconds,
+including interpreter startup; profiling was a separate fourth replay run.
+
+| Case (test suffix) | Baseline samples | Compile-reuse samples | Median change |
+|---|---|---|---|
+| `fresh_cli_original_base_union_one_revision_and_historical_replay` | 13.598, 14.517, 14.139 | 9.713, 9.448, 9.819 | 14.139 → 9.713 (31.3% faster) |
+| `fresh_inherited_findings_wait_for_current_report` | 20.904, 22.377, 21.405 | 17.418, 17.251, 17.107 | 21.405 → 17.251 (19.4% faster) |
+
+An observer-disabled ablation in a disposable container copy gave medians 12.937
+and 20.713 seconds. That experiment did not justify removing same-invocation
+diagnostics; tracing remains enabled. Aggregated cProfile results from the replay
+case's 20 foreground CLI subprocesses identified repeated compilation as the
+larger cost: 1,865 compile calls / 6.885 seconds before, 791 / 2.600 seconds after.
+Overall profiled time fell from 9.660 to 5.296 seconds; subprocess launches stayed
+at 558. Source and evidence validation were not skipped.
+
+Observed verification after the change:
+
+```text
+foreground-delivery-test.py -k diagnostic -v
+Ran 3 tests in 1.764s
+OK
+foreground-delivery-test.py -v
+Ran 61 tests in 517.410s
+OK
+```
+
+All 59 previous tests and assertions remain; two isolated compile-reuse tests
+were added. This is a local measurement, not a hosted-CI timing guarantee. There
+was no paired local full-suite baseline; the previously reported hosted 546-second
+run is a different environment and cannot establish the full-suite speedup.
+The workflow and its ten-minute timeout remain unchanged; whole-job headroom
+must be measured by the next hosted run.
 
 Next rollout gates remain: explicit model/sandbox provisioning, controlled local
 effect dispatch and lifecycle operation replay, longer foreground continuation,

@@ -23,7 +23,7 @@ COLLECT_ACTIONS = {"collect-review", "collect-owner-proposal"}
 DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collected",
                   "admit-owner-proposal": "admit", "collect-owner-proposal": "collect"}
 REPAIR_ACTIONS = {"apply-owner-proposal", "reconcile-owner-proposal"}
-ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head"}
+ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head", "prepare-repaired-review"}
 PROPOSAL_FIELDS = {"correction_id", "session", "model", "agent", "binary_sha256",
                    "profile_sha256", "cwd", "sources"}
 
@@ -53,7 +53,7 @@ def validate_request(request, c, e):
     if not isinstance(action, str) or action not in ACTIONS:
         raise c.Unverified("unsupported foreground action")
     payload = request["payload"]
-    expected = {"apply_operation_id", "head"} if action == "adopt-owner-repair-head" else PROPOSAL_FIELDS if action == "admit-owner-proposal" else (
+    expected = {"adopt_operation_id"} if action == "prepare-repaired-review" else {"apply_operation_id", "head"} if action == "adopt-owner-repair-head" else PROPOSAL_FIELDS if action == "admit-owner-proposal" else (
         {"admission_id", "artifact_sha256"} if action in COLLECT_ACTIONS else (
         {"admission_id"} if action in {"accept-review", "apply-owner-proposal"} else (
         {"apply_operation_id"} if action == "reconcile-owner-proposal" else set())))
@@ -62,6 +62,10 @@ def validate_request(request, c, e):
         e.hash_value(payload["admission_id"])
     if "apply_operation_id" in expected:
         e.token(payload["apply_operation_id"])
+    if "adopt_operation_id" in expected:
+        e.token(payload["adopt_operation_id"])
+    if request["operation_id"].startswith("fgreview."):
+        raise c.Unverified("reserved foreground review namespace")
     if "head" in expected:
         if not isinstance(payload["head"], str) or not dependency("foreground-adopt").OID.fullmatch(payload["head"]):
             raise c.Unverified("full repair commit object ID required")
@@ -104,9 +108,11 @@ def acknowledgement(request, domain_result):
             "candidate_ready": False, "execution_credit": False, "delivery_credit": False}
 
 
-def referenced_result(record, request, reference, c):
+def referenced_result(record, request, reference, c, root):
     """Resolve a receipt through already-validated authoritative domain history."""
     action, operation = request["action"], request["operation_id"]
+    if action == "prepare-repaired-review":
+        return dependency("foreground-review").retained(record, request, reference, root)
     if action == "adopt-owner-repair-head":
         return dependency("foreground-adopt").retained(record, request, reference)
     if action in PROPOSAL_ACTIONS:
@@ -194,9 +200,9 @@ def validate_retained(record, root, c, e):
                 or request["incarnation"] != identity or revision > record["revision"]
                 or revision in revisions or c.digest(c.canonical(request)) != receipt["request_sha256"]):
             raise c.Unverified("foreground receipt binding mismatch")
-        if request["action"] not in DOMAIN_ACTIONS and revision in domain_revisions:
+        if request["action"] not in set(DOMAIN_ACTIONS) | {"prepare-repaired-review"} and revision in domain_revisions:
             raise c.Unverified("foreground control revision collides with domain history")
-        result = referenced_result(record, request, receipt["reference"], c)
+        result = referenced_result(record, request, receipt["reference"], c, root)
         if c.canonical(receipt["result"]) != c.canonical(acknowledgement(request, result)):
             raise c.Unverified("foreground receipt result differs from domain history")
         revisions.add(revision)
@@ -237,7 +243,7 @@ def owner_boundary(record):
             if any(receipt["request"]["action"] == "adopt-owner-repair-head"
                    and receipt["result"]["domain_result"]["head"] == record["head_sha"]
                    for receipt in record.get("foreground_control", {}).get("receipts", {}).values()):
-                return "ADOPTED_REPAIR_REQUIRES_FRESH_EXECUTION_AND_REVIEW"
+                return "PREPARE_REPAIRED_REVIEW"
             return "REPAIRED_CANDIDATE_REQUIRES_COMMIT_EXECUTION_AND_REVIEW"
         return "REPAIR_RECONCILIATION_REQUIRED"
     matches = {"owner": "owner", "base_sha": "base", "head_sha": "head", "repo": "repo",
@@ -302,6 +308,8 @@ def status(record, state):
         next_action = boundary
     elif record["state"] == "Rework":
         next_action = "PREPARE_CORRECTION"
+    elif fresh_review_pending(record):
+        next_action = "FRESH_EXECUTION_AND_INDEPENDENT_REVIEW_REQUIRED"
     elif review.get("unresolved_findings"):
         next_action = "OWNER_REWORK_ADMISSION_REQUIRED"
     else:
@@ -337,6 +345,28 @@ def status(record, state):
             "next_action": next_action,
             "review_claims": review, "candidate_ready": False,
             "execution_credit": False, "delivery_credit": False}
+
+
+def fresh_review_pending(record):
+    e = dependency("review-evidence")
+    try:
+        generation = e.current(record)
+    except (e.Unverified, KeyError, TypeError):
+        return False
+    if not any(r["request"]["action"] == "prepare-repaired-review"
+               and r["result"]["domain_result"]["generation"] == generation["number"]
+               for r in record.get("foreground_control", {}).get("receipts", {}).values()):
+        return False
+    assessment = e.assess(record)
+    unresolved = set(assessment.get("unresolved_findings", []))
+    current_findings, latest_dispositions = set(), {}
+    for run_id in generation["acceptance_order"]:
+        report = generation["reports"][run_id]
+        current_findings.update(finding["id"] for finding in report["findings"])
+        latest_dispositions.update((d["finding_id"], d["resolution"]) for d in report["dispositions"])
+    persists = {identifier for identifier, resolution in latest_dispositions.items() if resolution == "persists"}
+    return not (unresolved & (current_findings | persists)) and (
+        bool(unresolved) or assessment.get("review_process") != "CLAIMS_COMPLETE")
 
 
 def dispatch(record, request, root, bundle=None, persist=None):
@@ -403,6 +433,8 @@ def dispatch(record, request, root, bundle=None, persist=None):
     updated, reference = copy.deepcopy(record), None
     if action == "adopt-owner-repair-head":
         result, reference = dependency("foreground-adopt").adopt(updated, request, root)
+    elif action == "prepare-repaired-review":
+        updated, result, reference = dependency("foreground-review").prepare(updated, request, root)
     elif action in DOMAIN_ACTIONS:
         artifacts = None
         if action in COLLECT_ACTIONS:
@@ -436,7 +468,7 @@ def dispatch(record, request, root, bundle=None, persist=None):
     validate_retained({**updated, "revision": record["revision"] + 1}, root, c, e)
     if len(c.canonical(updated)) > 900_000:
         raise c.Unverified("task evidence budget exceeded")
-    if action == "adopt-owner-repair-head":
+    if action in {"adopt-owner-repair-head", "prepare-repaired-review"}:
         repair_bridge.check_write_budget(updated, record["revision"] + 1, c, coordinator)
     return updated, response, True
 

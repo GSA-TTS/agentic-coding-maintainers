@@ -6,6 +6,8 @@ Observe the exception caught by main in that same process. Emit only on an
 unexpected exit: no exception messages, task values, paths, stdout or stderr.
 """
 
+from contextlib import contextmanager
+from importlib.machinery import SourceFileLoader
 import json
 import runpy
 import sys
@@ -15,7 +17,38 @@ BIN = Path(__file__).resolve().parents[1] / "bin"
 TARGET = BIN / "foreground-delivery.py"
 KINDS = {"Unverified", "UnknownError", "BusyError", "InputError", "ValueError",
          "TypeError", "KeyError", "OSError", "FileNotFoundError", "PermissionError",
-         "TimeoutExpired", "JSONDecodeError", "AssertionError"}
+          "TimeoutExpired", "JSONDecodeError", "AssertionError"}
+
+
+@contextmanager
+def compiled_installed_sources():
+    """Test-process-only compile reuse; each import still reads and executes source.
+
+    No module instances, file metadata, policy digests, task evidence or Git facts
+    are cached. Compare actual bytes, not mtime/size: same-length edits must miss.
+    Keep only the latest source per path/options and bound memory. Nothing is
+    written to disk; the normal loader is restored even on an exception.
+    """
+    original = SourceFileLoader.source_to_code
+    compiled = {}
+
+    def source_to_code(loader, data, path, *, _optimize=-1):
+        if Path(path).parent != BIN or len(data) > 1_000_000:
+            return original(loader, data, path, _optimize=_optimize)
+        key = (path, _optimize)
+        previous = compiled.get(key)
+        if previous is not None and previous[0] == data:
+            return previous[1]
+        code = original(loader, data, path, _optimize=_optimize)
+        if key in compiled or len(compiled) < 32:
+            compiled[key] = (bytes(data), code)
+        return code
+
+    SourceFileLoader.source_to_code = source_to_code
+    try:
+        yield
+    finally:
+        SourceFileLoader.source_to_code = original
 
 
 def summarize(exception, traceback):
@@ -57,7 +90,8 @@ def main():
     sys.settrace(trace)
     code = 0
     try:
-        runpy.run_path(str(TARGET), run_name="__main__")
+        with compiled_installed_sources():
+            runpy.run_path(str(TARGET), run_name="__main__")
     except SystemExit as exc:
         code = exc.code if type(exc.code) is int else 1
     finally:
