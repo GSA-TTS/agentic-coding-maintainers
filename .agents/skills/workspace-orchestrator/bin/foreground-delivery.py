@@ -23,7 +23,7 @@ COLLECT_ACTIONS = {"collect-review", "collect-owner-proposal"}
 DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collected",
                   "admit-owner-proposal": "admit", "collect-owner-proposal": "collect"}
 REPAIR_ACTIONS = {"apply-owner-proposal", "reconcile-owner-proposal"}
-ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | {"prepare-correction", "pause", "resume", "status"}
+ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head"}
 PROPOSAL_FIELDS = {"correction_id", "session", "model", "agent", "binary_sha256",
                    "profile_sha256", "cwd", "sources"}
 
@@ -53,7 +53,7 @@ def validate_request(request, c, e):
     if not isinstance(action, str) or action not in ACTIONS:
         raise c.Unverified("unsupported foreground action")
     payload = request["payload"]
-    expected = PROPOSAL_FIELDS if action == "admit-owner-proposal" else (
+    expected = {"apply_operation_id", "head"} if action == "adopt-owner-repair-head" else PROPOSAL_FIELDS if action == "admit-owner-proposal" else (
         {"admission_id", "artifact_sha256"} if action in COLLECT_ACTIONS else (
         {"admission_id"} if action in {"accept-review", "apply-owner-proposal"} else (
         {"apply_operation_id"} if action == "reconcile-owner-proposal" else set())))
@@ -62,6 +62,9 @@ def validate_request(request, c, e):
         e.hash_value(payload["admission_id"])
     if "apply_operation_id" in expected:
         e.token(payload["apply_operation_id"])
+    if "head" in expected:
+        if not isinstance(payload["head"], str) or not dependency("foreground-adopt").OID.fullmatch(payload["head"]):
+            raise c.Unverified("full repair commit object ID required")
     if "artifact_sha256" in expected:
         c.fields(payload["artifact_sha256"], set(c.ARTIFACTS))
         for value in payload["artifact_sha256"].values():
@@ -104,6 +107,8 @@ def acknowledgement(request, domain_result):
 def referenced_result(record, request, reference, c):
     """Resolve a receipt through already-validated authoritative domain history."""
     action, operation = request["action"], request["operation_id"]
+    if action == "adopt-owner-repair-head":
+        return dependency("foreground-adopt").retained(record, request, reference)
     if action in PROPOSAL_ACTIONS:
         c.fields(reference, {"table", "key"})
         if reference["table"] != "repair_proposals":
@@ -229,6 +234,10 @@ def owner_boundary(record):
                 for item in operations):
             return None
         if any(item["phase"] == "APPLIED_UNREVIEWED" for item in operations):
+            if any(receipt["request"]["action"] == "adopt-owner-repair-head"
+                   and receipt["result"]["domain_result"]["head"] == record["head_sha"]
+                   for receipt in record.get("foreground_control", {}).get("receipts", {}).values()):
+                return "ADOPTED_REPAIR_REQUIRES_FRESH_EXECUTION_AND_REVIEW"
             return "REPAIRED_CANDIDATE_REQUIRES_COMMIT_EXECUTION_AND_REVIEW"
         return "REPAIR_RECONCILIATION_REQUIRED"
     matches = {"owner": "owner", "base_sha": "base", "head_sha": "head", "repo": "repo",
@@ -392,7 +401,9 @@ def dispatch(record, request, root, bundle=None, persist=None):
         return record, repair_bridge.run(record, request, root, persist, state), False
     # Never hand the caller's object to an API that might return/mutate it.
     updated, reference = copy.deepcopy(record), None
-    if action in DOMAIN_ACTIONS:
+    if action == "adopt-owner-repair-head":
+        result, reference = dependency("foreground-adopt").adopt(updated, request, root)
+    elif action in DOMAIN_ACTIONS:
         artifacts = None
         if action in COLLECT_ACTIONS:
             if bundle is None:
@@ -425,6 +436,8 @@ def dispatch(record, request, root, bundle=None, persist=None):
     validate_retained({**updated, "revision": record["revision"] + 1}, root, c, e)
     if len(c.canonical(updated)) > 900_000:
         raise c.Unverified("task evidence budget exceeded")
+    if action == "adopt-owner-repair-head":
+        repair_bridge.check_write_budget(updated, record["revision"] + 1, c, coordinator)
     return updated, response, True
 
 

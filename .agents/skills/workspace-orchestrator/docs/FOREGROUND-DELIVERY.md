@@ -51,6 +51,7 @@ never substitute a new revision into an old request to bypass a refusal.
 | `collect-owner-proposal` | admission_id and exact five artifact hashes | Current owner proposal admission; supply `--bundle DIR`; owner worker, context and source hashes must still match |
 | `apply-owner-proposal` | admission_id | Latest admission for the current prepared correction has a retained collected bundle; exact owner worker, context, source hashes and clean checkout still match; no `--bundle` |
 | `reconcile-owner-proposal` | apply_operation_id | Existing foreground application; current revision and ownership; allowed while paused; observes only, never resumes writes |
+| `adopt-owner-repair-head` | apply_operation_id, head (full commit object ID) | Operator has committed exactly the applied repair on the original owner's branch; final APPLIED_UNREVIEWED application and current original-owner context required; no `--bundle` |
 | `pause` / `resume` | empty object | Current nonterminal admitted task; changes only foreground control |
 | `status` | empty object, or omit request entirely | Reads retained task/domain evidence; no state initialization |
 
@@ -135,6 +136,79 @@ A final persistence failure can leave all targets replaced and the operation
 pending; reconciliation is mandatory. An ambiguous persistence/fsync result must
 be resolved from retained history, never by assuming an exception means no write.
 
+### Adopt an operator-created repair commit
+
+After separately creating the repair commit, submit the ordinary v1 foreground
+envelope with `action: "adopt-owner-repair-head"` and
+`payload: {"apply_operation_id": "<foreground apply ID>", "head": "<full commit ID>"}`.
+The controller invokes no commit, checkout, add, status, or ref-write command.
+The original owner must still be Implementing with the same full worker identity,
+live reservations, correction scope, cycle and post-application material epoch.
+The application must be final `APPLIED_UNREVIEWED`, including explicit successful
+reconciliation, and linked to the latest collected proposal for that correction.
+
+Fresh adoption reads bounded hermetic `git config --null --get-all remote.origin.url`
+output and requires exactly one configured URL matching the task repository.
+Accepted forms are `https://github.com/OWNER/REPO`,
+`ssh://git@github.com/OWNER/REPO`, and `git@github.com:OWNER/REPO`, with optional
+`.git` suffix and case-insensitive owner/repository matching. Credentials, custom
+ports, query strings, other hosts/protocols, absent and multiple URLs are refused.
+This checks configured identity without applying `insteadOf` URL rewrites or
+contacting GitHub; historical status/replay does not inspect current origin.
+
+The helper reads the actual raw commit (tags are refused), requires its single
+parent to be the repair's original head, and compares the entire tree inventory.
+For BOTH original and new commits it extracts the root tree ID from authenticated
+commit bytes, reads and hashes every root/descendant raw tree object, then parses
+its entries. Full inventories are derived only from these authenticated bytes,
+not `diff-tree`/`ls-tree` output or unbounded `git fsck`. Duplicate names, invalid
+ordering, unsafe paths, unsupported modes, empty descendant trees and truncated
+object IDs fail closed. A parseable loose tree stored under the wrong object hash
+is refused before adoption and during retained status/replay validation.
+Exactly the retained one or two modified `100644` paths must appear. Before blob
+SHA-256 and after raw bytes must equal the retained bundle; raw object IDs are
+independently recomputed. Additions, removals, renames, executable/mode changes,
+merges and alternate parents are refused. Filesystem repair modes must retain
+their original `0600` or `0644` values.
+
+Adoption checks the actual worktree root, full branch ref and HEAD, compares the
+entire stage-zero index with the head tree, and reads every tracked file without
+filters. An explicit filesystem walk includes ignored and untracked paths;
+assume-unchanged and skip-worktree bits cannot hide bytes. Symlinks, gitlinks,
+special files, untracked directories, and oversized inventories fail closed.
+The helper reuses the installed bounded Git object reader: all inherited `GIT_`
+variables are stripped, global/system configuration, hooks, fsmonitor, lazy fetch
+and replacement objects are disabled and protocols are denied. The comparison
+invokes no diff driver or textconv. No clean/smudge or attributes conversion is
+used. Each Git read is limited to 15 seconds; aggregate checks allow 1,100 Git
+calls, 16 MB observed bytes, 512 tracked files, 1,024 filesystem entries and 60
+seconds checked between reads (an in-flight read can take its remaining 15-second
+bound). Each complete tree inventory additionally permits at most 512 tree
+visits and 32 directory levels; all tree reads share the Git operation/byte/time
+budgets. Individual tracked files are capped at 1 MB; repair blobs and individual
+raw tree objects at 262,144 bytes.
+
+One atomic coordinator write advances task head and material epoch, advances an
+existing legacy disposition epoch, clears reviewers/reviewed SHA/validation, and
+retains the foreground receipt. The receipt references application, domain repair,
+proposal and bundle, with an immutable comparison witness containing commit/diff
+hashes, exact blob IDs/hashes, paths and modes. It consumes one existing receipt
+slot and checks both canonical 900 KB and durable 1 MB serialization budgets
+before writing. Pause blocks new adoption; exact historical retry stays read-only.
+A second operation cannot adopt the same application again.
+
+Status and replay validate those retained Git objects (including both complete
+tree hierarchies) and the witness rather than
+the current checkout. Later heads or dirty bytes do not reapply adoption, advance
+epochs, or acquire fresh credit. Missing/corrupt retained objects, artifacts or
+references produce UNVERIFIED, including historical replay. Objects must therefore
+remain available in the assigned repository. No object pinning/GC policy is added.
+The controller cannot authenticate who authored a commit from Git metadata;
+operator creation is an operating requirement, not a cryptographic identity claim.
+Exclusive cooperative ownership is still required against concurrent filesystem
+changes. Successful adoption reports `REPAIR_HEAD_ADOPTED_UNREVIEWED`; fresh
+execution and independent review remain required.
+
 ### Next boundaries
 
 Status considers the prepared owner correction before unresolved review findings:
@@ -149,6 +223,7 @@ Status considers the prepared owner correction before unresolved review findings
 | Latest current proposal yielded a retained bundle | `COLLECTED_OWNER_BUNDLE_REQUIRES_GUARDED_APPLY` |
 | Latest current proposal reported inability | `OWNER_PROPOSAL_UNABLE_REQUIRES_OPERATOR` |
 | Pending domain repair or foreground finalization, including while paused | `REPAIR_RECONCILIATION_REQUIRED` |
+| Adopted current repair head without a newer current review generation | `ADOPTED_REPAIR_REQUIRES_FRESH_EXECUTION_AND_REVIEW` |
 | Owner/correction scope, head, generation, lease, checkout or admitted source context no longer matches | `OWNER_PROPOSAL_CONTEXT_RECONCILIATION_REQUIRED` |
 
 Status uses the latest admission for the current correction, not an older bundle
@@ -164,7 +239,7 @@ the suggested step; mutations recheck all domain guards.
 ## Pause and recovery
 
 Pause is **dispatcher-scoped**: it refuses new collect/accept/prepare, owner-proposal
-admission/collection and application operations
+admission/collection, application and head-adoption operations
 through this command. It does not terminate a worker, release capacity, change
 task lifecycle or disable other installed entrypoints. Resume only clears that
 gate, after current identity/revision checks; it does not re-admit lost ownership.
