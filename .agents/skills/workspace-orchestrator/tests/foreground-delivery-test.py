@@ -1333,5 +1333,12 @@ class ForegroundTests(unittest.TestCase):
         self.assertEqual(self.task_path.read_bytes(), before)
 
 
+def load_tests(loader, tests, pattern):
+    cases = load(Path(__file__).with_name("foreground-adopt-cases.py"), "foreground_adopt_cases")
+    adoption = cases.install(ForegroundTests, delivery, c)
+    tests.addTests(adoption(name) for name in loader.getTestCaseNames(adoption) if name.startswith("test_adopt_"))
+    return tests
+
+
 if __name__ == "__main__":
     unittest.main()
