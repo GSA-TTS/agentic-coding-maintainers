@@ -20,6 +20,7 @@ import tempfile
 import time
 import unittest
 from collections import Counter
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -28,10 +29,43 @@ CASES = ("test_admission_changed_binding_and_owner_session_refused",
          "test_admission_later_report_replay_uses_historical_context")
 
 
-def profile_case(case):
+def discover():
     spec = importlib.util.spec_from_file_location("foreground_benchmark_fixture", TEST)
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
+    return fixture, unittest.TestLoader().loadTestsFromModule(fixture)
+
+
+def resolve_case(suite, selector):
+    """Resolve a full method name, retaining discovery's execution multiplicity."""
+    def cases(items):
+        for item in items:
+            if isinstance(item, unittest.TestSuite):
+                yield from cases(item)
+            else:
+                yield item
+
+    matches = [test for test in cases(suite) if test._testMethodName == selector]
+    if len(matches) != 1:
+        raise ValueError(f"case must resolve to exactly one discovered test: {selector!r} ({len(matches)} matches)")
+    return matches[0]
+
+
+def run_selected(test):
+    # Scenario output must not mix with the child measurement protocol.
+    with redirect_stdout(sys.stderr):
+        result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([test]))
+    return {"tests_run": result.testsRun, "skipped": len(result.skipped),
+            "successful": result.wasSuccessful() and not result.expectedFailures}
+
+
+def measured_pass(report):
+    return (type(report) is dict and type(report.get("tests_run")) is int
+            and report["tests_run"] == 1 and type(report.get("skipped")) is int
+            and report["skipped"] == 0 and report.get("successful") is True)
+
+
+def profile_case(fixture, test, case):
     original = subprocess.run
     commands = Counter()
     with tempfile.TemporaryDirectory(prefix="foreground-profile-") as temporary:
@@ -51,16 +85,15 @@ def profile_case(case):
                 profiles.append(profile)
             return original(args, *positional, **kwargs)
 
-        loader = unittest.TestLoader()
-        loader.testNamePatterns = ["*" + case + "*"]
         parent = cProfile.Profile()
         with mock.patch.object(subprocess, "run", side_effect=run):
             parent.enable()
             try:
-                result = unittest.TextTestRunner(verbosity=2).run(loader.loadTestsFromModule(fixture))
+                report = run_selected(test)
             finally:
                 parent.disable()
-        if not result.wasSuccessful() or not profiles:
+        if not measured_pass(report) or not profiles:
+            print(json.dumps({"case": case, **report, "profile_cli_count": len(profiles)}), flush=True)
             raise SystemExit("profile fixture failed or no CLI profiles captured")
         for scope, stats in (("parent", pstats.Stats(parent)),
                              ("foreground_children", pstats.Stats(*(str(path) for path in profiles)))):
@@ -72,7 +105,7 @@ def profile_case(case):
                                         "exec_module", "_path_stat", "_path_isfile"}):
                     rows.append({"file": Path(filename).name, "line": line, "function": function,
                                  "calls": calls, "self_seconds": round(own, 6), "cumulative_seconds": round(cumulative, 6)})
-            print(json.dumps({"scope": scope, "case": case, "tests_run": result.testsRun,
+            print(json.dumps({"scope": scope, "case": case, **report,
                               "commands": dict(commands), "profile_cli_count": len(profiles), "total_calls": stats.total_calls,
                               "linecache_calls": sum(value[1] for key, value in stats.stats.items()
                                                      if Path(key[0]).name == "linecache.py"),
@@ -97,20 +130,39 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", action="store_true", help="separate parent/foreground-child profiles instead of timings")
     parser.add_argument("--case", action="append", help="exact test method (repeat for interleaved cases)")
+    parser.add_argument("--time-case", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.time_case is not None and (args.profile or args.case):
+        parser.error("--time-case cannot be combined with --case or --profile")
+    fixture, suite = discover()
+    selectors = ([args.time_case] if args.time_case is not None
+                 else args.case or ([CASES[1]] if args.profile else CASES))
+    try:
+        selected = [resolve_case(suite, case) for case in selectors]
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.time_case is not None:
+        report = run_selected(selected[0])
+        print(json.dumps(report), flush=True)
+        raise SystemExit(0 if measured_pass(report) else 1)
     if args.profile:
-        for case in args.case or [CASES[1]]:
-            profile_case(case)
+        for case, test in zip(selectors, selected):
+            profile_case(fixture, test, case)
         return
     for sample in range(1, 4):
-        for case in args.case or CASES:
+        for case in selectors:
             start = time.monotonic()
-            process = subprocess.run([sys.executable, "-I", "-B", str(TEST), "-k", case, "-v"], timeout=120)
+            process = subprocess.run([sys.executable, "-I", "-B", __file__, "--time-case", case],
+                                     stdout=subprocess.PIPE, text=True, timeout=120)
             elapsed = time.monotonic() - start
+            try:
+                report = json.loads(process.stdout)
+            except (ValueError, TypeError):
+                raise SystemExit("timing child returned no valid measurement")
             print(json.dumps({"sample": sample, "case": case, "elapsed_seconds": round(elapsed, 6),
-                              "returncode": process.returncode}), flush=True)
-            if process.returncode:
-                raise SystemExit(process.returncode)
+                              "returncode": process.returncode, "measurement": report}), flush=True)
+            if process.returncode or not measured_pass(report):
+                raise SystemExit(process.returncode or 1)
 
 
 if __name__ == "__main__":

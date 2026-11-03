@@ -1339,6 +1339,73 @@ class ForegroundTests(unittest.TestCase):
 
 
 class DiagnosticCompileTests(unittest.TestCase):
+    def test_benchmark_resolves_exact_discovered_method_and_rejects_ambiguity(self):
+        benchmark = load(Path(__file__).with_name("foreground-diagnostic-benchmark.py"), "benchmark")
+
+        class Cases(unittest.TestCase):
+            def test_example(self):
+                pass
+
+            def test_example_extended(self):
+                pass
+
+        exact = Cases("test_example")
+        suite = unittest.TestSuite([unittest.TestSuite([exact]), Cases("test_example_extended")])
+        self.assertIs(benchmark.resolve_case(suite, "test_example"), exact)
+        for selector in ("missing", "test_exam", "*example*"):
+            with self.subTest(selector=selector), self.assertRaisesRegex(ValueError, "0 matches"):
+                benchmark.resolve_case(suite, selector)
+        # Duplicate inherited/discovered methods must not be deduplicated away.
+        duplicate = unittest.TestSuite([exact, Cases("test_example")])
+        with self.assertRaisesRegex(ValueError, "2 matches"):
+            benchmark.resolve_case(duplicate, "test_example")
+
+    def test_benchmark_validates_all_selectors_before_samples_or_profiles(self):
+        benchmark = load(Path(__file__).with_name("foreground-diagnostic-benchmark.py"), "benchmark")
+        test = unittest.FunctionTestCase(lambda: None)
+        for mode in ([], ["--profile"]):
+            with self.subTest(mode=mode), \
+                    mock.patch.object(sys, "argv", ["benchmark", *mode, "--case", "runTest", "--case", "run"]), \
+                    mock.patch.object(benchmark, "discover", return_value=(None, unittest.TestSuite([test]))), \
+                    mock.patch.object(benchmark, "profile_case") as profile, \
+                    mock.patch.object(subprocess, "run") as child, \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+                benchmark.main()
+            self.assertEqual(caught.exception.code, 2)
+            profile.assert_not_called()
+            child.assert_not_called()
+
+    def test_benchmark_timing_child_reports_actual_count_and_failed_or_skipped_status(self):
+        benchmark = load(Path(__file__).with_name("foreground-diagnostic-benchmark.py"), "benchmark")
+
+        class Cases(unittest.TestCase):
+            def test_pass(self):
+                pass
+
+            def test_fail(self):
+                self.fail("expected fixture failure")
+
+            @unittest.skip("expected fixture skip")
+            def test_skip(self):
+                pass
+
+        for name, code, skipped in (("test_pass", 0, 0), ("test_fail", 1, 0), ("test_skip", 1, 1)):
+            output = io.StringIO()
+            with self.subTest(name=name), \
+                    mock.patch.object(sys, "argv", ["benchmark", "--time-case", name]), \
+                    mock.patch.object(benchmark, "discover", return_value=(None, unittest.TestLoader().loadTestsFromTestCase(Cases))), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as caught:
+                benchmark.main()
+            self.assertEqual(caught.exception.code, code)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["tests_run"], 1)
+            self.assertEqual(report["skipped"], skipped)
+            self.assertEqual(benchmark.measured_pass(report), code == 0)
+        for report in ({}, {"tests_run": 0, "skipped": 0, "successful": True},
+                       {"tests_run": 2, "skipped": 0, "successful": True}):
+            self.assertFalse(benchmark.measured_pass(report))
+
     def test_parent_compile_context_is_per_fixture_and_restored_on_failure(self):
         from importlib.machinery import SourceFileLoader
         original = SourceFileLoader.source_to_code
