@@ -17,12 +17,20 @@ Read-only GitHub step observations:
 |---|---:|---:|---|
 | [PR101 optimized run41642915251](https://github.com/GSA-TTS/agentic-coding-maintainers/actions/runs/41642915251) | 8m36s | 8m09s | Pass |
 | [PR102 optimized run41674331499](https://github.com/GSA-TTS/agentic-coding-maintainers/actions/runs/41674331499) | 9m54s | 9m33s | Pass |
+| [This optimization run41708829200](https://github.com/GSA-TTS/agentic-coding-maintainers/actions/runs/41708829200) | 7m48s | 7m08s | Pass |
 
 The increase is in the test/check step, not package installation or secret
 scanning. The job totals are not a controlled interpreter benchmark: code and
 workload changed, and runner variation is unmeasured. The earlier Python3.12
 versus3.11 observations also crossed images/builds/architectures and cannot
 attribute a causal slowdown to an interpreter version.
+
+The first hosted run of this change passed all checks with 2m12s of headroom,
+versus six seconds for PR102: 2m06s less total elapsed time (21.2%). The test/check
+step decreased 2m25s (25.3%). Four additional regressions ran. This is one observed
+comparison, not a controlled multi-run estimate: main also advanced its pinned
+setup-python action and runner load was not measured. The profiled unchanged
+command counts and compilation drop independently support the targeted cause.
 
 ## Measured remaining bottleneck
 
@@ -89,8 +97,11 @@ and prior suites passed; it is not a whole-suite pass. A subsequent complete
 run with required test tools completed the full repository suite, with 73
 foreground tests passing in465.743s and every remaining suite/check passing.
 That diagnostic run allowed a longer local wrapper to finish all validation;
-the repository's hosted ten-minute job timeout is unchanged. Hosted timing must
-still be measured independently before crediting CI headroom.
+the repository's hosted ten-minute job timeout is unchanged. After independent
+review identified zero-test timing as a benchmark defect, exact single-case
+selection and three lightweight regressions were added. The final full isolated
+suite passed with 76 foreground tests in481.002s and all remaining checks passing.
+The hosted result above supplies separate evidence of improved CI headroom.
 
 To reproduce on an approved isolated copy, use
 `tests/foreground-diagnostic-benchmark.py --case METHOD` for three fresh-process
