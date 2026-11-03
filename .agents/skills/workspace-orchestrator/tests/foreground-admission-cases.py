@@ -12,22 +12,13 @@ from unittest import mock
 
 def install(base, delivery, c):
     class AdmissionTests(base):
-        @classmethod
-        def setUpClass(cls):
-            # Amortize the unchanged repair/preparation prefix. Each case restores
-            # task bytes; immutable artifacts may accumulate but confer no credit.
-            cls.fixture = base("test_fresh_cli_original_base_union_one_revision_and_historical_replay")
-            cls.addClassCleanup(cls.fixture.doCleanups)
-            cls.fixture.setUp()
-            cls.prepare_request = cls.fixture.prepare_fresh()
-            cls.prepare_result = cls.fixture.dispatch(cls.prepare_request)
-            cls.prepared_record = cls.fixture.record()
-
         def setUp(self):
-            self.__dict__.update({k: v for k, v in self.fixture.__dict__.items()
-                                 if not k.startswith("_test") and k != "_cleanups"})
-            self.store_record(copy.deepcopy(self.prepared_record))
-            self.addCleanup(self.store_record, copy.deepcopy(self.prepared_record))
+            # Independent task, Git checkout, artifacts and live reservations per
+            # test; never roll a shared authoritative store back between cases.
+            super().setUp()
+            self.prepare_request = self.prepare_fresh()
+            self.prepare_result = self.dispatch(self.prepare_request)
+            self.prepared_record = self.record()
 
         def assign_request(self, operation="assign-fresh"):
             request = self.request("assign-prepared-review", operation)

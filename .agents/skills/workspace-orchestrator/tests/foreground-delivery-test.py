@@ -1334,6 +1334,62 @@ class ForegroundTests(unittest.TestCase):
 
 
 class DiagnosticCompileTests(unittest.TestCase):
+    def test_diagnostic_profile_launcher_preserves_failed_exit(self):
+        with tempfile.TemporaryDirectory(prefix="foreground-profile-exit-") as temporary:
+            directory = Path(temporary)
+            script, profile = directory / "failed.py", directory / "failed.prof"
+            script.write_text("raise SystemExit(3)\n")
+            process = subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).with_name("foreground-diagnostic-benchmark.py")),
+                                      "--profile-cli", str(profile), str(script)], capture_output=True, timeout=10)
+            self.assertEqual(process.returncode, 3)
+            self.assertEqual(process.stdout, b"")
+            self.assertEqual(process.stderr, b"")
+            import pstats
+            self.assertGreater(pstats.Stats(str(profile)).total_calls, 0)
+
+    def test_diagnostic_monitoring_and_trace_capture_same_exception_and_restore(self):
+        diagnostic = load(Path(__file__).with_name("foreground-cli-diagnostic.py"), "diagnostic")
+        namespace = {}
+        exec(compile("def helper():\n raise ValueError('private-canary')\ndef main():\n worker = {'process_start': 'start'}\n live, start = 'alive', 'start'\n try:\n  helper()\n except Exception:\n  return 3\n", str(diagnostic.TARGET), "exec"), namespace)
+        results = []
+        for fallback in (False, True):
+            observed = []
+            def capture(frame, exception, traceback):
+                observed.append((diagnostic.summarize(exception, traceback),
+                                 frame.f_locals["live"] == "alive",
+                                 frame.f_locals["start"] == frame.f_locals["worker"]["process_start"]))
+            original = sys.gettrace()
+            manager = mock.patch.object(sys, "monitoring", None, create=True) if fallback else contextlib.nullcontext()
+            with manager, diagnostic.exception_observer(capture) as backend:
+                self.assertEqual(backend, "trace" if fallback or not hasattr(sys, "monitoring") else "monitoring")
+                self.assertEqual(namespace["main"](), 3)
+            self.assertIs(sys.gettrace(), original)
+            self.assertEqual(len(observed), 1)
+            self.assertNotIn("private-canary", repr(observed))
+            results.append(observed)
+        self.assertEqual(results[0], results[1])
+        if hasattr(sys, "monitoring"):
+            self.assertIsNone(sys.monitoring.get_tool(5))
+            self.assertEqual(sys.monitoring.get_events(5), 0)
+
+    def test_diagnostic_observer_exception_cleanup_and_occupied_slot(self):
+        diagnostic = load(Path(__file__).with_name("foreground-cli-diagnostic.py"), "diagnostic")
+        original = sys.gettrace()
+        with self.assertRaisesRegex(RuntimeError, "observer cleanup"), diagnostic.exception_observer(lambda *args: None):
+            raise RuntimeError("observer cleanup")
+        self.assertIs(sys.gettrace(), original)
+        if hasattr(sys, "monitoring"):
+            monitoring = sys.monitoring
+            monitoring.use_tool_id(5, "existing-test-observer")
+            try:
+                with diagnostic.exception_observer(lambda *args: None) as backend:
+                    self.assertEqual(backend, "trace")
+                    self.assertEqual(monitoring.get_tool(5), "existing-test-observer")
+                self.assertEqual(monitoring.get_tool(5), "existing-test-observer")
+            finally:
+                monitoring.free_tool_id(5)
+        self.assertIs(sys.gettrace(), original)
+
     def test_diagnostic_compile_reuse_reads_edits_and_fresh_globals(self):
         diagnostic = load(Path(__file__).with_name("foreground-cli-diagnostic.py"), "diagnostic")
         from importlib.machinery import SourceFileLoader

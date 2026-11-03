@@ -26,7 +26,7 @@ f19900a2f33673adccfa5b668859a9b3a7393275d066f5d8775aee28f45cc153  ./bin/review-p
 3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
 bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTION-OBSERVER.md
 438fba1a0be38b6b6a16acc701f9e4923fd154320735e802b90c7ff1a7b1a061  ./docs/EXECUTION-PLAN.md
-f98611005d711f203ae0098834f902edc3e67934310490c7d711926bb8f44108  ./docs/FOREGROUND-DELIVERY.md
+9dd295f4ea8893a5b8d4e7dae637eed13f91478d10688274ebd7502d42d400e4  ./docs/FOREGROUND-DELIVERY.md
 3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
 ba8d134ae3a0dba93249f97823032760a745aacf0b251a8e87a0ce1e53228382  ./docs/MAINTAINER-SERVICE.md
 4e0812b7e8a0ed0862c275a81971dd857c5c39e4329f59eab9fbcf62c16e313e  ./docs/OPERATOR-GUIDE.md
@@ -49,10 +49,11 @@ a850aa1f41361161e31a4e6b4ad547ff78b404051e39dc71b9cab78173185bed  ./run.sh
 507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py
 088c2edbc8305b2a1d49f389fccec47f27403dd34b74a90e625b2b44c8ceccff  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
-3fd54d107ab4264367e6695c23b69abc602c02fa01620eb24a883818626c1e42  ./tests/foreground-admission-cases.py
+68a769e6c16f28321581bf109f0fb4341676d93f3e996935d94931d5ebfd963a  ./tests/foreground-admission-cases.py
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
-7aea73038feaae9b905e4f3146b280028dba2c512304de0a6d719048743c4a61  ./tests/foreground-cli-diagnostic.py
-30410c120fa7ce7932f212808cc8f0dd009f13fe5c1826ae32316ed8ff6ecf63  ./tests/foreground-delivery-test.py
+323bc46f9b67266aab507a5185d02e7434f9cb44517b7945b98062aac9339b6a  ./tests/foreground-cli-diagnostic.py
+ae6ab4cfda2828b33ceb2bfa6459dd2f145e973859fef41b7b6f7fd0c71afd4f  ./tests/foreground-delivery-test.py
+8f8baf79dc2be41a356384e0d9c140169a4c70a18f1e58bfe21db056a8212465  ./tests/foreground-diagnostic-benchmark.py
 1a68af3feaf26d8d90e7b409b3b807f5144d2669730b03b5ce1f2145e70ed2fc  ./tests/foreground-review-cases.py
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
 8ce5076dba28c115920af104121fe93cf7cdc1d2fe74b73009de55f9ebd8c98d  ./tests/monitor-journal-test.py

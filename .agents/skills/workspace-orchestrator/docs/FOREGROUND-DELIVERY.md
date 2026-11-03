@@ -470,7 +470,7 @@ On an unexpected foreground CLI exit, the fixture emits a bounded structural
 diagnostic from that same invocation: exception type and installed-code
 file/function/line, plus worker-alive/start-match booleans when available. A
 test-local interpreter shim keeps the public `run.sh` path and observes its
-Python main with tracing; it never retries a request or changes its expected
+Python main with an exception observer; it never retries a request or changes its expected
 exit. Exception messages, task contents, runtime stdout/stderr, host paths and
 worker identity values are withheld. Production failure responses are unchanged.
 Executable fixture shims require sandbox `TMPDIR=/work/tmp`, not no-exec `/tmp`.
@@ -531,7 +531,7 @@ run is a different environment and cannot establish the full-suite speedup.
 The workflow and its ten-minute timeout remain unchanged; whole-job headroom
 must be measured by the next hosted run.
 
-The eight prepared-assignment/admission cases reuse one real CLI-created
+The initial eight prepared-assignment/admission cases reused one real CLI-created
 repair/preparation prefix within their test class. Each case restores the
 authoritative task snapshot; the read-only source objects and immutable artifact
 store are shared. Each request still uses a fresh public CLI process and existing
@@ -554,6 +554,72 @@ Ran 22 tests in 6.302s — OK
 The full suite and ten-minute hosted-job budget are unmeasured for this addition;
 the timeout is unchanged. No model, credential or capacity claim follows from
 these synthetic runtime observations.
+
+### Exception-observer optimization at `9006bb6`
+
+The admission tests now create an independent real CLI fixture for **each test**:
+task, Git checkout, artifacts and live reservations are never shared or rolled
+back between test cases. All existing assertions remain. The prior shared-prefix
+measurement above describes the earlier implementation, not current isolation.
+
+The test-local diagnostic uses `sys.monitoring.events.EXCEPTION_HANDLED` when
+monitoring is available (Python 3.12+). Its callback captures only exceptions
+handled in the installed foreground `main`, retaining the traceback and the same
+bounded worker observation. It does not enable Python call, instruction or line
+events. Slot 5 is claimed exclusively and its event, callback and ownership are
+released in `finally`. An occupied slot is left untouched. Older interpreters and
+occupied-slot runs use the trace fallback, with line events disabled and the prior
+trace restored. Unexpected monitoring errors fail the fixture rather than silently
+dropping diagnostic coverage. This is a small test observer, not production
+runtime instrumentation. The existing fresh-byte compile cache is unchanged.
+
+Measurement used the same pinned Python 3.12 Docker image and resource limits
+above, network none, read-only `/pr`, writable container copy and `TMPDIR=/work`.
+Both before and after used the independent per-test fixture change; only the
+observer differed. Each variant alternated the following cases, with three fresh
+test processes per case. Elapsed seconds include interpreter startup:
+
+| Case (`test_admission_` suffix) | Trace baseline | Exception monitoring | Median reduction |
+|---|---|---|---|
+| `changed_binding_and_owner_session_refused` | 14.012399, 13.464835, 13.212901 | 10.999598, 10.930815, 12.071163 | 13.464835 → 10.999598 (18.3%) |
+| `later_report_replay_uses_historical_context` | 11.993214, 11.515653, 11.531174 | 9.808416, 10.544771, 9.961214 | 11.531174 → 9.961214 (13.6%) |
+
+Reproduce in the isolated writable copy with:
+
+```text
+python3 -I -B tests/foreground-diagnostic-benchmark.py
+python3 -I -B tests/foreground-diagnostic-benchmark.py --profile
+```
+
+The separate cProfile replay samples retained 23 foreground CLI invocations,
+2,080 compile-cache calls, 425 actual compile calls and 2,747 import path-stat calls
+in both variants. Aggregate profiled CLI time was 4.192548s before and 3.407794s
+after; compilation self-time was 1.289115s and 1.289993s. cProfile did not attribute
+the trace callback itself, so these figures do not directly measure its CPU cost;
+the unprofiled paired-environment samples are the speed evidence. Profiled tests
+took 15.410s and 14.500s overall. Profiles were container-local and removed with
+the fixture. An initial profiling attempt using `python -m cProfile` swallowed a
+CLI `SystemExit(3)` and correctly failed the fixture; it supplied no usable timing
+evidence. The retained helper uses the cProfile API and preserves SystemExit, with
+a regression for that failure mode.
+
+Final focused verification:
+
+```text
+python3 -I -B tests/foreground-delivery-test.py -k test_admission_ -k diagnostic -v
+Ran 14 tests in 82.810s
+OK
+```
+
+This includes all eight independent admission cases, existing fresh-source/fresh-
+globals compile regressions, public-CLI sanitized failure diagnostics, and three
+new tests covering monitoring/fallback equivalence, observer cleanup/slot
+contention and profiling exit preservation. No assertions, public-CLI identity
+checks, validators or evidence reads were removed. No test-mode bypass was enabled.
+Production `bin/`, workflow and timeout are unchanged. The full suite was not
+repeated for this optimization, and hosted CI completion within ten minutes is
+**UNVERIFIED**. The operator-reported 245-second local full-suite result and hosted
+timeout are different environments, not this change's measured before/after.
 
 Next rollout gates remain: explicit model/sandbox provisioning, controlled local
 effect dispatch and lifecycle operation replay, longer foreground continuation,
