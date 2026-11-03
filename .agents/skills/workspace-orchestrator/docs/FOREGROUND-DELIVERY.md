@@ -55,6 +55,7 @@ never substitute a new revision into an old request to bypass a refusal.
 | `prepare-repaired-review` | adopt_operation_id | Current original owner and adopted head; authenticate and retain a direct original-task-base packet, begin a fresh claims generation in one task write; no `--bundle` |
 | `assign-prepared-review` | prepare_operation_id, run_id, reviewer, profile, session | Exact retained preparation; assign all generation obligations through native-session; distinct reviewer and non-owner session |
 | `admit-prepared-review` | assign_operation_id, binary_sha256, model, agent, cwd, sources | Exact retained foreground assignment and prepared packet; derive bounded admission context; no `--bundle` |
+| `export-admitted-review` | admission_id | Read-only current prepared admission export, unpaused and uncollected; no task receipt/revision change; see [source handoff](REVIEW-HANDOFF.md) |
 | `pause` / `resume` | empty object | Current nonterminal admitted task; changes only foreground control |
 | `status` | empty object, or omit request entirely | Reads retained task/domain evidence; no state initialization |
 

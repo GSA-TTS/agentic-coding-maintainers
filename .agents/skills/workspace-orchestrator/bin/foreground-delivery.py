@@ -24,7 +24,7 @@ DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collecte
                   "admit-owner-proposal": "admit", "collect-owner-proposal": "collect"}
 REPAIR_ACTIONS = {"apply-owner-proposal", "reconcile-owner-proposal"}
 PREPARED_ACTIONS = {"assign-prepared-review", "admit-prepared-review"}
-ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | PREPARED_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head", "prepare-repaired-review"}
+ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | PREPARED_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head", "prepare-repaired-review", "export-admitted-review"}
 PROPOSAL_FIELDS = {"correction_id", "session", "model", "agent", "binary_sha256",
                    "profile_sha256", "cwd", "sources"}
 
@@ -56,7 +56,7 @@ def validate_request(request, c, e):
     payload = request["payload"]
     expected = {"adopt_operation_id"} if action == "prepare-repaired-review" else {"apply_operation_id", "head"} if action == "adopt-owner-repair-head" else PROPOSAL_FIELDS if action == "admit-owner-proposal" else (
         {"admission_id", "artifact_sha256"} if action in COLLECT_ACTIONS else (
-        {"admission_id"} if action in {"accept-review", "apply-owner-proposal"} else (
+        {"admission_id"} if action in {"accept-review", "apply-owner-proposal", "export-admitted-review"} else (
         {"apply_operation_id"} if action == "reconcile-owner-proposal" else set())))
     if action in PREPARED_ACTIONS:
         expected = ({"prepare_operation_id", "run_id", "reviewer", "profile", "session"} if action == "assign-prepared-review"
@@ -409,6 +409,17 @@ def dispatch(record, request, root, bundle=None, persist=None):
     action = request["action"]
     if bundle is not None and action not in COLLECT_ACTIONS:
         raise c.Unverified("bundle requires a collection action")
+    if action == "export-admitted-review":
+        # Read operations never replay mutation receipts or consume receipt capacity.
+        if (request["expected_revision"] != record["revision"] or state["paused"]
+                or record["state"] != "Implementing" or record.get("transition_intent")):
+            raise c.Unverified("export requires current unpaused implementation admission")
+        coordinator = dependency("orchestrator-state")
+        coordinator.require_execution_stopped(record)
+        coordinator.require_repair_settled(record, root=root)
+        if dependency("foreground-repair").pending(record):
+            raise c.Unverified("foreground repair requires reconciliation")
+        return record, dependency("review-handoff").export_admitted(record, request, root), False
     prior = state["receipts"].get(request["operation_id"])
     if prior is not None:
         if prior["request"] != request:
