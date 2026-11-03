@@ -53,6 +53,8 @@ never substitute a new revision into an old request to bypass a refusal.
 | `reconcile-owner-proposal` | apply_operation_id | Existing foreground application; current revision and ownership; allowed while paused; observes only, never resumes writes |
 | `adopt-owner-repair-head` | apply_operation_id, head (full commit object ID) | Operator has committed exactly the applied repair on the original owner's branch; final APPLIED_UNREVIEWED application and current original-owner context required; no `--bundle` |
 | `prepare-repaired-review` | adopt_operation_id | Current original owner and adopted head; authenticate and retain a direct original-task-base packet, begin a fresh claims generation in one task write; no `--bundle` |
+| `assign-prepared-review` | prepare_operation_id, run_id, reviewer, profile, session | Exact retained preparation; assign all generation obligations through native-session; distinct reviewer and non-owner session |
+| `admit-prepared-review` | assign_operation_id, binary_sha256, model, agent, cwd, sources | Exact retained foreground assignment and prepared packet; derive bounded admission context; no `--bundle` |
 | `pause` / `resume` | empty object | Current nonterminal admitted task; changes only foreground control |
 | `status` | empty object, or omit request entirely | Reads retained task/domain evidence; no state initialization |
 
@@ -266,6 +268,68 @@ mutation. Missing packets, objects, domain/adoption links or substituted content
 produce UNVERIFIED. Retained Git objects must remain available; no GC pinning is
 introduced.
 
+### Assign and admit the prepared review
+
+Use two separate v1 requests, each with its own operation ID and current revision:
+
+```json
+{"prepare_operation_id":"prepare-1","run_id":"review-1","reviewer":"independent-reviewer","profile":"<SHA-256>","session":"ses_review_1"}
+```
+
+The `assign-prepared-review` payload above resolves the exact preparation receipt
+to its generation and authenticated retained packet. It calls
+`review-evidence.apply(assign)` with **all** generation obligations and
+`adapter: native-session`. The reviewer must differ from the generation owner;
+no retained owner-proposal session may be reused. This records an assignment,
+not a launched process or reserved worker slot.
+
+```json
+{"assign_operation_id":"assign-1","binary_sha256":"<SHA-256>","model":"provider/model","agent":"reviewer","cwd":"/review","sources":{"/candidate/source.py":{"path_base64":"c291cmNlLnB5","side":"after"}}}
+```
+
+`admit-prepared-review` resolves that exact foreground assignment and calls
+`review-collect.apply(admit)` with the prepared packet. `sources` follows the
+existing 1–20 packet-backed guest-path selection contract. Selecting fewer files
+never narrows assignment or context obligations. Caller-supplied context,
+generation, obligations, adapter and packet overrides are refused.
+
+The derived `context` contains `acceptance_criteria` from the retained correction,
+the complete generation `obligations`, and complete `finding_history` (including
+dispositions) **as of the admission request's input revision**. Its canonical
+JSON including newline must fit 50,000 bytes; otherwise admission refuses without
+truncation. Later accepted reports do not change this historical context. Runtime
+collection checks the context digest, session, profile and selected source hashes
+through the existing collection validator. Collection and acceptance remain
+separate requests/revisions, and resolving a prior finding requires a fresh
+review disposition.
+
+Both actions recheck preparation's original-owner, full-worker, reservations,
+Implementing state, cycle, scope, head, current generation, epoch, configured
+origin and entire clean-checkout guards. Pause and stale revisions refuse new
+operations. Historical replay validates retained packets/objects and historical
+context; it never recaptures source or today's policy or requires a clean current
+checkout. The existing CLI live-worker/reservation checks still apply.
+
+Each action stages its reference for prospective domain validation, then makes
+one coordinator task write containing the ordinary domain operation and foreground
+receipt. Domain IDs are reserved as `fgassign.<full-request SHA-256>` and
+`fgadmit.<full-request SHA-256>`. Structural reverse links use pure retained
+derivations without importing foreground validators; forward validation checks
+the exact domain request/result and packet reference. Missing/replaced links fail
+closed. The only shared revisions are each action's own linked domain operation
+and receipt; assignment and admission always have distinct durable revisions.
+Failure between them leaves an assignment without admission. A failed admission
+task write can leave an unreferenced immutable artifact, which grants no credit.
+Exact retry uses retained history; ambiguous persistence requires inspection.
+
+Status adds bounded `preparation_progress`: preparation ID, generation, assignment
+and admission counts, pending foreground assignment IDs, and an informational
+`ASSIGN_PREPARED_REVIEW`, `ADMIT_PREPARED_REVIEW`, or `PREPARATION_COMPLETE` boundary.
+This field does not replace `review_claims` or the top-level `next_action`; current
+findings and persists dispositions still request owner rework. Existing receipt,
+generation, assignment and task-byte bounds apply. These actions neither launch a
+model nor provision credentials, runtime, capacity or new controller policy.
+
 ### Next boundaries
 
 Status considers the prepared owner correction before unresolved review findings:
@@ -406,7 +470,7 @@ On an unexpected foreground CLI exit, the fixture emits a bounded structural
 diagnostic from that same invocation: exception type and installed-code
 file/function/line, plus worker-alive/start-match booleans when available. A
 test-local interpreter shim keeps the public `run.sh` path and observes its
-Python main with tracing; it never retries a request or changes its expected
+Python main with an exception observer; it never retries a request or changes its expected
 exit. Exception messages, task contents, runtime stdout/stderr, host paths and
 worker identity values are withheld. Production failure responses are unchanged.
 Executable fixture shims require sandbox `TMPDIR=/work/tmp`, not no-exec `/tmp`.
@@ -466,6 +530,96 @@ was no paired local full-suite baseline; the previously reported hosted 546-seco
 run is a different environment and cannot establish the full-suite speedup.
 The workflow and its ten-minute timeout remain unchanged; whole-job headroom
 must be measured by the next hosted run.
+
+The initial eight prepared-assignment/admission cases reused one real CLI-created
+repair/preparation prefix within their test class. Each case restores the
+authoritative task snapshot; the read-only source objects and immutable artifact
+store are shared. Each request still uses a fresh public CLI process and existing
+same-invocation diagnostics. No production module or validation result is cached.
+This avoids eight repeated repair-prefix setups while preserving distinct durable
+assign/admit/collect/accept revisions. Other fixture classes remain unchanged.
+Focused sandbox verification (same pinned Python 3.12 image and limits above):
+
+```text
+foreground-delivery-test.py -k test_admission_ -k test_fresh_ -v
+Ran 16 tests in 112.231s — OK
+review-evidence-test.py -v
+Ran 18 tests in 3.637s — OK
+review-collect-test.py -v
+Ran 13 tests in 2.669s — OK
+review-accept-test.py -v
+Ran 22 tests in 6.302s — OK
+```
+
+The full suite and ten-minute hosted-job budget are unmeasured for this addition;
+the timeout is unchanged. No model, credential or capacity claim follows from
+these synthetic runtime observations.
+
+### Exception-observer optimization at `9006bb6`
+
+The admission tests now create an independent real CLI fixture for **each test**:
+task, Git checkout, artifacts and live reservations are never shared or rolled
+back between test cases. All existing assertions remain. The prior shared-prefix
+measurement above describes the earlier implementation, not current isolation.
+
+The test-local diagnostic uses `sys.monitoring.events.EXCEPTION_HANDLED` when
+monitoring is available (Python 3.12+). Its callback captures only exceptions
+handled in the installed foreground `main`, retaining the traceback and the same
+bounded worker observation. It does not enable Python call, instruction or line
+events. Slot 5 is claimed exclusively and its event, callback and ownership are
+released in `finally`. An occupied slot is left untouched. Older interpreters and
+occupied-slot runs use the trace fallback, with line events disabled and the prior
+trace restored. Unexpected monitoring errors fail the fixture rather than silently
+dropping diagnostic coverage. This is a small test observer, not production
+runtime instrumentation. The existing fresh-byte compile cache is unchanged.
+
+Measurement used the same pinned Python 3.12 Docker image and resource limits
+above, network none, read-only `/pr`, writable container copy and `TMPDIR=/work`.
+Both before and after used the independent per-test fixture change; only the
+observer differed. Each variant alternated the following cases, with three fresh
+test processes per case. Elapsed seconds include interpreter startup:
+
+| Case (`test_admission_` suffix) | Trace baseline | Exception monitoring | Median reduction |
+|---|---|---|---|
+| `changed_binding_and_owner_session_refused` | 14.012399, 13.464835, 13.212901 | 10.999598, 10.930815, 12.071163 | 13.464835 → 10.999598 (18.3%) |
+| `later_report_replay_uses_historical_context` | 11.993214, 11.515653, 11.531174 | 9.808416, 10.544771, 9.961214 | 11.531174 → 9.961214 (13.6%) |
+
+Reproduce in the isolated writable copy with:
+
+```text
+python3 -I -B tests/foreground-diagnostic-benchmark.py
+python3 -I -B tests/foreground-diagnostic-benchmark.py --profile
+```
+
+The separate cProfile replay samples retained 23 foreground CLI invocations,
+2,080 compile-cache calls, 425 actual compile calls and 2,747 import path-stat calls
+in both variants. Aggregate profiled CLI time was 4.192548s before and 3.407794s
+after; compilation self-time was 1.289115s and 1.289993s. cProfile did not attribute
+the trace callback itself, so these figures do not directly measure its CPU cost;
+the unprofiled paired-environment samples are the speed evidence. Profiled tests
+took 15.410s and 14.500s overall. Profiles were container-local and removed with
+the fixture. An initial profiling attempt using `python -m cProfile` swallowed a
+CLI `SystemExit(3)` and correctly failed the fixture; it supplied no usable timing
+evidence. The retained helper uses the cProfile API and preserves SystemExit, with
+a regression for that failure mode.
+
+Final focused verification:
+
+```text
+python3 -I -B tests/foreground-delivery-test.py -k test_admission_ -k diagnostic -v
+Ran 14 tests in 82.810s
+OK
+```
+
+This includes all eight independent admission cases, existing fresh-source/fresh-
+globals compile regressions, public-CLI sanitized failure diagnostics, and three
+new tests covering monitoring/fallback equivalence, observer cleanup/slot
+contention and profiling exit preservation. No assertions, public-CLI identity
+checks, validators or evidence reads were removed. No test-mode bypass was enabled.
+Production `bin/`, workflow and timeout are unchanged. The full suite was not
+repeated for this optimization, and hosted CI completion within ten minutes is
+**UNVERIFIED**. The operator-reported 245-second local full-suite result and hosted
+timeout are different environments, not this change's measured before/after.
 
 Next rollout gates remain: explicit model/sandbox provisioning, controlled local
 effect dispatch and lifecycle operation replay, longer foreground continuation,

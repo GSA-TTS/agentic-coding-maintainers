@@ -65,6 +65,59 @@ def summarize(exception, traceback):
     return {"exception": kind if kind in KINDS else "OtherException", "frames": frames[-8:]}
 
 
+@contextmanager
+def exception_observer(capture):
+    """Observe caught main exceptions, not every Python call/line on 3.12+.
+
+    One private monitoring slot, no instruction/line instrumentation. Older
+    interpreters or an occupied slot retain the original trace observation.
+    Unexpected monitoring errors propagate; they must not silently lose evidence.
+    """
+    target = str(TARGET)
+    monitoring = getattr(sys, "monitoring", None)
+    tool = 5
+    if monitoring is not None:
+        try:
+            monitoring.use_tool_id(tool, "foreground-fixture-diagnostic")
+        except ValueError:
+            monitoring = None  # Another observer owns the slot; never take it.
+    if monitoring is not None:
+        event = monitoring.events.EXCEPTION_HANDLED
+
+        def handled(code, offset, exception):
+            if code.co_filename == target and code.co_name == "main" and isinstance(exception, Exception):
+                frame = sys._getframe(1)
+                if frame.f_code is not code:
+                    raise RuntimeError("diagnostic monitoring frame differs")
+                capture(frame, exception, exception.__traceback__)
+
+        try:
+            monitoring.register_callback(tool, event, handled)
+            monitoring.set_events(tool, event)
+            yield "monitoring"
+        finally:
+            monitoring.set_events(tool, 0)
+            monitoring.register_callback(tool, event, None)
+            monitoring.free_tool_id(tool)
+        return
+
+    previous = sys.gettrace()
+
+    def trace(frame, event, arg):
+        if frame.f_code.co_filename != target or frame.f_code.co_name != "main":
+            return None
+        frame.f_trace_lines = False
+        if event == "exception" and isinstance(arg[1], Exception):
+            capture(frame, arg[1], arg[2])
+        return trace
+
+    sys.settrace(trace)
+    try:
+        yield "trace"
+    finally:
+        sys.settrace(previous)
+
+
 def main():
     expected = int(sys.argv[1])
     # The public shell entrypoint supplied these exact isolated Python arguments.
@@ -73,29 +126,22 @@ def main():
     sys.argv = sys.argv[4:]
     captured = None
 
-    def trace(frame, event, arg):
+    def capture(frame, exception, traceback):
         nonlocal captured
-        if frame.f_code.co_filename != str(TARGET) or frame.f_code.co_name != "main":
-            return None
-        if event == "exception" and isinstance(arg[1], Exception):
-            captured = summarize(arg[1], arg[2])
-            if "worker" in frame.f_locals and "live" in frame.f_locals:
-                worker = frame.f_locals["worker"]
-                if isinstance(worker, dict):
-                    captured["worker_observation"] = {
-                        "alive": frame.f_locals["live"] == "alive",
-                        "start_matches": frame.f_locals.get("start") == worker.get("process_start")}
-        return trace
+        captured = summarize(exception, traceback)
+        if "worker" in frame.f_locals and "live" in frame.f_locals:
+            worker = frame.f_locals["worker"]
+            if isinstance(worker, dict):
+                captured["worker_observation"] = {
+                    "alive": frame.f_locals["live"] == "alive",
+                    "start_matches": frame.f_locals.get("start") == worker.get("process_start")}
 
-    sys.settrace(trace)
     code = 0
     try:
-        with compiled_installed_sources():
+        with exception_observer(capture), compiled_installed_sources():
             runpy.run_path(str(TARGET), run_name="__main__")
     except SystemExit as exc:
         code = exc.code if type(exc.code) is int else 1
-    finally:
-        sys.settrace(None)
     if code != expected:
         diagnostic = {"expected_exit": expected, "actual_exit": code,
                       "caught_exception": captured, "source": "same-invocation"}
