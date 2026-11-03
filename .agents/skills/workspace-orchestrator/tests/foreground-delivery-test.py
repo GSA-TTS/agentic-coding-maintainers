@@ -29,6 +29,7 @@ def load(path, name):
 
 
 ROOT = Path(__file__).resolve().parents[1]
+diagnostic = load(Path(__file__).with_name("foreground-cli-diagnostic.py"), "foreground_diagnostic")
 delivery = load(ROOT / "bin/foreground-delivery.py", "foreground_delivery")
 fixtures = load(Path(__file__).with_name("review-collect-test.py"), "collection_fixtures")
 c, e = fixtures.collector, fixtures.evidence
@@ -36,6 +37,10 @@ c, e = fixtures.collector, fixtures.evidence
 
 class ForegroundTests(unittest.TestCase):
     def setUp(self):
+        # Direct helper calls reload installed modules too, especially when filling
+        # receipt history. Reuse only compiled bytes for this one test; unittest
+        # restores the loader after all cleanups, even when setUp itself fails.
+        self.enterContext(diagnostic.compiled_installed_sources())
         # Check the real installed package, not just the disposable task checkout.
         # On a read-only mount cache writes fail silently; run this fixture from a
         # writable sandbox copy to exercise the subprocess pollution regression.
@@ -1334,6 +1339,105 @@ class ForegroundTests(unittest.TestCase):
 
 
 class DiagnosticCompileTests(unittest.TestCase):
+    def test_benchmark_resolves_exact_discovered_method_and_rejects_ambiguity(self):
+        benchmark = load(Path(__file__).with_name("foreground-diagnostic-benchmark.py"), "benchmark")
+
+        class Cases(unittest.TestCase):
+            def test_example(self):
+                pass
+
+            def test_example_extended(self):
+                pass
+
+        exact = Cases("test_example")
+        suite = unittest.TestSuite([unittest.TestSuite([exact]), Cases("test_example_extended")])
+        self.assertIs(benchmark.resolve_case(suite, "test_example"), exact)
+        for selector in ("missing", "test_exam", "*example*"):
+            with self.subTest(selector=selector), self.assertRaisesRegex(ValueError, "0 matches"):
+                benchmark.resolve_case(suite, selector)
+        # Duplicate inherited/discovered methods must not be deduplicated away.
+        duplicate = unittest.TestSuite([exact, Cases("test_example")])
+        with self.assertRaisesRegex(ValueError, "2 matches"):
+            benchmark.resolve_case(duplicate, "test_example")
+
+    def test_benchmark_validates_all_selectors_before_samples_or_profiles(self):
+        benchmark = load(Path(__file__).with_name("foreground-diagnostic-benchmark.py"), "benchmark")
+        test = unittest.FunctionTestCase(lambda: None)
+        for mode in ([], ["--profile"]):
+            with self.subTest(mode=mode), \
+                    mock.patch.object(sys, "argv", ["benchmark", *mode, "--case", "runTest", "--case", "run"]), \
+                    mock.patch.object(benchmark, "discover", return_value=(None, unittest.TestSuite([test]))), \
+                    mock.patch.object(benchmark, "profile_case") as profile, \
+                    mock.patch.object(subprocess, "run") as child, \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+                benchmark.main()
+            self.assertEqual(caught.exception.code, 2)
+            profile.assert_not_called()
+            child.assert_not_called()
+
+    def test_benchmark_timing_child_reports_actual_count_and_failed_or_skipped_status(self):
+        benchmark = load(Path(__file__).with_name("foreground-diagnostic-benchmark.py"), "benchmark")
+
+        class Cases(unittest.TestCase):
+            def test_pass(self):
+                pass
+
+            def test_fail(self):
+                self.fail("expected fixture failure")
+
+            @unittest.skip("expected fixture skip")
+            def test_skip(self):
+                pass
+
+        for name, code, skipped in (("test_pass", 0, 0), ("test_fail", 1, 0), ("test_skip", 1, 1)):
+            output = io.StringIO()
+            with self.subTest(name=name), \
+                    mock.patch.object(sys, "argv", ["benchmark", "--time-case", name]), \
+                    mock.patch.object(benchmark, "discover", return_value=(None, unittest.TestLoader().loadTestsFromTestCase(Cases))), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as caught:
+                benchmark.main()
+            self.assertEqual(caught.exception.code, code)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["tests_run"], 1)
+            self.assertEqual(report["skipped"], skipped)
+            self.assertEqual(benchmark.measured_pass(report), code == 0)
+        for report in ({}, {"tests_run": 0, "skipped": 0, "successful": True},
+                       {"tests_run": 2, "skipped": 0, "successful": True}):
+            self.assertFalse(benchmark.measured_pass(report))
+
+    def test_parent_compile_context_is_per_fixture_and_restored_on_failure(self):
+        from importlib.machinery import SourceFileLoader
+        original = SourceFileLoader.source_to_code
+        contexts = []
+
+        class Fixture(ForegroundTests):
+            def git(self, *args):
+                if failure == "setup":
+                    raise RuntimeError("fixture setup failure")
+                return super().git(*args)
+
+            def runTest(self):
+                contexts.append(SourceFileLoader.source_to_code)
+                self.assertIsNot(contexts[-1], original)
+                first = delivery.dependency("candidate-binding")
+                first.fixture_mutation = True
+                second = delivery.dependency("candidate-binding")
+                self.assertIsNot(first, second)
+                self.assertFalse(hasattr(second, "fixture_mutation"))
+                if failure == "test":
+                    self.fail("fixture test failure")
+
+        for failure in (None, "test", "setup"):
+            with self.subTest(failure=failure):
+                result = unittest.TestResult()
+                Fixture().run(result)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(len(result.errors), int(failure == "setup"))
+                self.assertEqual(len(result.failures), int(failure == "test"))
+                self.assertIs(SourceFileLoader.source_to_code, original)
+        self.assertIsNot(contexts[0], contexts[1])
+
     def test_diagnostic_profile_launcher_preserves_failed_exit(self):
         with tempfile.TemporaryDirectory(prefix="foreground-profile-exit-") as temporary:
             directory = Path(temporary)

@@ -52,8 +52,8 @@ a850aa1f41361161e31a4e6b4ad547ff78b404051e39dc71b9cab78173185bed  ./run.sh
 68a769e6c16f28321581bf109f0fb4341676d93f3e996935d94931d5ebfd963a  ./tests/foreground-admission-cases.py
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
 323bc46f9b67266aab507a5185d02e7434f9cb44517b7945b98062aac9339b6a  ./tests/foreground-cli-diagnostic.py
-ae6ab4cfda2828b33ceb2bfa6459dd2f145e973859fef41b7b6f7fd0c71afd4f  ./tests/foreground-delivery-test.py
-8f8baf79dc2be41a356384e0d9c140169a4c70a18f1e58bfe21db056a8212465  ./tests/foreground-diagnostic-benchmark.py
+8b1496bf213f7a86338d8777f4afc6ec2315a15d2718ed9d3ebaa1197a3bf889  ./tests/foreground-delivery-test.py
+135b7a166293e07a595fbf07b34ce3a5a68714227b3e6606e65e3482fb05afb9  ./tests/foreground-diagnostic-benchmark.py
 1a68af3feaf26d8d90e7b409b3b807f5144d2669730b03b5ce1f2145e70ed2fc  ./tests/foreground-review-cases.py
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
 8ce5076dba28c115920af104121fe93cf7cdc1d2fe74b73009de55f9ebd8c98d  ./tests/monitor-journal-test.py
