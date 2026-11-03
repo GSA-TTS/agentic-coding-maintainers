@@ -73,10 +73,10 @@ def git_bytes(repo: Path, *args: str, limit: int = MAX_OUTPUT) -> bytes:
     return bytes(result)
 
 
-def commit(repo: Path, value: str) -> str:
+def commit(repo: Path, value: str, read=git_bytes) -> str:
     if not OID.fullmatch(value):
         raise Unverified("base and head must be full lowercase object IDs")
-    actual = git_bytes(repo, "rev-parse", "--verify", f"{value}^{{commit}}", limit=100).decode().strip()
+    actual = read(repo, "rev-parse", "--verify", f"{value}^{{commit}}", limit=100).decode().strip()
     if actual != value:
         raise Unverified("requested object is not a commit")
     return actual
@@ -92,7 +92,7 @@ def name_record(raw: bytes) -> dict[str, str | None]:
     return {"path_base64": base64.b64encode(raw).decode("ascii"), "path_utf8": text}
 
 
-def blob(repo: Path, mode: str, oid: str) -> dict[str, Any]:
+def blob(repo: Path, mode: str, oid: str, read=git_bytes) -> dict[str, Any]:
     if mode == "000000":
         if set(oid) != {"0"}:
             raise Unverified("absent side has a nonzero object ID")
@@ -101,7 +101,7 @@ def blob(repo: Path, mode: str, oid: str) -> dict[str, Any]:
         return {"mode": mode, "oid": oid, "kind": "gitlink", "coverage": "UNVERIFIED"}
     if mode not in {"100644", "100755", "120000"}:
         raise Unverified("unsupported Git entry mode")
-    data = git_bytes(repo, "cat-file", "blob", oid, limit=MAX_BLOB)
+    data = read(repo, "cat-file", "blob", oid, limit=MAX_BLOB)
     result: dict[str, Any] = {"mode": mode, "oid": oid, "sha256": digest(data), "bytes": len(data)}
     try:
         text = data.decode("utf-8")
@@ -115,8 +115,8 @@ def blob(repo: Path, mode: str, oid: str) -> dict[str, Any]:
     return result
 
 
-def inventory(repo: Path, base: str, head: str) -> list[dict[str, Any]]:
-    raw = git_bytes(repo, "diff-tree", "-r", "--no-commit-id", "--raw", "-z", "--no-renames",
+def inventory(repo: Path, base: str, head: str, read=git_bytes) -> list[dict[str, Any]]:
+    raw = read(repo, "diff-tree", "-r", "--no-commit-id", "--raw", "-z", "--no-renames",
                     "--ignore-submodules=none",
                     "--no-abbrev", base, head, "--")
     if not raw:
@@ -133,8 +133,8 @@ def inventory(repo: Path, base: str, head: str) -> list[dict[str, Any]]:
         if not OID.fullmatch(old_oid) or not OID.fullmatch(new_oid) or status not in {"A", "D", "M", "T"}:
             raise Unverified("invalid raw diff identity")
         files.append({**name_record(parts[index + 1]), "status": status,
-                      "before": blob(repo, old_mode[1:], old_oid),
-                      "after": blob(repo, new_mode, new_oid)})
+                      "before": blob(repo, old_mode[1:], old_oid, read),
+                      "after": blob(repo, new_mode, new_oid, read)})
         if len(canonical(files)) > MAX_OUTPUT:
             raise Unverified("source inventory exceeds packet bound")
     return files
@@ -157,20 +157,20 @@ def obligations(files: list[dict[str, Any]]) -> list[dict[str, str]]:
     return result
 
 
-def capture(repo: Path, repository: str, base: str, head: str, comparison: str) -> dict[str, Any]:
+def capture(repo: Path, repository: str, base: str, head: str, comparison: str, read=git_bytes) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise Unverified("invalid repository name")
-    base, head = commit(repo, base), commit(repo, head)
+    base, head = commit(repo, base, read), commit(repo, head, read)
     effective = base
     if comparison == "merge-base":
-        candidates = git_bytes(repo, "merge-base", "--all", base, head, limit=200).decode().splitlines()
+        candidates = read(repo, "merge-base", "--all", base, head, limit=200).decode().splitlines()
         if len(candidates) != 1:
             raise Unverified("comparison has no unique merge base")
-        effective = commit(repo, candidates[0])
+        effective = commit(repo, candidates[0], read)
     elif comparison != "direct":
         raise Unverified("comparison must be direct or merge-base")
-    files = inventory(repo, effective, head)
-    diff = git_bytes(repo, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary",
+    files = inventory(repo, effective, head, read)
+    diff = read(repo, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary",
                      "--ignore-submodules=none", "--submodule=short", "--no-relative",
                      "--full-index", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", effective, head, "--")
     packet = {"schema_version": 1, "kind": "committed-local-source", "repository": repository,
