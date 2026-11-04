@@ -7,16 +7,17 @@ e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA25
 9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
 d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foreground-admission.py
 96968c4758a2c51af1a0ac836f0ed41a69ad423a4a9633a69a8f30177327e61a  ./bin/foreground-adopt.py
-597c82aa7447b763529597b46d0daa7446cf09ee49b652b8269e5cae816fafba  ./bin/foreground-delivery.py
+e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foreground-delivery.py
 55df01c80de182298ab9d6e7026f50755058396bb21bb3c5e39940439970fab8  ./bin/foreground-repair.py
 8a57114282fb1afe9e6135bbae31f46c70e0fdaa32b084da2c71ec5cf3194fcc  ./bin/foreground-review.py
 978f11baea2e36e52246c1ba0636071b18db711a0ef9ba4c43b27f385efe05b6  ./bin/monitor-journal.py
 dd73225fa0e5da3ab25836719ceb9c6bf01378c07487886b3e48393065a34ca8  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
-0b80a4d8cc1da34c5d9053cec5f93be9bada332bd2309c700294e88134433bd1  ./bin/orchestrator-state.py
+fc33eb5ca2deeb394d660891b3026437de113ac53f605bc54241c991dc5ef67a  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 758f61822f30af9c1d0b8013fcd8e98c2c8d1d48bb4500dd722580cb9d8942fe  ./bin/repair-apply.py
 66c78fbc691bf58a8d0f78aa83eb3b968c3eb4b0e08e90e2c7dfcd27fc1afeed  ./bin/repair-proposal.py
+d9cebce6eae187a6f50598e0605dc135b53e5c1fe7379691a960db2dded56837  ./bin/reservation-history.py
 735b4bea8bb8613c5f82d36d11cd7e0c81f1365436a7fee977cacac68a8634b7  ./bin/review-accept.py
 83243b0931bc1baed80f935988688e6e94ee3e815877c0a66cd9616d6c307025  ./bin/review-collect.py
 e8a0ab8b0a5db03e55fd142e0b109fbac5ed853a7725f9b8aca5eeaba461c55b  ./bin/review-evidence.py
@@ -37,7 +38,7 @@ ba8d134ae3a0dba93249f97823032760a745aacf0b251a8e87a0ce1e53228382  ./docs/MAINTAI
 a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-REPAIR.md
 353a1e25f31e484253ccaceedfa72f5c6284156f9f9c0f380a664961b7a11a74  ./docs/REVIEW-ACCEPTANCE.md
 5da200894e5cd4544a00795f59cb559b86976607e011b10a8d8a6ef7537c0696  ./docs/REVIEW-COLLECTION.md
-6de0159cba8910519dce814deab087d6f3574c29850f80d645f106ff2d5320a9  ./docs/REVIEW-HANDOFF.md
+8884a29fa04fe2f428a1093788b4bcf90c48644ed8b100d08880dd303943de7d  ./docs/REVIEW-HANDOFF.md
 2cd48d3f3fed2084fbe987070df1945ac0a99339bc0ba554e66afa23ccde5f60  ./docs/REVIEW-PROTOCOL.md
 0fc15db361f2069459611cc86a15c01ad5dd389d0b32a16ca8dc584834f29acd  ./docs/REVIEW-RUNNER.md
 46ca78d776b005747c12907657e3b27eb7adc97edc82a2ca8ba46819827e6d05  ./examples/commands/orchestrate-start.md
@@ -77,5 +78,5 @@ c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review
 4c5c11f8190942963cc2995b1e91e400ed19f6006860f9f312a8bf7e0452742c  ./tests/review-evidence-test.py
 f23a3c65205e4f516ada032b5bea554c8e58a3d1cd7999f5f840b00b8621b18b  ./tests/review-handoff-test.py
 26ae85a438c8ba8e6ff30be79147eecc5db009ac585805f502cfdb82cd2f786b  ./tests/review-packet-test.py
-ad8ec7da367e15173cc9e025c5b24b003a04c89f4b7edcb349958a4ecbb78dfa  ./tests/review-reservation-test.py
+01cd0620783fe018e446b3323a7abbad7f9e60ff89144ac58f7c88d249b5648b  ./tests/review-reservation-test.py
 49eecba50fc77f14a5661299bb01b589df70d1ac2cada44379da1e4bdd3312bd  ./tests/review-run-test.py

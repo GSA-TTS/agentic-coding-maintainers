@@ -40,6 +40,13 @@ def dependency(name):
     return module
 
 
+has_reservation_history = dependency("reservation-history").has_reservation_history
+
+
+def reservation_pending(record):
+    return dependency("review-reservation").pending(record) if has_reservation_history(record) else 0
+
+
 def validate_request(request, c, e):
     c.fields(request, {"schema_version", "task_id", "incarnation", "expected_revision",
                        "operation_id", "action", "payload"})
@@ -205,9 +212,10 @@ def validate_retained(record, root, c, e):
     if "repair_proposals" in record:
         dependency("repair-proposal").validate(record, root)
     dependency("repair-apply").validate_retained(record, root)
-    reservation = dependency("review-reservation")
-    reservation.validate_links(record)
-    reservation.validate_artifacts(record, root)
+    if has_reservation_history(record):
+        reservation = dependency("review-reservation")
+        reservation.validate_links(record)
+        reservation.validate_artifacts(record, root)
     initialized = record.get("foreground_initialized")
     if "foreground_initialized" in record and initialized is not True:
         raise c.Unverified("invalid foreground initialization marker")
@@ -382,7 +390,7 @@ def status(record, state):
             "receipt_count": len(state["receipts"]) + dependency("foreground-repair").count(record),
             "next_action": next_action,
              "preparation_progress": dependency("foreground-admission").progress(record),
-             "review_reservations_pending": dependency("review-reservation").pending(record),
+             "review_reservations_pending": reservation_pending(record),
              "launch_authorized": False, "launch_gate": "BLOCKED_PROFILE",
             "review_claims": review, "candidate_ready": False,
             "execution_credit": False, "delivery_credit": False}
@@ -427,8 +435,8 @@ def dispatch(record, request, root, bundle=None, persist=None):
         raise c.Unverified("bundle requires a collection action")
     if action == "export-admitted-review":
         # Read operations never replay mutation receipts or consume receipt capacity.
-        reservation = dependency("review-reservation")
-        retained = reservation.ledger(record)["admissions"].get(request["payload"]["admission_id"])
+        reservation = dependency("review-reservation") if has_reservation_history(record) else None
+        retained = reservation.ledger(record)["admissions"].get(request["payload"]["admission_id"]) if reservation else None
         if retained is not None:
             if request["expected_revision"] != record["revision"]:
                 raise c.Unverified("export requires current request revision")
@@ -460,7 +468,7 @@ def dispatch(record, request, root, bundle=None, persist=None):
         raise c.Unverified("task is not admitted for foreground mutation")
     coordinator = dependency("orchestrator-state")
     coordinator.require_execution_stopped(record)
-    if action not in {"pause", "resume", "cancel-review-reservation"}:
+    if action not in {"pause", "resume", "cancel-review-reservation"} and has_reservation_history(record):
         dependency("review-reservation").guard(record, root)
     if action not in {"pause", "resume", "reconcile-owner-proposal", "cancel-review-reservation"}:
         coordinator.require_repair_settled(record, root=root)
@@ -471,7 +479,7 @@ def dispatch(record, request, root, bundle=None, persist=None):
     receipt_count = len(state["receipts"]) + repair_bridge.count(record)
     if receipt_count >= MAX_RECEIPTS:
         raise c.Unverified("foreground receipt budget exhausted")
-    if action != "cancel-review-reservation" and receipt_count + dependency("review-reservation").pending(record) >= MAX_RECEIPTS:
+    if action != "cancel-review-reservation" and receipt_count + reservation_pending(record) >= MAX_RECEIPTS:
         raise c.Unverified("remaining receipt slots reserved for cancellation")
     if (not repair_bridge.targets_pending(record, request) and repair_bridge.pending(record)
             and receipt_count >= MAX_RECEIPTS - 1):
@@ -537,7 +545,7 @@ def dispatch(record, request, root, bundle=None, persist=None):
         raise c.Unverified("task evidence budget exceeded")
     if action in PREPARED_ACTIONS | RESERVATION_ACTIONS | {"adopt-owner-repair-head", "prepare-repaired-review"}:
         repair_bridge.check_write_budget(updated, record["revision"] + 1, c, coordinator)
-    if dependency("review-reservation").pending(updated):
+    if reservation_pending(updated):
         dependency("review-reservation").cancellation_budget(updated)
     return updated, response, True
 
@@ -566,6 +574,7 @@ def main():
             # owner/worker and reservation checks, but permit that worker to be dead.
             cancel = request is not None and request.get("action") == "cancel-review-reservation"
             historical_export = (request is not None and request.get("action") == "export-admitted-review"
+                and has_reservation_history(record)
                 and request.get("payload", {}).get("admission_id") in
                     dependency("review-reservation").ledger(record)["admissions"])
             if worker is not None and not cancel and not historical_export:

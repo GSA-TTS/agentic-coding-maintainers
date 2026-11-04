@@ -4,6 +4,7 @@
 import contextlib
 import copy
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import io
 import json
 import os
@@ -99,6 +100,22 @@ class ReservationCLI(fixture.HandoffCLI):
 
     def test_reservation_metadata_links_artifact_and_origin_loss(self):
         self.admitted()
+        # All nested imports, not just this dispatcher's dependency function.
+        # Exercise status, export, mutation and prospective validation with an
+        # ordinary foreground history but no reservation extension.
+        execute = SourceFileLoader.exec_module
+        def no_extension(loader, module):
+            if Path(loader.path).name == "review-reservation.py":
+                raise AssertionError("absent extension imported by a nested caller")
+            return execute(loader, module)
+        with mock.patch.object(SourceFileLoader, "exec_module", no_extension):
+            record = self.record()
+            self.assertFalse(delivery.has_reservation_history(record))
+            delivery.dispatch(record, None, self.state_root)
+            delivery.dispatch(record, self.export_request(), self.state_root)
+            updated, _, changed = delivery.dispatch(record, self.request("resume", "no-extension"), self.state_root)
+            self.assertTrue(changed)
+            delivery.dependency("orchestrator-state").write_task(self.state_root, updated)
         request = self.reserve_request()
         self.dispatch({**request, "payload": {**request["payload"], "bundle_sha256": "0" * 64}}, expected=3)
         for field, value in (("endpoint", "http://localhost"), ("backend", "shell"), ("sandbox_id", "--flag"),
@@ -269,12 +286,20 @@ class ReservationCLI(fixture.HandoffCLI):
                 "pause": {"request": {"action": "pause"}, "reference": None}}}}))
         for value in ({"review_reservations_initialized": None}, {"review_reservations": {}},
                       {"foreground_control": None}, {"foreground_control": {"receipts": []}},
+                      {"foreground_control": {"receipts": {"bad": None}}},
+                      {"foreground_control": {"receipts": {"bad": {"request": []}}}},
+                      {"foreground_control": {"receipts": {"bad": {"request": {"action": []}}}}},
+                      {"foreground_control": {"receipts": {"bad": {"request": {"action": "pause"}, "reference": []}}}},
                       {"foreground_control": {"receipts": {"orphan": {"request": {"action": "reserve-review-attempt"}}}}},
+                      {"foreground_control": {"receipts": {"orphan": {"request": {"action": "cancel-review-reservation"}}}}},
                       {"foreground_control": {"receipts": {"orphan": {"request": {"action": "pause"},
                           "reference": {"table": "review_reservations.admissions", "key": "0" * 64}}}}}):
             self.assertTrue(coordinator.has_review_reservations(value))
+            self.assertTrue(delivery.has_reservation_history(value))
             with self.assertRaises(Exception):
                 coordinator.require_repair_settled(value)
+            with self.assertRaises(Exception):
+                delivery.validate_retained(value, None, c, delivery.dependency("review-evidence"))
 
     def test_reservation_capacity_write_failure_and_dead_worker_recovery(self):
         self.admitted()

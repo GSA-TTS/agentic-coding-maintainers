@@ -308,3 +308,61 @@ calls (1.056 seconds in compilation). After: 0.000462 seconds, zero compilation
 calls. This specifically measures removal of repeated imports for absent
 extensions; it does not qualify the full CI runtime or model profile. No CI
 timeout was raised. Full-suite runtime remains unverified by this focused run.
+
+### Absent-history dispatcher follow-up
+
+`reservation-history.py::has_reservation_history` is the central, import-free,
+I/O-free structural predicate. Both dispatcher and coordinator load this small
+definition with their installed code. Foreground retention, pending counts,
+mutation fencing, export and post-write budget checks use it before importing
+the heavy reservation helper. There is no production module/evidence cache.
+New reservation actions still run the strict helper even on an absent ledger.
+All original fixture assertions remain; a nested-loader regression rejects *any*
+reservation-helper import during absent-history status/export/mutation/validation.
+
+Profile case (unchanged original receipt-history fixture):
+`test_last_slot_cannot_reconcile_completed_application_instead_of_pending`.
+This creates two repair histories and fills the shared receipt budget. In one
+network-off Docker sandbox, local Git archives of `dcfbb63` and `a03e192`, followed
+by the edited tree, ran consecutively using
+`foreground-diagnostic-benchmark.py --profile --case <case>`. Existing test-local
+compiled-source reuse stayed enabled; each profile captured the parent and all
+20 real foreground CLI children. No full suite or increased timeout was used.
+
+| Revision | Fixture wall seconds | Child compile calls | Child profile seconds | Child module exec calls |
+| --- | ---: | ---: | ---: | ---: |
+| `dcfbb63` | 41.930 | 299 | 4.878845 | 1428 |
+| `a03e192` | 33.214 | 359 | 3.892379 | 1641 |
+| Edited tree | 35.044 | 319 | 3.776324 | 1527 |
+
+All three passed, zero skips, with identical command counts: 20 foreground,
+29 Git, 2 ps, 1 collection, 5 review-evidence, 10 state. Child compile self time:
+2.281811 / 2.063939 / 1.819105 seconds respectively. Parent compile counts were
+12 / 13 / 11; parent module exec counts were 5318 / 5866 / 5488. Parent fixture
+imports share the benchmark interpreter in this consecutive measurement; the
+foreground children are fresh processes. The remaining +20 child compilations
+over base are one small shared predicate module per child. Unnecessary protocol
+validation is also gone on absent histories (268 child calls, matching base,
+versus 281 in the prior separately profiled run).
+
+The compile/import regression is reduced, but these wall measurements do **not**
+prove the reported full-suite timeout resolved: the prior tree was not slower
+than base in this case. Publish readiness remains blocked on that unresolved
+runtime evidence. Do not extrapolate this profile to a whole-suite time.
+
+Execution environment detail matters: `TMPDIR=/work/tmp` places executable fixture
+shims on the guest's executable tmpfs. The harness `/tmp` is `noexec`; an initial
+attempt there passed the base test in 73.085s but could not retrieve child profile
+files because the shim was not executed. That incomplete measurement is excluded.
+An earlier valid base/prior pair in one sandbox gave 46.972s / 46.340s and the same
+299 / 359 child compile counts, reinforcing that this case did not reproduce the
+reported timeout. A separate edited-tree profile gave 49.943s / 319 compilations.
+
+Targeted edited-tree checks, same pinned image and executable guest TMPDIR:
+
+- `review-reservation-test.py`: 5 tests, 207.552s, OK (includes nested import and
+  orphan/malformed fast-path assertions).
+- `foreground-delivery-test.py ForegroundTests.test_receipt_budget_keeps_exact_replay_and_read_only_status`:
+  1 test, 3.811s, OK.
+- `foreground-handoff-test.py`: 3 tests, 32.433s, OK.
+- `orchestrator-state-test.sh`: PASS.

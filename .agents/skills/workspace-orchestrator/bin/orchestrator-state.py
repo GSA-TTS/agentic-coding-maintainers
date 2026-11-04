@@ -653,29 +653,11 @@ def require_execution_stopped(record: dict[str, Any]) -> None:
             raise UnknownError("execution stop observation is missing or malformed")
 
 
-def has_review_reservations(record):
-    """Cheap absence test only. Markers, orphan references and malformed control
-    shapes must reach the strict validator, never become an absent extension.
-    """
-    if "review_reservations" in record or "review_reservations_initialized" in record:
-        return True
-    control = record.get("foreground_control", {})
-    if not isinstance(control, dict):
-        return True
-    receipts = control.get("receipts", {})
-    if not isinstance(receipts, dict):
-        return True
-    for receipt in receipts.values():
-        if not isinstance(receipt, dict) or not isinstance(receipt.get("request"), dict):
-            return True
-        action = receipt["request"].get("action")
-        reference = receipt.get("reference")
-        if not isinstance(action, str) or action in {"reserve-review-attempt", "cancel-review-reservation"}:
-            return True
-        if reference is not None and (not isinstance(reference, dict)
-                or reference.get("table") == "review_reservations.admissions"):
-            return True
-    return False
+_history_spec = importlib.util.spec_from_file_location(
+    "reservation_history", Path(__file__).resolve().with_name("reservation-history.py"))
+_history = importlib.util.module_from_spec(_history_spec)
+_history_spec.loader.exec_module(_history)
+has_review_reservations = _history.has_reservation_history
 
 
 def review_reservation_module():
