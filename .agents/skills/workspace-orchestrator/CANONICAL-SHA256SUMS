@@ -56,7 +56,7 @@ d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 68a769e6c16f28321581bf109f0fb4341676d93f3e996935d94931d5ebfd963a  ./tests/foreground-admission-cases.py
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
 323bc46f9b67266aab507a5185d02e7434f9cb44517b7945b98062aac9339b6a  ./tests/foreground-cli-diagnostic.py
-8b1496bf213f7a86338d8777f4afc6ec2315a15d2718ed9d3ebaa1197a3bf889  ./tests/foreground-delivery-test.py
+475a1d7f18e699ddb91072a6cdde339250430929e544cd91dd709637f26c6991  ./tests/foreground-delivery-test.py
 135b7a166293e07a595fbf07b34ce3a5a68714227b3e6606e65e3482fb05afb9  ./tests/foreground-diagnostic-benchmark.py
 5bd40070bbbdeaab4c9b33487da23f9cba11e99599ce0a8920e7405ff47bf5d9  ./tests/foreground-handoff-test.py
 1a68af3feaf26d8d90e7b409b3b807f5144d2669730b03b5ce1f2145e70ed2fc  ./tests/foreground-review-cases.py
@@ -76,4 +76,4 @@ c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review
 4c5c11f8190942963cc2995b1e91e400ed19f6006860f9f312a8bf7e0452742c  ./tests/review-evidence-test.py
 f23a3c65205e4f516ada032b5bea554c8e58a3d1cd7999f5f840b00b8621b18b  ./tests/review-handoff-test.py
 26ae85a438c8ba8e6ff30be79147eecc5db009ac585805f502cfdb82cd2f786b  ./tests/review-packet-test.py
-49eecba50fc77f14a5661299bb01b589df70d1ac2cada44379da1e4bdd3312bd  ./tests/review-run-test.py
+47884a2338d1db1fab1ef4106859c8556d0f4b66702c1bba3e72991ad1cd6375  ./tests/review-run-test.py
