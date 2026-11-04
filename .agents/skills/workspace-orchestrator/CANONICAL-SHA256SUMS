@@ -23,7 +23,7 @@ f3edacb1397256ae9c64f9a5288dc2c03eec39553ac0c7cf2f25c4c0fa18c1e6  ./bin/review-e
 6554cd8ac3fea57a07c0b3f62858e8bfbd7c6be633d35ab3de8b8291eff58e23  ./bin/review-handoff.py
 70a75e17405d763082d1ceaaaa120e78cb9023415b6c4228cea6d502e0dcc4f0  ./bin/review-materialize.py
 f19900a2f33673adccfa5b668859a9b3a7393275d066f5d8775aee28f45cc153  ./bin/review-packet.py
-c1805d68d83f6f6539afda2768af008b0ea1e39b6739b1691531ce57c062bb36  ./bin/review-run.py
+d710941fcda6ad485f658c13a29aaf6b9beac5a48572862470daa29528976a63  ./bin/review-run.py
 c4d0b8d520adf30b5489dc8a4f782daf451956f4ba9498fc105988ff04ccf930  ./bin/review-source-map.py
 046083dca2865f063041a8078c9f7e64374148c3817a90003f57cd5f03fa3d32  ./docs/CANDIDATE-BINDING.md
 3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
@@ -38,7 +38,7 @@ a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-R
 5da200894e5cd4544a00795f59cb559b86976607e011b10a8d8a6ef7537c0696  ./docs/REVIEW-COLLECTION.md
 25f6983d3263a24f8942f3ead244e3c8e5e0b9df9f265dc41f78a2a1eb0604bf  ./docs/REVIEW-HANDOFF.md
 2cd48d3f3fed2084fbe987070df1945ac0a99339bc0ba554e66afa23ccde5f60  ./docs/REVIEW-PROTOCOL.md
-e4304de47d8a77fe5671d51b6b25f340dd885c17d1214f4640266c7ac1456f2d  ./docs/REVIEW-RUNNER.md
+40290198ee7cf242823ebb12ac10de0e8381a4e4dd2db5d9575560ec3a4d8b56  ./docs/REVIEW-RUNNER.md
 46ca78d776b005747c12907657e3b27eb7adc97edc82a2ca8ba46819827e6d05  ./examples/commands/orchestrate-start.md
 532877ba1c91464c7efb09f0b3e39dfd3699b961508d5c55b081ef3afbceb58e  ./examples/gsa-agentic-coding.json
 836e557c7b65ee39dfd3f194cc093393e11252f2f3dc9af3dc25427844eb9035  ./examples/monitor-config.schema.json
@@ -76,4 +76,4 @@ c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review
 4c5c11f8190942963cc2995b1e91e400ed19f6006860f9f312a8bf7e0452742c  ./tests/review-evidence-test.py
 f23a3c65205e4f516ada032b5bea554c8e58a3d1cd7999f5f840b00b8621b18b  ./tests/review-handoff-test.py
 26ae85a438c8ba8e6ff30be79147eecc5db009ac585805f502cfdb82cd2f786b  ./tests/review-packet-test.py
-fc7fba107b8d9ec002779cbb07e13b2290eec016350bdb43d324ce407c0c5689  ./tests/review-run-test.py
+c8738b12366eb4e537f6caa45b9d929707dd42219719185f905023373f93c08e  ./tests/review-run-test.py

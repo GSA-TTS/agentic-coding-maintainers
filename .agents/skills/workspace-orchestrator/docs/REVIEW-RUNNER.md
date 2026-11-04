@@ -11,6 +11,7 @@ python3 -I -B /installed/review-run.py --isolated-guest \
   --binary /runtime/opencode --binary-sha256 EXPECTED_SHA256 \
   --cwd /home/node/review --source /candidate/source.py \
   --model usai/gpt-6-astra --agent bounded-reviewer \
+  --environment-file /private/reviewer-environment.json \
   --output /home/node/review/attempt-1 --timeout 300
 ```
 
@@ -39,10 +40,64 @@ execution credit as false. Controller collection must verify source/assignment
 bindings and copy evidence outside the worker before relying on it. Files in a
 worker-writable directory are staging, not immutable accepted evidence.
 
-The adapter signals its guest-local process group on exit/timeout. That does not
-prove detached descendants are gone; externally owned sandbox removal remains
-the cleanup boundary. Startup, termination and credentials require the actual
-runtime contract, not just the `--isolated-guest` declaration.
+The adapter installs cleanup immediately after spawning, including failures in
+selector construction, registration and stream reads. It signals the guest-local
+process group with SIGKILL and waits at most **3 seconds** for the direct child
+during cleanup, then closes selector and pipe resources. There is no implicit
+unbounded `Popen` context-manager wait. Signal/reap/close failures are recorded
+as `failure` (or `export_failure`) and prevent `REVIEW_OBSERVED`, even if the
+child exited zero. A failed inference does not start an export. Python
+cancellation (`KeyboardInterrupt`/`SystemExit`) performs cleanup then propagates;
+it starts no further invocation and does not produce a success receipt. A cleanup
+failure during cancellation is attached as an exception note. Abrupt adapter
+termination (including SIGKILL/default SIGTERM) cannot guarantee this cleanup.
+Detached descendants and an unreaped child after a failed bounded wait require
+externally owned sandbox removal. Startup, termination and credentials require
+the actual runtime contract, not just the `--isolated-guest` declaration.
+
+## Explicit environment prerequisite
+
+`execute(command, cwd, timeout, env=None)` keeps its four-item return tuple
+`(stdout, stderr, returncode, failure)`. A supplied mapping, including `{}`, is
+copied and validated before spawn and passed directly to `Popen(env=...)`.
+It is never merged with inherited variables or handoff/bundle content.
+
+The CLI's optional `--environment-file` reads an operator-prepared JSON object
+once and passes the same selection to both inference and same-session export.
+The absolute path must have no symlink components; the file must be regular,
+owned by the guest caller, and have no group/other permission bits (use `0600`).
+Keep it outside source/handoff bundles and receipts. Duplicate names, non-string
+values, NULs, invalid UTF-8, more than 64 names, or more than 32 KiB of total
+UTF-8 value bytes are refused. The encoded file is bounded to 256 KiB.
+
+The fixed name allowlist for both APIs is:
+
+- `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`,
+  `XDG_RUNTIME_DIR`, `PATH`, `LANG`, `LC_ALL`, `TMPDIR`;
+- `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`,
+  `OPENROUTER_API_KEY`, `USAI_API_KEY`.
+
+Only supply credentials for the approved provider. These names are permitted
+inputs, not proof a particular runtime/provider consumes them. Loader/runtime
+injection variables, arbitrary `XDG_*`, GitHub tokens, proxy settings and arbitrary
+provider/configuration variables are refused. Errors do not include supplied
+names or values. Receipts contain only `environment: "operator-supplied"`; no
+environment names, values, file paths or credential hashes are recorded. Runtime
+stdout/stderr can still contain sensitive data and must stay private.
+
+Omitting the option preserves legacy inheritance and records
+`environment: "inherited/unverified"`. That tag does not make credential
+isolation verified. Even the explicit mode is **not a sandbox or proof of
+effective configuration**: HOME/XDG/PATH and cwd can select installed files,
+credentials or executables, and the runtime can discover additional config/auth.
+The operator must qualify these paths and the guest independently.
+
+**Materialized handoff launch remains BLOCKED.** `--profile` hashes supplied
+bytes before/after; it neither selects nor enforces the OpenCode effective merged
+configuration. Receipts explicitly label effective configuration unverified.
+A launcher still needs version-qualified profile selection and authentication,
+plus external durable attempt consumption before launch. This prerequisite adds
+no launch, retry, admission or replay authority.
 
 ## Measured pilot boundaries
 

@@ -8,8 +8,10 @@ import copy
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -89,7 +91,7 @@ class RunnerTests(unittest.TestCase):
             for path in manifest:
                 argv += ["--source", path]
             calls = []
-            def execute(command, cwd, timeout):
+            def execute(command, cwd, timeout, env=None):
                 calls.append(command)
                 if len(calls) == 1:
                     self.assertIn(raw.decode(), command[-1])
@@ -115,6 +117,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(receipt["context_sha256"], runner.sha256(context_raw))
             self.assertEqual(context_path.read_bytes(), context_raw)
             self.assertEqual(receipt["status"], "UNVERIFIED" if mutate else "REVIEW_OBSERVED")
+            self.assertEqual(receipt["environment"], "inherited/unverified")
 
     def events(self):
         return [
@@ -173,6 +176,225 @@ class RunnerTests(unittest.TestCase):
             _, _, rc, failure = runner.execute([sys.executable, "-c", "import time; time.sleep(30)"], Path(directory), 1)
             self.assertNotEqual(rc, 0)
             self.assertEqual(failure, "runtime timeout")
+
+    def test_actual_output_overflow(self):
+        with mock.patch.object(runner, "MAX_TRANSCRIPT", 1024):
+            data, errors, rc, failure = runner.execute(
+                [sys.executable, "-c", "import os,time; os.write(2,b'x'*2048); time.sleep(30)"], Path.cwd(), 5, {})
+        self.assertEqual(data, b"")
+        self.assertEqual(len(errors), 1024)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(failure, "runtime output exceeded bound")
+
+    def assert_reaped(self, child):
+        self.assertIsNotNone(child.returncode)
+        self.assertTrue(child.stdout.closed)
+        self.assertTrue(child.stderr.closed)
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)
+
+    def test_post_spawn_failures_reap_real_child(self):
+        popen, read = subprocess.Popen, os.read
+        selector_factory = runner.selectors.DefaultSelector
+        for stage in ("constructor", "first-register", "second-register", "read", "decode"):
+            children = []
+            def spawn(*args, **kwargs):
+                child = popen(*args, **kwargs)
+                children.append(child)
+                return child
+            def failing_read(fd, size):
+                if children and fd in (children[0].stdout.fileno(), children[0].stderr.fileno()):
+                    if stage == "decode":
+                        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "fixture")
+                    raise OSError("fixture read failure")
+                return read(fd, size)
+            selector = selector_factory()
+            try:
+                with contextlib.ExitStack() as stack, self.subTest(stage=stage):
+                    stack.enter_context(mock.patch.object(runner.subprocess, "Popen", side_effect=spawn))
+                    if stage == "constructor":
+                        stack.enter_context(mock.patch.object(runner.selectors, "DefaultSelector", side_effect=OSError("fixture")))
+                    else:
+                        stack.enter_context(mock.patch.object(runner.selectors, "DefaultSelector", return_value=selector))
+                    if "register" in stage:
+                        register = selector.register
+                        count = 0
+                        def failing_register(*args):
+                            nonlocal count
+                            count += 1
+                            if count == (1 if stage == "first-register" else 2):
+                                raise OSError("fixture registration failure")
+                            return register(*args)
+                        stack.enter_context(mock.patch.object(selector, "register", side_effect=failing_register))
+                    if stage in ("read", "decode"):
+                        stack.enter_context(mock.patch.object(runner.os, "read", side_effect=failing_read))
+                    _, _, rc, failure = runner.execute(
+                        [sys.executable, "-c", "import os,time; os.write(1,b'ready'); time.sleep(30)"], Path.cwd(), 5, {})
+                    self.assertNotEqual(rc, 0)
+                    self.assertEqual(failure, "runtime stream operation failed")
+                    self.assertEqual(len(children), 1)
+                    self.assert_reaped(children[0])
+            finally:
+                selector.close()
+
+    def test_cleanup_failure_is_bounded_and_reported(self):
+        for broken in ("signal", "reap", "selector-close"):
+            with self.subTest(broken=broken):
+                child = mock.Mock(pid=12345, returncode=0)
+                child.wait.side_effect = [0, subprocess.TimeoutExpired("stub", runner.REAP_TIMEOUT)] if broken == "reap" else [0, 0]
+                selector = mock.Mock()
+                selector.get_map.return_value = {}
+                if broken == "selector-close":
+                    selector.close.side_effect = OSError("fixture")
+                with mock.patch.object(runner.subprocess, "Popen", return_value=child), \
+                        mock.patch.object(runner.selectors, "DefaultSelector", return_value=selector), \
+                        mock.patch.object(runner.os, "killpg", side_effect=PermissionError("fixture") if broken == "signal" else None):
+                    started = time.monotonic()
+                    _, _, rc, failure = runner.execute(["stub"], Path.cwd(), 5, {})
+                self.assertLess(time.monotonic() - started, 1)
+                self.assertEqual(rc, 0)  # even a successful child must not hide cleanup failure
+                self.assertIn("runtime cleanup failed", failure)
+                self.assertEqual(child.wait.call_count, 2)
+                self.assertEqual(child.wait.call_args, mock.call(timeout=runner.REAP_TIMEOUT))
+                self.assertTrue(all(call.kwargs["timeout"] > 0 for call in child.wait.call_args_list))
+                child.stdout.close.assert_called_once()
+                child.stderr.close.assert_called_once()
+
+    def test_cancellation_with_reap_failure_retains_failure_note(self):
+        child = mock.Mock(pid=12345, returncode=None)
+        child.wait.side_effect = subprocess.TimeoutExpired("stub", runner.REAP_TIMEOUT)
+        with mock.patch.object(runner.subprocess, "Popen", return_value=child), \
+                mock.patch.object(runner.selectors, "DefaultSelector", side_effect=SystemExit(7)), \
+                mock.patch.object(runner.os, "killpg"), self.assertRaises(SystemExit) as raised:
+            runner.execute(["stub"], Path.cwd(), 5, {})
+        self.assertEqual(raised.exception.code, 7)
+        self.assertIn("runtime cleanup failed: child reap", raised.exception.__notes__)
+        child.wait.assert_called_once_with(timeout=runner.REAP_TIMEOUT)
+        child.stdout.close.assert_called_once()
+        child.stderr.close.assert_called_once()
+
+    def stub_main(self, root):
+        source = root / "source.py"
+        source.write_text("value = 1\n")
+        events = self.events()
+        events[0]["part"]["state"].update(input={"path": str(source)}, output=f"Read file {source}, lines 1-1\n1: value = 1")
+        exported = {"info": {"id": "ses_test", "outcome": "succeeded", "tokens": {"input": 100, "output": 20}},
+                    "messages": [{"type": "assistant", "finish": "stop", "content": [{"type": "text", "text": '{"findings":[]}'}]}]}
+        binary = root / "stub-runtime"
+        # Only synthetic credentials; the child records presence/equality, not values.
+        binary.write_text(f"#!{sys.executable}\n" +
+            "import json,os,sys\nfrom pathlib import Path\n" +
+            "assert 'GH_TOKEN' not in os.environ\nassert 'SENTINEL_CREDENTIAL' not in os.environ\n" +
+            "assert os.environ.get('OPENAI_API_KEY') == 'fixture-only'\n" +
+            "Path('seen-' + sys.argv[1]).write_text('selected environment observed')\n" +
+            f"print({chr(10).join(json.dumps(e) for e in events)!r} if sys.argv[1] == 'run' else {json.dumps(exported)!r})\n")
+        binary.chmod(0o700)
+        argv = ["review-run", "--binary", str(binary), "--binary-sha256", runner.binary_digest(binary),
+                "--cwd", str(root), "--source", str(source), "--model", "fixture/model", "--isolated-guest",
+                "--output", str(root / "output")]
+        return argv
+
+    def test_main_real_stub_run_and_export_share_selected_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv = self.stub_main(root)
+            environment = root / "operator.json"
+            environment.write_text(json.dumps({"OPENAI_API_KEY": "fixture-only", "LC_ALL": "C"}))
+            environment.chmod(0o600)
+            argv += ["--environment-file", str(environment)]
+            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.dict(os.environ, {"SENTINEL_CREDENTIAL": "ambient-only", "GH_TOKEN": "ambient-only"}):
+                self.assertEqual(runner.main(), 0)
+            self.assertTrue((root / "seen-run").is_file())
+            self.assertTrue((root / "seen-session").is_file())
+            receipt = (root / "output/receipt.json").read_text()
+            self.assertEqual(json.loads(receipt)["environment"], "operator-supplied")
+            self.assertEqual(json.loads(receipt)["status"], "REVIEW_OBSERVED")
+            for sensitive in ("OPENAI_API_KEY", "fixture-only", "ambient-only", "operator.json"):
+                self.assertNotIn(sensitive, receipt)
+
+    def test_api_empty_environment_does_not_inherit(self):
+        with mock.patch.dict(os.environ, {"SENTINEL_CREDENTIAL": "ambient-only"}):
+            data, _, rc, failure = runner.execute([sys.executable, "-c",
+                "import os; print('SENTINEL_CREDENTIAL' in os.environ)"], Path.cwd(), 5, {})
+        self.assertEqual((data, rc, failure), (b"False\n", 0, None))
+
+    def test_main_cancellation_reaps_without_export_or_new_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv = self.stub_main(root)
+            children = []
+            popen = subprocess.Popen
+            def spawn(*args, **kwargs):
+                child = popen(*args, **kwargs)
+                children.append(child)
+                return child
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(runner.subprocess, "Popen", side_effect=spawn), \
+                    mock.patch.object(runner.selectors, "DefaultSelector", side_effect=KeyboardInterrupt), \
+                    self.assertRaises(KeyboardInterrupt):
+                runner.main()
+            self.assertEqual(len(children), 1)
+            self.assert_reaped(children[0])
+            self.assertFalse((root / "output/receipt.json").exists())
+
+    def test_cleanup_failure_suppresses_observation_and_export(self):
+        for phase in ("run", "export"):
+            with tempfile.TemporaryDirectory() as directory, self.subTest(phase=phase):
+                root = Path(directory)
+                argv = self.stub_main(root)
+                data = b"\n".join(json.dumps(e).encode() for e in self.events())
+                manifest = {"/source/a.py": "digest"}
+                failure = "runtime cleanup failed: child reap"
+                first = (data, b"", 0, failure if phase == "run" else None)
+                with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+                        mock.patch.object(runner, "source_manifest", return_value=manifest), \
+                        mock.patch.object(runner, "execute", side_effect=[first, (b"{}", b"", 0, failure)]) as execute:
+                    self.assertEqual(runner.main(), 3)
+                self.assertEqual(execute.call_count, 1 if phase == "run" else 2)
+                receipt = json.loads((root / "output/receipt.json").read_text())
+                self.assertEqual(receipt["status"], "UNVERIFIED")
+                self.assertEqual(receipt["failure" if phase == "run" else "export_failure"], failure)
+
+    def test_environment_policy_rejects_before_spawn(self):
+        invalid = [[], {"HOME": 1}, {"HOME": "bad\x00value"}, {"HOME": "\ud800"},
+                   {"HOME": "x" * (runner.MAX_ENV_VALUES + 1)}, {str(i): "" for i in range(65)}]
+        invalid += [{name: "fixture"} for name in ("LD_PRELOAD", "PYTHONPATH", "GH_TOKEN", "HTTPS_PROXY",
+                    "http_proxy", "NODE_OPTIONS", "OPENCODE_CONFIG", "XDG_CONFIG_DIRS", "AWS_ACCESS_KEY_ID")]
+        for value in invalid:
+            with self.subTest(value_type=type(value).__name__), mock.patch.object(runner.subprocess, "Popen") as spawn:
+                with self.assertRaises(runner.Unverified):
+                    runner.execute(["unused"], Path.cwd(), 5, value)
+                spawn.assert_not_called()
+        selected = {"HOME": "x" * runner.MAX_ENV_VALUES}
+        self.assertEqual(runner.selected_environment(selected), selected)
+        self.assertIsNot(runner.selected_environment(selected), selected)
+
+    def test_environment_file_strict_private_bounded_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "environment.json"
+            path.write_text('{"HOME":"/work"}')
+            path.chmod(0o600)
+            self.assertEqual(runner.environment_read(path), {"HOME": "/work"})
+            for data in (b'{"HOME":"a","HOME":"b"}', b'[]', b'{', b'\xff', '{}'.encode("utf-16"),
+                         b'{"HOME": "\\ud800"}', b'x' * (runner.MAX_ENV_FILE + 1)):
+                path.write_bytes(data)
+                with self.assertRaises(runner.Unverified):
+                    runner.environment_read(path)
+            path.write_text('{}')
+            with mock.patch.object(runner.os, "geteuid", return_value=os.geteuid() + 1), self.assertRaises(runner.Unverified):
+                runner.environment_read(path)
+            path.chmod(0o644)
+            with self.assertRaises(runner.Unverified):
+                runner.environment_read(path)
+            alias = root / "alias"
+            alias.symlink_to(path)
+            fifo = root / "fifo"
+            os.mkfifo(fifo, 0o600)
+            for bad in (alias, fifo, root, Path("relative.json")):
+                with self.assertRaises(runner.Unverified):
+                    runner.environment_read(bad)
 
     def test_export_corroborates_missing_stream_completion(self):
         events = self.events()[:-1]

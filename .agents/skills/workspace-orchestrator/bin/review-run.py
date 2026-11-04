@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -27,6 +28,16 @@ MAX_TRANSCRIPT = 4_000_000
 MAX_SOURCE = 1_000_000
 MAX_FILES = 20
 MAX_BINARY = 512_000_000
+REAP_TIMEOUT = 3
+MAX_ENV_NAMES = 64
+MAX_ENV_VALUES = 32 * 1024
+MAX_ENV_FILE = 256 * 1024  # permits JSON escaping of bounded UTF-8 values
+ENV_NAMES = frozenset({
+    "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR", "PATH", "LANG", "LC_ALL", "TMPDIR",
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY", "USAI_API_KEY",
+})
 
 
 def source_map_module():
@@ -225,41 +236,118 @@ def summarize(data: bytes, returncode: int | None, manifest: dict[str, str], cwd
     return result
 
 
-def execute(command: list[str], cwd: Path, timeout: int) -> tuple[bytes, bytes, int | None, str | None]:
-    """Bound both streams and terminate the guest-local process group on timeout."""
+def selected_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """Copy an operator selection, never merge it with the inherited environment."""
+    if not isinstance(env, Mapping) or len(env) > MAX_ENV_NAMES:
+        raise Unverified("invalid environment mapping or name count")
+    selected = {}
+    total = 0
+    for name, value in env.items():
+        if not isinstance(name, str) or name not in ENV_NAMES:
+            raise Unverified("environment name is not allowed")
+        if not isinstance(value, str) or "\x00" in value:
+            raise Unverified("invalid environment value")
+        try:
+            total += len(value.encode("utf-8"))
+        except UnicodeError:
+            raise Unverified("invalid environment encoding") from None
+        if total > MAX_ENV_VALUES:
+            raise Unverified("environment values exceed bound")
+        selected[name] = value
+    return selected
+
+
+def environment_read(path: Path) -> dict[str, str]:
+    """Read a private, operator-owned JSON object from the qualified guest."""
+    if not path.is_absolute() or any(part.is_symlink() for part in (path, *path.parents)):
+        raise Unverified("environment path must be absolute and contain no symlinks")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_size > MAX_ENV_FILE):
+            raise Unverified("environment file must be private, owned and bounded regular JSON")
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            data = handle.read(MAX_ENV_FILE + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_ENV_FILE:
+        raise Unverified("environment file exceeds bound")
+    try:
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=unique)
+    except (ValueError, UnicodeError, RecursionError):
+        raise Unverified("malformed environment JSON") from None
+    return selected_environment(value)
+
+
+def execute(command: list[str], cwd: Path, timeout: int,
+            env: Mapping[str, str] | None = None) -> tuple[bytes, bytes, int | None, str | None]:
+    """Bound streams and cleanup; None preserves the legacy inherited environment."""
     output = bytearray()
     errors = bytearray()
     failure = None
-    with subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, start_new_session=True) as process:
+    selector = None
+    cancelled = None
+    selected = None if env is None else selected_environment(env)
+    process = subprocess.Popen(command, cwd=cwd, env=selected, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    # Install cleanup immediately after spawn, including selector construction and
+    # registration. Popen's context manager would add an unbounded implicit wait.
+    try:
         assert process.stdout is not None and process.stderr is not None
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ, output)
-            selector.register(process.stderr, selectors.EVENT_READ, errors)
-            deadline = time.monotonic() + timeout
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, output)
+        selector.register(process.stderr, selectors.EVENT_READ, errors)
+        deadline = time.monotonic() + timeout
+        while selector.get_map():
+            if time.monotonic() >= deadline:
+                raise Unverified("runtime timeout")
+            for key, _ in selector.select(0.1):
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                else:
+                    key.data.extend(chunk)
+                    if len(output) + len(errors) > MAX_TRANSCRIPT:
+                        raise Unverified("runtime output exceeded bound")
+        process.wait(timeout=max(0.01, deadline - time.monotonic()))
+    except (Unverified, subprocess.TimeoutExpired) as exc:
+        failure = str(exc) if isinstance(exc, Unverified) else "runtime timeout"
+    except Exception:
+        # Do not retain exception text: it can include environment or runtime data.
+        failure = "runtime stream operation failed"
+    except BaseException as exc:
+        cancelled = exc
+    finally:
+        cleanup_failures = []
+        # The CLI's exit is not proof its descendants exited. Signal the group even
+        # on success; the externally owned sandbox is still the cleanup boundary.
+        def kill_group():
             try:
-                while selector.get_map():
-                    if time.monotonic() >= deadline:
-                        raise Unverified("runtime timeout")
-                    for key, _ in selector.select(0.1):
-                        chunk = os.read(key.fd, 65536)
-                        if not chunk:
-                            selector.unregister(key.fileobj)
-                        else:
-                            key.data.extend(chunk)
-                            if len(output) + len(errors) > MAX_TRANSCRIPT:
-                                raise Unverified("runtime output exceeded bound")
-                process.wait(timeout=max(0.01, deadline - time.monotonic()))
-            except (Unverified, subprocess.TimeoutExpired) as exc:
-                failure = str(exc) if isinstance(exc, Unverified) else "runtime timeout"
-            finally:
-                # The CLI's process exit is not proof all its guest-local children
-                # exited. The externally owned sandbox remains the cleanup unit.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # the group is already absent, not a failed signal
+
+        operations = [("process group signal", kill_group),
+                      ("child reap", lambda: process.wait(timeout=REAP_TIMEOUT))]
+        if selector is not None:
+            operations.append(("selector close", selector.close))
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                operations.append(("pipe close", stream.close))
+        for label, operation in operations:
+            try:
+                operation()
+            except BaseException as exc:
+                cleanup_failures.append(label)
+                if not isinstance(exc, Exception):
+                    cancelled = cancelled or exc
+        if cleanup_failures:
+            failure = "; ".join(filter(None, (failure, "runtime cleanup failed: " + ", ".join(cleanup_failures))))
+    if cancelled is not None:
+        if failure:
+            cancelled.add_note(failure)
+        raise cancelled
     return bytes(output[:MAX_TRANSCRIPT]), bytes(errors[:MAX_TRANSCRIPT]), process.returncode, failure
 
 
@@ -280,10 +368,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=300, choices=range(1, 601))
     parser.add_argument("--isolated-guest", action="store_true", help="operator declaration, not an isolation proof")
+    parser.add_argument("--environment-file", type=Path,
+                        help="private operator JSON environment; replaces inheritance, not effective configuration proof")
     args = parser.parse_args()
     try:
         if not sys.flags.isolated or not sys.dont_write_bytecode or not args.isolated_guest:
             raise Unverified("requires python3 -I -B and externally qualified isolated guest")
+        environment = environment_read(args.environment_file) if args.environment_file is not None else None
         if args.session is not None and not re.fullmatch(r"ses_[A-Za-z0-9_-]{1,100}", args.session):
             raise Unverified("invalid controller-assigned session")
         if args.obligation is not None and (not 1 <= len(args.obligation) <= 32
@@ -348,7 +439,7 @@ def main() -> int:
         if args.session is not None:
             command[2:2] = ["--session", args.session]
         started = time.time()
-        data, stderr, code, failure = execute(command, args.cwd.resolve(), args.timeout)
+        data, stderr, code, failure = execute(command, args.cwd.resolve(), args.timeout, env=environment)
         receipt = summarize(data, code, manifest, args.cwd.resolve())
         exported = b""
         export_stderr = b""
@@ -357,7 +448,7 @@ def main() -> int:
         if code == 0 and not failure and len(receipt["sessions"]) == 1:
             exported, export_stderr, export_code, export_failure = execute(
                 [str(args.binary.resolve()), "session", "export", "--standalone", receipt["sessions"][0]],
-                args.cwd.resolve(), 30)
+                args.cwd.resolve(), 30, env=environment)
         receipt = corroborate(data, code, manifest, args.cwd.resolve(), exported, export_code, export_failure)
         if args.context is not None and context_read(args.context) != context_bytes:
             receipt.update(status="UNVERIFIED", reason="context changed during invocation")
@@ -374,8 +465,11 @@ def main() -> int:
                        role=args.role, context_sha256=sha256(context_bytes) if context_bytes else None,
                        source_sha256=manifest, transcript_sha256=sha256(data), stderr_sha256=sha256(stderr),
                        returncode=code, started_at=started, elapsed_seconds=time.time() - started,
+                       failure=failure,
+                       environment="inherited/unverified" if environment is None else "operator-supplied",
+                       effective_configuration="unverified; profile digest records supplied bytes only",
                        isolation="operator-declared external guest; not measured by adapter",
-                        descendant_termination="sandbox removal required; process group signalled")
+                       descendant_termination="sandbox removal required; process group cleanup attempted")
         if args.source_map is not None:
             receipt["source_map_sha256"] = sha256(map_bytes)
         for name, contents in (("transcript.jsonl", data), ("session-export.json", exported),
