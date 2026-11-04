@@ -32,9 +32,9 @@ repair an invalid stream. `REVIEW_OBSERVED` means these runtime observations
 exist, not that findings are correct, all relevant context was read, or tests
 passed. Read events record tool success, not proof of full-file reasoning.
 
-Artifacts are `transcript.jsonl`, `session-export.json`, `stderr.txt`, and
+Artifacts are `transcript.jsonl`, `session-export.json`, `stderr.txt`, `export-stderr.txt`, and
 `receipt.json`. They may contain source and review text and must stay private.
-Receipts bind runtime binary, declared model/agent, input bytes, stream bytes,
+Normal receipts bind runtime binary, declared model/agent, input bytes, stream bytes,
 exit code, timing and observed session. They report candidate readiness and
 execution credit as false. Controller collection must verify source/assignment
 bindings and copy evidence outside the worker before relying on it. Files in a
@@ -64,8 +64,18 @@ It is never merged with inherited variables or handoff/bundle content.
 
 The CLI's optional `--environment-file` reads an operator-prepared JSON object
 once and passes the same selection to both inference and same-session export.
-The absolute path must have no symlink components; the file must be regular,
-owned by the guest caller, and have no group/other permission bits (use `0600`).
+The absolute path must have no symlink or `..` components. Starting at `/`,
+each ancestor is opened descriptor-relative with `O_DIRECTORY | O_NOFOLLOW`,
+then its descriptor's ownership and permissions are checked before opening the
+next component. Directories must belong to root or the current guest caller and
+have no group/other write permissions, except root-owned sticky directories such
+as `/tmp`. The leaf is opened relative to the pinned parent with `O_NOFOLLOW`;
+it must be regular, single-link, owned by the caller, and have no group/other
+permission bits (use `0600`). Unsafe paths are refused, never automatically chmodded.
+An ancestor replaced by a symlink cannot redirect an already pinned descriptor;
+a symlink encountered before pinning is refused. This does not isolate against
+the same user rewriting files, changing permissions or replacing directory
+entries with other real directories. The operator still owns guest isolation.
 Keep it outside source/handoff bundles and receipts. Duplicate names, non-string
 values, NULs, invalid UTF-8, more than 64 names, or more than 32 KiB of total
 UTF-8 value bytes are refused. The encoded file is bounded to 256 KiB.
@@ -80,10 +90,29 @@ The fixed name allowlist for both APIs is:
 Only supply credentials for the approved provider. These names are permitted
 inputs, not proof a particular runtime/provider consumes them. Loader/runtime
 injection variables, arbitrary `XDG_*`, GitHub tokens, proxy settings and arbitrary
-provider/configuration variables are refused. Errors do not include supplied
-names or values. Receipts contain only `environment: "operator-supplied"`; no
-environment names, values, file paths or credential hashes are recorded. Runtime
-stdout/stderr can still contain sensitive data and must stay private.
+provider/configuration variables are refused. Environment-validation diagnostics
+do not include supplied names or values. The environment mapping is not enumerated
+in receipts; its selection is tagged `environment: "operator-supplied"`. Runtime
+fields may echo nonsecret environment names/values such as HOME or PATH; these
+are not redacted.
+
+Before writing a receipt, the adapter checks its complete serialized JSON for
+every **nonempty selected provider credential value**, including JSON-escaped
+forms. A match anywhere (including final text, session IDs, nested fields or
+declared runtime fields) replaces the entire receipt with the fixed diagnostic
+`{"schema_version":1,"status":"UNVERIFIED","reason":"selected credential disclosure"}`
+and exits 3. This also applies to already-degraded receipts. Normal successful
+receipts retain their existing shape. Empty credentials alone are skipped;
+short credentials may conservatively match unrelated receipt text. The minimal
+diagnostic has no copied runtime-controlled strings (fixed diagnostic words may
+coincidentally overlap a short value).
+
+This check is not general secret detection: inherited/otherwise discovered
+credentials and transformed/encoded secrets beyond JSON escaping are not covered.
+Raw `transcript.jsonl`, `session-export.json`, `stderr.txt`, and
+`export-stderr.txt` intentionally retain exact private evidence and can contain
+credentials even when a receipt is refused. They remain mode `0600` and must not
+be published; receipt refusal does not sanitize raw evidence.
 
 Omitting the option preserves legacy inheritance and records
 `environment: "inherited/unverified"`. That tag does not make credential

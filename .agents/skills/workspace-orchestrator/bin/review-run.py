@@ -32,11 +32,13 @@ REAP_TIMEOUT = 3
 MAX_ENV_NAMES = 64
 MAX_ENV_VALUES = 32 * 1024
 MAX_ENV_FILE = 256 * 1024  # permits JSON escaping of bounded UTF-8 values
-ENV_NAMES = frozenset({
-    "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-    "XDG_RUNTIME_DIR", "PATH", "LANG", "LC_ALL", "TMPDIR",
+PROVIDER_CREDENTIAL_NAMES = frozenset({
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
     "OPENROUTER_API_KEY", "USAI_API_KEY",
+})
+ENV_NAMES = PROVIDER_CREDENTIAL_NAMES | frozenset({
+    "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR", "PATH", "LANG", "LC_ALL", "TMPDIR",
 })
 
 
@@ -257,16 +259,40 @@ def selected_environment(env: Mapping[str, str]) -> dict[str, str]:
     return selected
 
 
-def environment_read(path: Path) -> dict[str, str]:
-    """Read a private, operator-owned JSON object from the qualified guest."""
-    if not path.is_absolute() or any(part.is_symlink() for part in (path, *path.parents)):
+def environment_open(path: Path) -> int:
+    """Pin each directory before opening its child; never follow a symlink."""
+    if not path.is_absolute() or ".." in path.parts or len(path.parts) < 2:
         raise Unverified("environment path must be absolute and contain no symlinks")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open("/", flags)
+    try:
+        # Validate the root and every ancestor using the descriptor actually used
+        # for the next open, not a separate pathname check.
+        for component in (*path.parts[1:-1], None):
+            info = os.fstat(directory)
+            sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+            if info.st_uid not in {0, os.geteuid()} or (info.st_mode & 0o022 and not sticky_root):
+                raise Unverified("environment ancestor must have trusted ownership and write permissions")
+            if component is not None:
+                child = os.open(component, flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+        return os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+
+def environment_read(path: Path) -> dict[str, str]:
+    """Read a private, operator-owned JSON object through pinned ancestors."""
+    try:
+        fd = environment_open(path)
+    except OSError:
+        raise Unverified("environment path could not be opened without following symlinks") from None
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or info.st_mode & 0o077 or info.st_size > MAX_ENV_FILE):
-            raise Unverified("environment file must be private, owned and bounded regular JSON")
+                or info.st_mode & 0o077 or info.st_size > MAX_ENV_FILE or info.st_nlink != 1):
+            raise Unverified("environment file must be private, owned, single-link and bounded regular JSON")
         with os.fdopen(fd, "rb", closefd=False) as handle:
             data = handle.read(MAX_ENV_FILE + 1)
     finally:
@@ -278,6 +304,20 @@ def environment_read(path: Path) -> dict[str, str]:
     except (ValueError, UnicodeError, RecursionError):
         raise Unverified("malformed environment JSON") from None
     return selected_environment(value)
+
+
+def receipt_without_credentials(receipt: dict[str, Any], env: Mapping[str, str] | None) -> dict[str, Any]:
+    """Refuse the entire receipt if selected credential bytes occur in its JSON."""
+    serialized = json.dumps(receipt, sort_keys=True, indent=2)
+    for name in PROVIDER_CREDENTIAL_NAMES:
+        value = (env or {}).get(name, "")
+        # Check JSON escaping too: quotes, controls and non-ASCII must not bypass
+        # the check. No minimum length; short credentials can conservatively match
+        # unrelated receipt text. The replacement contains only fixed diagnostics.
+        if value and (value in serialized or json.dumps(value)[1:-1] in serialized):
+            return {"schema_version": 1, "status": "UNVERIFIED",
+                    "reason": "selected credential disclosure"}
+    return receipt
 
 
 def execute(command: list[str], cwd: Path, timeout: int,
@@ -472,6 +512,7 @@ def main() -> int:
                        descendant_termination="sandbox removal required; process group cleanup attempted")
         if args.source_map is not None:
             receipt["source_map_sha256"] = sha256(map_bytes)
+        receipt = receipt_without_credentials(receipt, environment)
         for name, contents in (("transcript.jsonl", data), ("session-export.json", exported),
                                ("export-stderr.txt", export_stderr), ("stderr.txt", stderr),
                                ("receipt.json", (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode())):

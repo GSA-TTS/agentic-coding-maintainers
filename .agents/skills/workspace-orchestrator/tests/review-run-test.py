@@ -339,7 +339,11 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse((root / "output/receipt.json").exists())
 
     def test_cleanup_failure_suppresses_observation_and_export(self):
-        for phase in ("run", "export"):
+        exported = json.dumps({
+            "info": {"id": "ses_test", "outcome": "succeeded", "tokens": {"input": 100, "output": 20}},
+            "messages": [{"type": "assistant", "finish": "stop", "content": [{"type": "text", "text": '{"findings":[]}'}]}],
+        }).encode()
+        for phase in ("control", "run", "export"):
             with tempfile.TemporaryDirectory() as directory, self.subTest(phase=phase):
                 root = Path(directory)
                 argv = self.stub_main(root)
@@ -349,12 +353,71 @@ class RunnerTests(unittest.TestCase):
                 first = (data, b"", 0, failure if phase == "run" else None)
                 with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
                         mock.patch.object(runner, "source_manifest", return_value=manifest), \
-                        mock.patch.object(runner, "execute", side_effect=[first, (b"{}", b"", 0, failure)]) as execute:
-                    self.assertEqual(runner.main(), 3)
+                        mock.patch.object(runner, "execute", side_effect=[first, (exported, b"", 0,
+                            failure if phase == "export" else None)]) as execute:
+                    self.assertEqual(runner.main(), 0 if phase == "control" else 3)
                 self.assertEqual(execute.call_count, 1 if phase == "run" else 2)
                 receipt = json.loads((root / "output/receipt.json").read_text())
-                self.assertEqual(receipt["status"], "UNVERIFIED")
-                self.assertEqual(receipt["failure" if phase == "run" else "export_failure"], failure)
+                self.assertEqual(receipt["status"], "REVIEW_OBSERVED" if phase == "control" else "UNVERIFIED")
+                self.assertEqual(receipt["failure" if phase == "run" else "export_failure"],
+                                 None if phase == "control" else failure)
+
+    def test_main_credential_echo_refuses_successful_and_degraded_receipts(self):
+        secret = "fixture-credential-unique"
+        for field in ("final_text", "session", "model"):
+            for degraded in (False, True):
+                with tempfile.TemporaryDirectory() as directory, self.subTest(field=field, degraded=degraded):
+                    root = Path(directory)
+                    argv = self.stub_main(root)
+                    environment = root / "operator.json"
+                    environment.write_text(json.dumps({"OPENAI_API_KEY": secret}))
+                    environment.chmod(0o600)
+                    argv += ["--environment-file", str(environment)]
+                    events = self.events()
+                    session = "ses_" + secret if field == "session" else "ses_test"
+                    text = secret if field == "final_text" else '{"findings":[]}'
+                    for event in events:
+                        event["sessionID"] = session
+                    events[1]["part"]["text"] = text
+                    if field == "model":
+                        argv[argv.index("--model") + 1] = "fixture/" + secret
+                    data = b"\n".join(json.dumps(e).encode() for e in events)
+                    exported = json.dumps({
+                        "info": {"id": session, "outcome": "succeeded", "tokens": {"input": 100, "output": 20}},
+                        "messages": [{"type": "assistant", "finish": "stop", "content": [{"type": "text", "text": text}]}],
+                    }).encode()
+                    # Prove valid completion before applying the disclosure guard.
+                    manifest = {"/source/a.py": "digest"}
+                    self.assertEqual(runner.corroborate(data, 0, manifest, root, exported, 0, None)["status"], "REVIEW_OBSERVED")
+                    stderr = secret.encode()
+                    with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), \
+                            mock.patch.object(runner, "source_manifest", return_value=manifest), \
+                            mock.patch.object(runner, "execute", side_effect=[(data, stderr, 0, None),
+                                (exported, stderr, 0, "runtime cleanup failed: child reap" if degraded else None)]):
+                        self.assertEqual(runner.main(), 3)
+                    receipt = json.loads((root / "output/receipt.json").read_text())
+                    self.assertEqual(receipt, {"schema_version": 1, "status": "UNVERIFIED",
+                                               "reason": "selected credential disclosure"})
+                    self.assertNotIn(secret, json.dumps(receipt))
+                    for name, raw in (("transcript.jsonl", data), ("session-export.json", exported),
+                                      ("stderr.txt", stderr), ("export-stderr.txt", stderr)):
+                        path = root / "output" / name
+                        self.assertEqual(path.read_bytes(), raw)
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_receipt_guard_checks_all_credentials_escaping_and_short_values(self):
+        for name in runner.PROVIDER_CREDENTIAL_NAMES:
+            for secret in ("Z", 'fixture-"\\\n-é', "ses_fixture"):
+                # Includes nested values and dictionary keys, regardless of status.
+                for receipt in ({"status": "REVIEW_OBSERVED", "nested": [{secret: [secret]}]},
+                                {"status": "UNVERIFIED", "sessions": ["ses_" + secret]}):
+                    result = runner.receipt_without_credentials(receipt, {name: secret})
+                    self.assertEqual(result, {"schema_version": 1, "status": "UNVERIFIED",
+                                              "reason": "selected credential disclosure"})
+        receipt = {"status": "REVIEW_OBSERVED", "final_text": "Read /work using /bin"}
+        for env in (None, {}, {"OPENAI_API_KEY": ""}, {"HOME": "/work", "PATH": "/bin"},
+                    {"OPENAI_API_KEY": "not-echoed"}):
+            self.assertIs(runner.receipt_without_credentials(receipt, env), receipt)
 
     def test_environment_policy_rejects_before_spawn(self):
         invalid = [[], {"HOME": 1}, {"HOME": "bad\x00value"}, {"HOME": "\ud800"},
@@ -395,6 +458,66 @@ class RunnerTests(unittest.TestCase):
             for bad in (alias, fifo, root, Path("relative.json")):
                 with self.assertRaises(runner.Unverified):
                     runner.environment_read(bad)
+
+    def test_environment_rejects_mutable_ancestors_and_hardlinked_leaf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ancestor = root / "mutable"
+            ancestor.mkdir(mode=0o700)
+            path = ancestor / "environment.json"
+            path.write_text('{"HOME":"/work"}')
+            path.chmod(0o600)
+            for mode in (0o777, 0o770, 0o707, 0o1777):
+                ancestor.chmod(mode)
+                with self.subTest(mode=oct(mode)), self.assertRaises(runner.Unverified):
+                    runner.environment_read(path)
+            ancestor.chmod(0o700)
+            self.assertEqual(runner.environment_read(path), {"HOME": "/work"})
+            os.link(path, root / "hardlink")
+            with self.assertRaises(runner.Unverified):
+                runner.environment_read(path)
+
+    def test_environment_root_owned_sticky_tmp_ancestor_is_allowed(self):
+        # The isolated guest supplies /tmp; no host permissions are changed.
+        info = Path("/tmp").stat()
+        self.assertEqual(info.st_uid, 0)
+        self.assertTrue(info.st_mode & 0o1000)
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            path = Path(directory) / "environment.json"
+            path.write_text('{}')
+            path.chmod(0o600)
+            self.assertEqual(runner.environment_read(path), {})
+
+    def test_environment_ancestor_symlink_swap_uses_pinned_directory_or_refuses(self):
+        for swap_after_open in (False, True):
+            with tempfile.TemporaryDirectory() as directory, self.subTest(after_open=swap_after_open):
+                root = Path(directory)
+                ancestor, replacement = root / "selected", root / "replacement"
+                ancestor.mkdir(mode=0o700)
+                replacement.mkdir(mode=0o700)
+                for parent, value in ((ancestor, "original"), (replacement, "substituted")):
+                    path = parent / "environment.json"
+                    path.write_text(json.dumps({"HOME": value}))
+                    path.chmod(0o600)
+                real_open = os.open
+                swapped = False
+                def racing_open(path, flags, *args, **kwargs):
+                    nonlocal swapped
+                    if path == "selected" and kwargs.get("dir_fd") is not None and not swapped:
+                        swapped = True
+                        fd = real_open(path, flags, *args, **kwargs) if swap_after_open else None
+                        ancestor.rename(root / "retained")
+                        ancestor.symlink_to(replacement, target_is_directory=True)
+                        if fd is not None:
+                            return fd
+                    return real_open(path, flags, *args, **kwargs)
+                with mock.patch.object(runner.os, "open", side_effect=racing_open):
+                    if swap_after_open:
+                        self.assertEqual(runner.environment_read(ancestor / "environment.json"), {"HOME": "original"})
+                    else:
+                        with self.assertRaises(runner.Unverified):
+                            runner.environment_read(ancestor / "environment.json")
+                self.assertTrue(swapped)
 
     def test_export_corroborates_missing_stream_completion(self):
         events = self.events()[:-1]
