@@ -483,7 +483,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(info.st_uid, 0)
         self.assertTrue(info.st_mode & 0o1000)
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
-            path = Path(directory) / "environment.json"
+            path = Path(directory).resolve() / "environment.json"
             path.write_text('{}')
             path.chmod(0o600)
             self.assertEqual(runner.environment_read(path), {})
