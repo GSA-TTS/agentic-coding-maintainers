@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Fake-CLI policy qualification tests. Execute only in an isolated guest.
 
 No installed OpenCode binary, network connection, model or provider is used.
@@ -19,6 +18,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import mock_open, patch
 
@@ -339,9 +339,8 @@ class QualificationTest(unittest.TestCase):
 
     def test_cli_deadline(self):
         runner = self.runner("timeout")
-        with patch.object(Q, "CALL_TIMEOUT", 0.1):
-            with self.assertRaisesRegex(Q.Unverified, "command_timeout"):
-                runner.api(28763, "GET", "/api/config")
+        with patch.object(Q, "CALL_TIMEOUT", 0.1), self.assertRaisesRegex(Q.Unverified, "command_timeout"):
+            runner.api(28763, "GET", "/api/config")
         self.assertEqual(runner.commands[0]["status"], "UNVERIFIED")
 
     def test_stdout_and_stderr_are_bounded(self):
@@ -371,9 +370,8 @@ class QualificationTest(unittest.TestCase):
         runner = self.runner("descendant")
         # Allow the real guest interpreter time to create the descendant under
         # CPU contention; still assert the owned inherited pipe hits a deadline.
-        with patch.object(Q, "CALL_TIMEOUT", 1):
-            with self.assertRaisesRegex(Q.Unverified, "command_timeout"):
-                runner.api(28763, "GET", "/api/config")
+        with patch.object(Q, "CALL_TIMEOUT", 1), self.assertRaisesRegex(Q.Unverified, "command_timeout"):
+            runner.api(28763, "GET", "/api/config")
         pid = int((runner.cwd / "child.pid").read_text())
         # Linux /proc is guest-local and checks only the child created by this test.
         proc = Path(f"/proc/{pid}/stat")
@@ -535,9 +533,8 @@ class QualificationTest(unittest.TestCase):
             real_stop(process)
             stopped.append(process)
         with patch.object(Q.selectors.DefaultSelector, "select", side_effect=Q.Unverified("interrupted")), \
-                patch.object(Q, "stop", side_effect=track):
-            with self.assertRaisesRegex(Q.Unverified, "interrupted"):
-                runner.api(28763, "GET", "/api/config")
+                patch.object(Q, "stop", side_effect=track), self.assertRaisesRegex(Q.Unverified, "interrupted"):
+            runner.api(28763, "GET", "/api/config")
         self.assertEqual(len(stopped), 1)
         self.assertIsNotNone(stopped[0].poll())
 
@@ -607,15 +604,165 @@ class QualificationTest(unittest.TestCase):
         self.assertEqual(runner.commands, [])
 
     def publication_report(self):
-        return {"schema_version": 1, "status": "PROFILE_POLICY_OBSERVED", "runtime_cleanup": "removed",
-                "namespace": dict(NAMESPACE_PROOF),
-                "launch_authorized": False, "tool_dispatch_enforcement": "UNVERIFIED", "cases": [
-                    {"case": case, "status": status, "launch_authorized": False,
-                     "tool_dispatch_enforcement": "UNVERIFIED",
-                     "effects": {"read": "allow", "edit": "deny", "shell": "deny", "subagent": "deny"}}
-                    for case, status in (("clean", "PROFILE_POLICY_OBSERVED"),
-                                         ("conflict", "PROFILE_CONTAMINATION_DETECTED"),
-                                         ("missing", "CANNOT_QUALIFY"), ("malformed", "CANNOT_QUALIFY"))]}
+        # Independently constructed, no observe_case or production profile helper.
+        def returned(args, code=0):
+            return {"argv": ["<binary>", *args], "status": "RETURNED", "exit_code": code,
+                    "bytes": {"stdout": 100 if code == 0 else 0, "stderr": 0 if code == 0 else 19}}
+
+        deny_read = [{"action": "*", "resource": "*", "effect": "deny"},
+                     {"action": "read", "resource": "*", "effect": "allow"}]
+        allow = [{"action": "*", "resource": "*", "effect": "allow"}]
+        report = {"schema_version": 1, "status": "PROFILE_POLICY_OBSERVED", "runtime_cleanup": "removed",
+                  "version": "2.0.32", "binary_sha256": "4" * 64,
+                  "namespace": dict(NAMESPACE_PROOF), "launch_authorized": False,
+                  "tool_dispatch_enforcement": "UNVERIFIED", "cases": [],
+                  "commands": [returned(["--version"]), returned(["api", "--help"])]}
+        for index, (case, status) in enumerate((("clean", "PROFILE_POLICY_OBSERVED"),
+                                              ("conflict", "PROFILE_CONTAMINATION_DETECTED"),
+                                              ("missing", "CANNOT_QUALIFY"), ("malformed", "CANNOT_QUALIFY"))):
+            nonce = str(index + 1) * 24
+            agent_id = "qualification-" + nonce
+            port = str(18763 + index)
+            prefix = ["api", "--server", "http://127.0.0.1:" + port]
+            commands = [{"argv": ["<binary>", "serve", "--hostname", "127.0.0.1", "--port", port],
+                         "status": "STARTED", "output": "discarded; may contain password"},
+                        returned(prefix + ["GET", "/api/config"], 1),
+                        returned(prefix + ["GET", "/api/config"])]
+            documents = {}
+            sources = []
+            profiles = {"config/opencode/opencode.json": None, "project/opencode.json": None}
+            row = {"case": case, "status": status, "launch_authorized": False,
+                   "tool_dispatch_enforcement": "UNVERIFIED", "profile_contamination_detected": case == "conflict",
+                   "server_cleanup": "process_group_killed", "commands": commands, "effects": {}}
+            if case in ("clean", "conflict"):
+                agent = {"mode": "primary", "description": "selected-" + nonce,
+                         "system": "Synthetic policy fixture.", "permissions": deny_read}
+                documents["config/opencode/opencode.json"] = {"agents": {agent_id: agent}}
+                if case == "conflict":
+                    documents["project/opencode.json"] = {"agents": {agent_id: {
+                        **agent, "description": "selected-" + nonce + "-project", "permissions": allow}}}
+                row["resolved_policy"] = {"defaults": allow + [
+                    {"action": "read", "resource": "*.env", "effect": "ask"},
+                    {"action": "read", "resource": "*.env.*", "effect": "ask"},
+                    {"action": "read", "resource": "*.env.example", "effect": "allow"}],
+                    "selected": deny_read + (allow if case == "conflict" else []),
+                    "suffix": [{"action": "browser", "resource": "*", "effect": "deny"}]}
+                commands.extend([returned(prefix + ["GET", "/api/agent/" + agent_id], 1),
+                                 returned(prefix + ["GET", "/api/agent/" + agent_id]),
+                                 returned(prefix + ["POST", "/api/session", "--data", json.dumps({"agent": agent_id})])])
+                for action, resource in (("read", "/candidate/sample.py"), ("edit", "/candidate/sample.py"),
+                                         ("shell", "printf fixture"), ("subagent", "fixture-agent")):
+                    row["effects"][action] = "allow" if case == "conflict" or action == "read" else "deny"
+                    body = {"id": "per_" + nonce + "_" + action, "action": action,
+                            "resources": [resource], "agent": agent_id}
+                    commands.append(returned(prefix + ["POST", "/api/session/ses_fixture/permission",
+                                                       "--data", json.dumps(body)]))
+            else:
+                row.update(reason="selected_document_not_loaded", rejection_evidence="exact_source_inventory")
+                if case == "malformed":
+                    profiles["config/opencode/opencode.json"] = hashlib.sha256(b'{"agents":').hexdigest()
+            for path, document in documents.items():
+                profiles[path] = hashlib.sha256((json.dumps(document, indent=2, sort_keys=True) + "\n").encode()).hexdigest()
+                sources.append({"type": "document", "path": path, "info_sha256": hashlib.sha256(
+                    json.dumps(document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()})
+            sources.append({"type": "directory", "path": "config/opencode"})
+            commands.append(returned(prefix + ["GET", "/api/config"]))
+            row.update(profiles_before=profiles, profiles_after=deepcopy(profiles),
+                       sources_before=sources, sources_after=deepcopy(sources))
+            report["cases"].append(row)
+        return report
+
+    def test_semantics_rejects_omitted_top_level_conditions(self):
+        for key in ("version", "binary_sha256", "namespace", "runtime_cleanup", "commands", "cases",
+                    "launch_authorized", "tool_dispatch_enforcement"):
+            with self.subTest(key=key):
+                report = self.publication_report()
+                del report[key]
+                with self.assertRaises(Q.Unverified):
+                    Q.validate_success_report(report)
+
+    def test_semantics_rejects_every_omitted_case_field(self):
+        for index, row in enumerate(self.publication_report()["cases"]):
+            for key in row:
+                with self.subTest(case=index, key=key):
+                    report = self.publication_report()
+                    del report["cases"][index][key]
+                    with self.assertRaises(Q.Unverified):
+                        Q.validate_success_report(report)
+
+    def test_semantics_rejects_mutated_success_claims(self):
+        mutations = [
+            lambda r: r.update(version="2.0.33"),
+            lambda r: r.update(binary_sha256="4199ae"),
+            lambda r: r.update(runtime_cleanup="failed"),
+            lambda r: r["namespace"].update(loopback_up=1),
+            lambda r: r["namespace"].update(network_namespace_changed=False),
+            lambda r: r["namespace"].update(interfaces=["lo", "eth0"]),
+            lambda r: r["cases"][1]["effects"].update(edit="deny"),
+            lambda r: r["cases"][0]["effects"].update(read="deny"),
+            lambda r: r["cases"][2]["effects"].update(read="allow"),
+            lambda r: r["cases"][3].update(reason="startup_failed"),
+            lambda r: r["cases"][3]["profiles_before"].update({"config/opencode/opencode.json": "0" * 64}),
+            lambda r: r["cases"][0]["profiles_after"].update({"config/opencode/opencode.json": "0" * 64}),
+            lambda r: r["cases"][0]["sources_before"][0].update(info_sha256="0" * 64),
+            lambda r: r["cases"][0].update(server_cleanup="not_started"),
+            lambda r: r["cases"][1]["resolved_policy"].update(selected=[{"action": "*", "resource": "*", "effect": "allow"}]),
+            lambda r: r["cases"][0]["resolved_policy"]["defaults"].append({"action": "shell", "resource": "*", "effect": "allow"}),
+            lambda r: r["cases"][0]["commands"][-2].update(exit_code=1),
+            lambda r: r["cases"][0]["commands"][-1].update(exit_code=1),
+            lambda r: r["cases"][0]["commands"][2]["bytes"].update(stdout=True),
+            lambda r: r["cases"].__setitem__(3, deepcopy(r["cases"][2])),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                report = self.publication_report()
+                mutate(report)
+                with self.assertRaises(Q.Unverified):
+                    Q.validate_success_report(report)
+
+    def test_rehashed_invalid_conflict_still_fails_publication_inspection(self):
+        self.output.mkdir()
+        report = self.publication_report()
+        report["cases"][1]["effects"]["edit"] = "deny"
+        result = Q.publish_output(self.output, report, [])
+        self.assertTrue((self.output / "READY").exists())
+        self.assertEqual(result["status"], "UNVERIFIED")
+
+    def test_semantics_namespace_fields_require_exact_types_and_coverage(self):
+        for key in NAMESPACE_PROOF:
+            with self.subTest(missing=key):
+                report = self.publication_report()
+                del report["namespace"][key]
+                with self.assertRaises(Q.Unverified):
+                    Q.validate_success_report(report)
+        for key in ("loopback_up", "network_namespace_changed", "user_namespace_changed", "nonroot_identity_preserved"):
+            for value in (1, "true", False, None):
+                with self.subTest(key=key, value=value):
+                    report = self.publication_report()
+                    report["namespace"][key] = value
+                    with self.assertRaises(Q.Unverified):
+                        Q.validate_success_report(report)
+
+    def test_semantics_equal_but_wrong_source_inventories_and_profile_hashes(self):
+        for case_index in range(4):
+            for fault in ("profile", "source_role", "directory", "duplicate"):
+                with self.subTest(case=case_index, fault=fault):
+                    report = self.publication_report()
+                    row = report["cases"][case_index]
+                    if fault == "profile":
+                        for key in ("profiles_before", "profiles_after"):
+                            row[key]["project/opencode.json"] = "0" * 64
+                    else:
+                        sources = row["sources_before"]
+                        if fault == "source_role":
+                            sources.append({"type": "document", "path": "project/opencode.json", "info_sha256": "0" * 64})
+                        elif fault == "directory":
+                            sources[-1]["path"] = "../outside"
+                        else:
+                            sources.append(deepcopy(sources[0]))
+                        row["sources_after"] = deepcopy(sources)
+                    with self.assertRaises(Q.Unverified):
+                        Q.validate_success_report(report)
 
     def test_final_serialization_rejects_prior_case_password_before_writing(self):
         self.output.mkdir()
@@ -649,27 +796,26 @@ class QualificationTest(unittest.TestCase):
                 output.mkdir()
                 calls = 0
 
-                def fsync(fd):
+                def fsync(fd, fault=fault):
                     nonlocal calls
                     calls += 1
                     if calls == {"manifest_fsync": 2, "ready_fsync": 3, "directory_fsync": 4}.get(fault):
                         raise OSError("fixture fsync failure")
                     return real_fsync(fd)
 
-                def link(source, target, **kwargs):
+                def link(source, target, fault=fault, **kwargs):
                     if fault == "ready_link" and Path(target).name == "READY":
                         raise OSError("fixture ready failure")
                     return real_link(source, target, **kwargs)
 
-                def digest(path, *args):
+                def digest(path, *args, fault=fault):
                     if fault == "hash":
                         raise Q.Unverified("fixture_hash_failure")
                     return real_digest(path, *args)
 
                 with patch.object(Q.os, "fsync", side_effect=fsync), patch.object(Q.os, "link", side_effect=link), \
-                        patch.object(Q, "digest_file", side_effect=digest):
-                    with self.assertRaises((OSError, Q.Unverified)):
-                        Q.publish_output(output, self.publication_report(), [])
+                        patch.object(Q, "digest_file", side_effect=digest), self.assertRaises((OSError, Q.Unverified)):
+                    Q.publish_output(output, self.publication_report(), [])
                 self.assertFalse((output / "READY").exists())
                 self.assertEqual(Q.validate_output(output)["status"], "UNVERIFIED")
                 for path in output.glob("report.json*"):

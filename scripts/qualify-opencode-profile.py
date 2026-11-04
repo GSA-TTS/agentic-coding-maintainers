@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Bounded guest-only policy observation for OpenCode 2.0.32.
 
 Run with python3 -I -B inside an independently isolated, network-none guest.
@@ -28,7 +27,7 @@ import tempfile
 import time
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 VERSION = "2.0.32"
 MAX_STREAM = 262144
@@ -653,6 +652,228 @@ def read_evidence(path):
         os.close(fd)
 
 
+def require_evidence(condition: bool) -> None:
+    if not condition:
+        raise Unverified("invalid_success_evidence")
+
+
+def evidence_object(value: object) -> dict[str, object]:
+    require_evidence(type(value) is dict)
+    assert isinstance(value, dict)
+    require_evidence(all(type(key) is str for key in value))
+    return cast(dict[str, object], value)
+
+
+def evidence_list(value: object) -> list[object]:
+    require_evidence(type(value) is list)
+    assert isinstance(value, list)
+    return cast(list[object], value)
+
+
+def evidence_string(value: object) -> str:
+    require_evidence(type(value) is str)
+    assert isinstance(value, str)
+    return value
+
+
+def evidence_integer(value: object) -> int:
+    require_evidence(type(value) is int)
+    assert isinstance(value, int)
+    return value
+
+
+def valid_sha256(value: object) -> bool:
+    return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def validate_returned_command(value: object) -> list[str]:
+    command = evidence_object(value)
+    require_evidence(type(command) is dict and set(command) == {"argv", "bytes", "exit_code", "status"})
+    require_evidence(command["status"] == "RETURNED" and type(command["exit_code"]) is int)
+    argv = [evidence_string(arg) for arg in evidence_list(command["argv"])]
+    sizes = evidence_object(command["bytes"])
+    require_evidence(type(argv) is list and all(type(arg) is str for arg in argv))
+    require_evidence(type(sizes) is dict and set(sizes) == {"stdout", "stderr"})
+    require_evidence(all(type(size) is int and 0 <= size <= MAX_STREAM for size in sizes.values()))
+    if command["exit_code"] == 0:
+        require_evidence(evidence_integer(sizes["stdout"]) > 0)
+    return argv
+
+
+def validate_case_commands(row: dict[str, object]) -> str | None:
+    """Validate retained request coverage, allowing bounded startup/agent retries.
+
+    No response data is recovered or fabricated from logs. These are internal
+    consistency checks on claimed observations, not proof the runtime ran.
+    """
+    commands = evidence_list(row["commands"])
+    require_evidence(type(commands) is list and 3 <= len(commands) <= 16)
+    start = evidence_object(commands[0])
+    require_evidence(type(start) is dict and set(start) == {"argv", "output", "status"})
+    require_evidence(start["status"] == "STARTED" and start["output"] == "discarded; may contain password")
+    argv = [evidence_string(arg) for arg in evidence_list(start["argv"])]
+    require_evidence(type(argv) is list and len(argv) == 6
+                     and argv[:5] == ["<binary>", "serve", "--hostname", "127.0.0.1", "--port"])
+    require_evidence(type(argv[5]) is str and re.fullmatch(r"[0-9]{4,5}", argv[5]) is not None
+                     and 1024 <= int(argv[5]) <= 65535)
+    endpoint = "http://127.0.0.1:" + argv[5]
+    successes: list[str] = []
+    config_count = agent_count = 0
+    agent: str | None = None
+    session_path: str | None = None
+    actions: set[str] = set()
+    for value in commands[1:]:
+        command = evidence_object(value)
+        args = validate_returned_command(command)
+        require_evidence(len(args) in (6, 8) and args[:4] == ["<binary>", "api", "--server", endpoint])
+        method, path = args[4:6]
+        if method == "GET":
+            require_evidence(len(args) == 6)
+            if path == "/api/config":
+                config_count += 1
+                require_evidence(config_count <= READY_ATTEMPTS + 1)
+                role = "config"
+            else:
+                require_evidence(re.fullmatch(r"/api/agent/qualification-[0-9a-f]{24}", path) is not None)
+                agent_count += 1
+                require_evidence(agent_count <= AGENT_ATTEMPTS)
+                current_agent = path.removeprefix("/api/agent/")
+                require_evidence(agent is None or current_agent == agent)
+                agent = current_agent
+                role = "agent"
+            # Only config readiness and exact-agent initialization may fail;
+            # failures after a successful request of the same role are refused.
+            if command["exit_code"] != 0:
+                require_evidence(role not in successes)
+                continue
+        else:
+            require_evidence(method == "POST" and len(args) == 8 and args[6] == "--data"
+                             and command["exit_code"] == 0 and agent is not None)
+            assert agent is not None
+            body = parse_json(args[7])
+            if path == "/api/session":
+                require_evidence(body == {"agent": agent})
+                role = "session"
+            else:
+                require_evidence(re.fullmatch(r"/api/session/ses_[A-Za-z0-9_-]{1,96}/permission", path) is not None)
+                require_evidence(session_path is None or session_path == path)
+                session_path = path
+                require_evidence(type(body) is dict and set(body) == {"id", "action", "resources", "agent"})
+                action = body["action"]
+                require_evidence(type(action) is str and action in ACTIONS and action not in actions)
+                require_evidence(body == {"id": "per_" + agent.removeprefix("qualification-") + "_" + action,
+                                          "action": action, "resources": [ACTIONS[action]], "agent": agent})
+                actions.add(action)
+                role = "permission"
+        # Empty-agent retries can be successful CLI exits; count them while
+        # preserving the successful config -> agent -> session -> policy order.
+        if role != "agent" or not successes or successes[-1] != "agent":
+            successes.append(role)
+    expected = (["config", "agent", "session", *(["permission"] * 4), "config"]
+                if row["case"] in ("clean", "conflict") else ["config", "config"])
+    require_evidence(successes == expected)
+    return agent
+
+
+def validate_case_success(value: object) -> None:
+    row = evidence_object(value)
+    common = {"case", "commands", "effects", "launch_authorized", "profile_contamination_detected",
+              "profiles_before", "profiles_after", "server_cleanup", "sources_before", "sources_after",
+              "status", "tool_dispatch_enforcement"}
+    require_evidence(type(row) is dict and type(row.get("case")) is str and row["case"] in CASES)
+    case = evidence_string(row["case"])
+    selected = case in ("clean", "conflict")
+    require_evidence(set(row) == common | ({"resolved_policy"} if selected else {"reason", "rejection_evidence"}))
+    require_evidence(row["launch_authorized"] is False and row["tool_dispatch_enforcement"] == "UNVERIFIED"
+                     and row["profile_contamination_detected"] is (case == "conflict")
+                     and row["server_cleanup"] == "process_group_killed")
+    agent_id = validate_case_commands(row)
+    expected_documents = {}
+    selected_path, project_path = "config/opencode/opencode.json", "project/opencode.json"
+    if selected:
+        require_evidence(type(agent_id) is str)
+        assert isinstance(agent_id, str)
+        nonce = agent_id.removeprefix("qualification-")
+        agent = {"mode": "primary", "description": "selected-" + nonce,
+                 "system": "Synthetic policy fixture.", "permissions": RULES}
+        expected_documents[selected_path] = {"agents": {agent_id: agent}}
+        expected_rules = RULES
+        if case == "conflict":
+            allow = [{"action": "*", "resource": "*", "effect": "allow"}]
+            expected_documents[project_path] = {"agents": {agent_id: {**agent,
+                                                 "description": agent["description"] + "-project", "permissions": allow}}}
+            expected_rules = RULES + allow
+        policy = evidence_object(row["resolved_policy"])
+        require_evidence(type(policy) is dict and set(policy) == {"defaults", "selected", "suffix"})
+        require_evidence(all(type(policy[key]) is list for key in policy))
+        # Reuse the runtime's pure ordered rule validator with synthetic binding
+        # fields; the retained defaults and suffix must partition identically.
+        resolved = {**agent, "description": "policy-check", "id": "policy-check", "name": "policy-check",
+                    "request": {"settings": {}, "headers": {}, "body": {}}, "hidden": False,
+                    "permissions": evidence_list(policy["defaults"]) + evidence_list(policy["selected"]) + evidence_list(policy["suffix"])}
+        checked = parse_agent({"location": {"directory": "/evidence"}, "data": resolved},
+                              "policy-check", "policy-check", Path("/evidence"), expected_rules)
+        require_evidence(checked == policy)
+        require_evidence(row["effects"] == {action: "allow" if case == "conflict" or action == "read" else "deny"
+                                            for action in ACTIONS})
+    else:
+        require_evidence(type(row["effects"]) is dict and not row["effects"]
+                         and row["reason"] == "selected_document_not_loaded"
+                         and row["rejection_evidence"] == "exact_source_inventory")
+    expected_profiles: dict[str, str | None] = {selected_path: None, project_path: None}
+    for path, document in expected_documents.items():
+        raw = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
+        expected_profiles[path] = hashlib.sha256(raw).hexdigest()
+    if case == "malformed":
+        expected_profiles[selected_path] = hashlib.sha256(b'{"agents":').hexdigest()
+    require_evidence(type(row["profiles_before"]) is dict and row["profiles_before"] == expected_profiles
+                     and row["profiles_after"] == expected_profiles)
+    sources = evidence_list(row["sources_before"])
+    require_evidence(type(sources) is list and sources == row["sources_after"] and len(sources) <= 5)
+    documents, directories, seen = {}, set(), set()
+    for source_value in sources:
+        source = evidence_object(source_value)
+        require_evidence(type(source) is dict and type(source.get("path")) is str)
+        path = evidence_string(source["path"])
+        require_evidence(path not in seen)
+        seen.add(path)
+        if source.get("type") == "document":
+            require_evidence(set(source) == {"type", "path", "info_sha256"} and valid_sha256(source["info_sha256"]))
+            documents[path] = source["info_sha256"]
+        else:
+            require_evidence(set(source) == {"type", "path"} and source["type"] == "directory"
+                             and path in {"config/opencode", "project", "project/.opencode"})
+            directories.add(path)
+    require_evidence("config/opencode" in directories)
+    require_evidence(documents == {path: hashlib.sha256(json.dumps(document, sort_keys=True,
+                                                                  separators=(",", ":")).encode()).hexdigest()
+                                   for path, document in expected_documents.items()})
+
+
+def validate_success_report(value: object) -> None:
+    """Pure semantic validation of retained success evidence, not authenticity."""
+    report = evidence_object(value)
+    require_evidence(type(report) is dict and report.get("version") == VERSION
+                     and valid_sha256(report.get("binary_sha256")) and report.get("runtime_cleanup") == "removed")
+    namespace = evidence_object(report.get("namespace"))
+    require_evidence(type(namespace) is dict and set(namespace) == {"status", "network_namespace_changed",
+                     "user_namespace_changed", "nonroot_identity_preserved", "interfaces", "loopback_up"})
+    require_evidence(namespace["status"] == "VERIFIED" and type(namespace["interfaces"]) is list
+                     and namespace["interfaces"] == ["lo"])
+    require_evidence(all(namespace[key] is True for key in ("network_namespace_changed", "user_namespace_changed",
+                                                            "nonroot_identity_preserved", "loopback_up")))
+    require_evidence(report.get("launch_authorized") is False and report.get("tool_dispatch_enforcement") == "UNVERIFIED")
+    commands = evidence_list(report.get("commands"))
+    require_evidence(type(commands) is list and len(commands) == 2)
+    for command, args in zip(commands, (["<binary>", "--version"], ["<binary>", "api", "--help"]), strict=True):
+        require_evidence(validate_returned_command(command) == args and evidence_object(command)["exit_code"] == 0)
+    cases = evidence_list(report.get("cases"))
+    require_evidence(type(cases) is list and len(cases) == 4)
+    for row in cases:
+        validate_case_success(row)
+    require_evidence(verdict(cases) == "PROFILE_POLICY_OBSERVED")
+
+
 def validate_output(output):
     """Only this full READY -> manifest -> report check authorizes a status.
 
@@ -689,18 +910,7 @@ def validate_output(output):
                 or type(report.get("cases")) is not list):
             raise Unverified("invalid_report_binding")
         if ready["status"] == "PROFILE_POLICY_OBSERVED":
-            if report.get("namespace") != {"status": "VERIFIED", "network_namespace_changed": True,
-                                           "user_namespace_changed": True, "nonroot_identity_preserved": True,
-                                           "interfaces": ["lo"], "loopback_up": True}:
-                raise Unverified("namespace_evidence_missing")
-            if report["runtime_cleanup"] != "removed" or verdict(report["cases"]) != ready["status"]:
-                raise Unverified("invalid_observation")
-            for row in report["cases"]:
-                if row.get("launch_authorized") is not False or row.get("tool_dispatch_enforcement") != "UNVERIFIED":
-                    raise Unverified("invalid_case_authority")
-            clean = next(row for row in report["cases"] if row["case"] == "clean")
-            if clean.get("effects") != {"read": "allow", "edit": "deny", "shell": "deny", "subagent": "deny"}:
-                raise Unverified("missing_positive_control")
+            validate_success_report(report)
         if any(read_evidence(output / name) != data for name, data in raw.items()):
             raise Unverified("evidence_changed")
         result.update(status=ready["status"], publication="COMPLETE", case_count=len(report["cases"]))
