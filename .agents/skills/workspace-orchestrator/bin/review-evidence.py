@@ -411,6 +411,11 @@ def apply(record: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, An
                     for item in ledger.get("operations", {}).values()):
                 raise Unverified("prepared repair must be applied or explicitly settled before a new review generation")
     if request["action"] in {"assign", "accept"}:
+        if request["action"] == "accept" and any(
+                record["runtime_collections"]["admissions"][key]["generation"] == request["payload"].get("generation")
+                and record["runtime_collections"]["admissions"][key]["run_id"] == request["payload"].get("run_id")
+                for key in record.get("review_reservations", {}).get("admissions", {})):
+            raise Unverified("reserved admission cannot have reports: consumer unavailable")
         prepared = record.get("repair_protocol", {}).get("corrections", {}).values()
         if any(item["generation"] == request["payload"].get("generation") for item in prepared):
             raise Unverified("prepared correction freezes this generation; use a fresh review generation")

@@ -212,6 +212,15 @@ def export_admitted(record, request, root):
     historical = {**record, "revision": admitted["admission_revision"]}
     require(c.admission(historical, payload, c.canonical(packet), e) == admitted
             and c.digest(c.canonical(admitted)) == key, "exact admitted context differs")
+    value = build(admitted, packet, request["incarnation"], record["revision"], key,
+                  receipt["request"]["operation_id"])
+    # Recheck source/owner/scope after construction, while the caller still holds the lock.
+    review.fresh_guard(record, prepare["request"], root, generation["number"])
+    return response(value)
+
+
+def build(admitted, packet, incarnation, revision, key, operation):
+    """Pure reconstruction also used to authenticate a frozen historical export."""
     lookup = {entry["path_base64"]: entry for entry in packet["files"]}
     sources = []
     for guest, selection in sorted(admitted["sources"].items()):
@@ -223,15 +232,18 @@ def export_admitted(record, request, root):
         sources.append({"guest_path": guest, "path_base64": selection["path_base64"], "side": selection["side"],
                         "bytes": len(raw), "sha256": digest(raw), "content_base64": base64.b64encode(raw).decode("ascii")})
     binding = {name: admitted[name] for name in ("task_id", "admission_revision", "generation", "material_epoch", "base", "head", "packet", "policy")}
-    binding.update(incarnation=request["incarnation"], export_revision=record["revision"], admission_id=key,
-                   admit_operation_id=receipt["request"]["operation_id"])
+    binding.update(incarnation=incarnation, export_revision=revision, admission_id=key,
+                   admit_operation_id=operation)
     runtime = {name: admitted[name] for name in ("run_id", "binary_sha256", "model", "agent", "cwd")}
     runtime.update({name: admitted["assignment"][name] for name in ("reviewer", "session")})
     runtime["profile_sha256"] = admitted["assignment"]["profile"]
     value = {"schema_version": 1, "kind": "admitted-review-handoff", "binding": binding, "runtime": runtime,
              "context": copy.deepcopy(admitted["context"]), "context_sha256": digest(canonical(admitted["context"])), "sources": sources}
     validate(value)
-    # Recheck source/owner/scope after construction, while the caller still holds the lock.
-    review.fresh_guard(record, prepare["request"], root, generation["number"])
+    return value
+
+
+def response(value):
     return {"status": "REVIEW_HANDOFF_EXPORTED", "bundle": value, "bundle_sha256": digest(canonical(value)),
+            "replay_only": True, "launch_authorized": False, "launch_gate": "BLOCKED_PROFILE",
             "candidate_ready": False, "execution_credit": False, "delivery_credit": False}

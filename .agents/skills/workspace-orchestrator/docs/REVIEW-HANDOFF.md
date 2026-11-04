@@ -26,7 +26,8 @@ Export creates no task receipt, revision, packet or artifact-store entry. It use
 the existing coordinator lock, whose acquisition/release creates and removes an
 **ephemeral lock directory**. “Read-only” describes authoritative task/artifact
 state, not an absence of these lock filesystem operations. There is no unlocked
-mode. A repeat revalidates current state; it is not historical receipt replay.
+mode. Before reservation, a repeat revalidates current state. After reservation,
+export returns the validated frozen historical bundle described below.
 
 Success is `REVIEW_HANDOFF_EXPORTED` with `bundle` and `bundle_sha256`. Save only
 the `bundle` object as JSON in operator-selected private staging. The hash is over
@@ -81,6 +82,78 @@ ancestor directories outside the mount and future tool conventions remain the
 operator's responsibility. Original repository names remain untrusted metadata.
 
 ## Guest materialization
+
+### Controller reservation (groundwork; launch remains BLOCKED_PROFILE)
+
+The same foreground envelope accepts `reserve-review-attempt` with exactly:
+
+```json
+{
+  "admission_id": "<admission SHA256>",
+  "bundle_sha256": "<current canonical export SHA256>",
+  "destination": {
+    "backend": "docker",
+    "sandbox_id": "<opaque bounded identity>",
+    "created": "2026-11-04T00:00:00Z",
+    "endpoint_sha256": "<operator endpoint identity SHA256>",
+    "result_root": "/review-results/attempt"
+  }
+}
+```
+
+Backend is exactly `docker` or `msb`. Sandbox identity is an ASCII token (at most
+80 characters); creation identity is a UTC timestamp with optional fractional
+seconds; endpoint identity is a SHA256, never a URL, socket, credential or command.
+The result root is one bounded token below `/review-results/`. These fields are
+operator declarations, **not verified sandbox identity or an executable route**.
+No backend is contacted and no result directory is created.
+
+Reservation first exports the **current** prepared admission under the existing
+lock and all current exporter prerequisites. The caller's hash must match exactly.
+It retains canonical bundle bytes as a private `0400` content-addressed file under
+`review-handoffs/`, fsyncs the file/store/root, then persists one admission-keyed
+task entry and one reverse-linked foreground receipt. Entry fields retain the
+original export revision, bundle pointer, original owner/full worker snapshot,
+destination and admit-operation pointer; worker/endpoint metadata never enters
+the export bundle. The initialization marker, schema, domain links and both receipt
+directions are validated, including on shared lifecycle mutation paths.
+
+Only `RESERVED` and `CANCELLED_UNCONSUMED` exist. One admission can be reserved
+**once forever**, including after cancellation: another operation ID, request-file
+path or destination cannot reserve it again. Exact operation replay acknowledges
+retained history only. Exports and reservation results always carry
+`replay_only: true`, `launch_authorized: false`, and `launch_gate: BLOCKED_PROFILE`.
+There is no production consume/spawn action or profile bypass. This establishes
+reservation groundwork, **not at-most-once inference**.
+
+`cancel-review-reservation` takes exactly `{"admission_id": "<digest>"}` at the
+current task revision. Cancellation validates retained artifacts, domain links,
+capacity reservations and exact original owner/full worker, but does not require
+that worker to remain alive. It works while paused. A dead owner does not free
+capacity until cancellation permits ordinary coordinator reconciliation.
+Pause remains available subject to receipt capacity. Each pending reservation
+reserves one cancellation receipt slot and projects maximum-size cancellation
+metadata through the production serialized task-size limits; other actions cannot
+spend that capacity. Cancellation neither releases coordinator leases nor asserts
+anything about a spawned process: no consumer exists. Reserved admissions cannot
+acquire runtime collections or reports even after cancellation.
+
+Pending reservations block lifecycle, head and evidence mutations through the
+shared guard. After cancellation, those ordinary APIs are available again. Export
+of a reserved admission continues to return the **original canonical bundle bytes**
+after pause, cancellation, reclaim or generation/head supersession. It validates
+the retained packet, bundle hash and domain references, but no longer requires
+the historical worker/head to be current. The request still names the current task
+incarnation/revision. Historical exports never authorize launch. Missing artifacts,
+markers, or links return `UNVERIFIED`; they are not reconstructed by replay.
+
+An artifact write followed by a failed task write may leave an unreferenced
+content-addressed file. It grants no reservation and is never inferred into the
+ledger. An exact retry validates it and completes durability before task persistence.
+The controller lock is cooperative; rollback of all authoritative state or a
+malicious same-UID writer is outside this consistency protocol's guarantees.
+
+### Materialization CLI
 
 Install trusted `review-materialize.py`, `review-handoff.py` and `review-source-map.py` together outside
 candidate mounts. Example (all CLI paths are trusted operator choices):
@@ -180,3 +253,6 @@ module. `tests/foreground-handoff-test.py` explicitly selects three real CLI
 fixture cases, reusing the existing test-local compile optimization without
 inheriting or rerunning other test methods. Both are included in `make test` and
 `make check`. Synthetic fixture reports confer no model or candidate-test credit.
+`tests/review-reservation-test.py` selects three additional workflow fixtures with
+compiled-source cache reuse: exact replay/frozen export/cancel, metadata and origin
+loss, and receipt/byte capacity, write failures and real dead-worker recovery.

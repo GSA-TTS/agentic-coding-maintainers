@@ -366,6 +366,7 @@ def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[st
         except Exception as exc:
             raise UnknownError("task candidate binding is invalid") from exc
     validate_legacy_dispositions(raw)
+    review_reservation_module().validate_links(raw)
     return raw
 
 
@@ -651,7 +652,16 @@ def require_execution_stopped(record: dict[str, Any]) -> None:
             raise UnknownError("execution stop observation is missing or malformed")
 
 
+def review_reservation_module():
+    source = Path(__file__).resolve().with_name("review-reservation.py")
+    spec = importlib.util.spec_from_file_location("installed_review_reservation", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def require_repair_settled(record: dict[str, Any], new_review: bool = False, root: Path | None = None) -> None:
+    review_reservation_module().guard(record, root)
     ledger = record.get("repair_protocol")
     if ledger is None:
         return
@@ -857,6 +867,7 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     value = safe_scope(args.value)
     with CoordinatorLock(root):
         record = read_task(root, args.task_id)
+        review_reservation_module().guard(record, root)
         if record["state"] in TERMINAL:
             raise BusyError("terminal task evidence is immutable")
         if args.category == "finding" and value in record[field]:

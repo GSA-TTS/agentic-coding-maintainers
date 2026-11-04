@@ -417,6 +417,8 @@ def apply(record: dict[str, Any], request: dict[str, Any], root: Path,
         result = {"status": "COLLECTION_ADMITTED", "admission_id": key}
     else:
         fields(payload, {"admission_id", "artifact_sha256"})
+        if payload["admission_id"] in record.get("review_reservations", {}).get("admissions", {}):
+            raise Unverified("reserved admission cannot have runtime evidence: consumer unavailable")
         admitted = state["admissions"].get(payload["admission_id"])
         if admitted is None or artifacts is None:
             raise Unverified("missing admission or runtime bundle")
