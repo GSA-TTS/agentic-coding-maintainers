@@ -26,7 +26,8 @@ and re-reviewed at a03e192b8c03965ffc1b5c09ae5afcc2baecf3d0. The subsequent
 absent-history import optimization was independently reviewed at
 0d0c08997225f596e99dea1f96f5da8d4c3d3a70; no further findings were identified.
 
-Five grouped public-CLI reservation scenarios passed in network-off test guests,
+Five reservation tests passed, comprising four workflow fixtures and one
+structural/import sentinel with public-CLI and direct-API coverage in isolated guests,
 covering exact replay, alternate-destination refusal, frozen export, pause,
 dead-worker cancellation, retention loss, mutation guards and cancellation
 capacity. The full Python3.12 Docker repository suite subsequently passed,
@@ -40,6 +41,30 @@ The measured import reduction removes40 compilations/114 module executions for
 that comparison. The successful complete local diagnostic used a1200-second
 wrapper; the repository's ten-minute hosted job remains unchanged. Hosted
 performance and pass/fail must be assessed separately.
+
+The final suite tested code `0d0c08997225f596e99dea1f96f5da8d4c3d3a70`
+using the cached Python3.12 Bookworm image
+`sha256:a5bab0ff300f91231c2e68bf73a8a8d60762ac39ce1c50eaf6803e4c38a9062b`.
+The disposable guest installed rsync, ShellCheck and jq, copied the source into
+guest scratch, initialized fixture Git metadata, then executed as UID1000:
+
+```sh
+HOME=/work/home TMPDIR=/work/tmp make -C /work/candidate check
+```
+
+The command tool's wrapper timeout was1200 seconds, not the CI job timeout.
+Observed output excerpts (exit0):
+
+```text
+review-reservation-test.py: Ran 5 tests in 72.862s — OK
+foreground-delivery-test.py: Ran 76 tests in 509.034s — OK
+import-sync tests: PASS
+OpenCode runtime probes: SKIP (set OPENCODE_V1 and OPENCODE_V2)
+python syntax: PASS (75 files)
+json syntax: PASS (12 files)
+shellcheck: PASS
+repository checks: PASS
+```
 
 ## Pinned runtime discovery experiment
 
@@ -62,6 +87,27 @@ describes `debug config` as listing configuration sources; it exposes no
 standalone flag there. That inspection command was not invoked against an
 existing managed service. No effective merged configuration API or precedence
 guarantee was inferred.
+
+Each discovery case used an empty environment except PATH and freshly created
+HOME/XDG directories, with Docker network disabled. The selected fixture placed
+a harmless `agents.qualification-only` entry in
+`XDG_CONFIG_HOME/opencode/opencode.json`; the competing fixture additionally
+placed `agents.project-only` in the working directory's `opencode.json`.
+Both agents denied all tool permissions. Invocation pattern:
+
+```sh
+opencode run --standalone --agent qualification-only \
+  --model invalid-provider/invalid-model --format json 'No provider is available.'
+# Repeat with --agent project-only in each independent fixture.
+```
+
+Every invocation had a20-second subprocess timeout and returned exit1. Empty
+cases emitted `Agent not found: "qualification-only"` / `"project-only"`.
+Selected and competing agents found by discovery emitted
+`{"type":"provider.no-route","message":"Model unavailable: invalid-provider/invalid-model"}`.
+The full fixture and sanitized observation record are retained in the consumer
+workspace's private `reviews/runtime-profile-20261104/` evidence directory.
+Those outputs establish only discovery; there was no successful model call.
 
 The experiment demonstrates that private HOME/XDG selection alone does not
 exclude project configuration. Profile digest matching remains file identity,
