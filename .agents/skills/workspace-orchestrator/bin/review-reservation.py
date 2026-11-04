@@ -74,6 +74,11 @@ def validate_links(record):
             "invalid reservation ledger")
     receipts = record.get("foreground_control", {}).get("receipts", {})
     receipt_ops = {op for op, r in receipts.items() if r["request"]["action"] in ACTIONS}
+    for op, receipt in receipts.items():
+        pointer = receipt.get("reference")
+        require(pointer is None or isinstance(pointer, dict), "malformed foreground reference")
+        if pointer is not None and pointer.get("table") == "review_reservations.admissions":
+            receipt_ops.add(op)
     if not state["admissions"]:
         require(not receipt_ops, "orphan reservation receipt")
         return
@@ -84,6 +89,7 @@ def validate_links(record):
         h.hash_value(key)
         h.fields(item, {"phase", "reserve_operation_id", "cancel_operation_id", "bundle_sha256",
                         "export_revision", "admit_operation_id", "owner", "worker", "destination"})
+        h.token(item["reserve_operation_id"])
         require(record.get("foreground_initialized") is True, "reservation lost foreground control")
         require(item["phase"] in {"RESERVED", "CANCELLED_UNCONSUMED"}, "unsupported reservation phase")
         destination(item["destination"])
@@ -164,10 +170,21 @@ def validate_artifacts(record, root):
         require(value == expected, "frozen handoff differs from retained domain context")
 
 
-def guard(record, root=None):
+def validate_integrity(record, root=None):
+    """Retained integrity, including current protocol order; not current applicability.
+
+    validate_protocol replays only begin/assign/accept and pure link derivations.
+    It never calls apply, a coordinator guard, or this reservation validator.
+    Keep it here rather than in validate_links (used by prospective writes).
+    """
     validate_links(record)
+    load("review-evidence").validate_protocol(record)
     if root is not None:
         validate_artifacts(record, root)
+
+
+def guard(record, root=None):
+    validate_integrity(record, root)
     require(not pending(record), "cancel unconsumed review reservation before mutation")
 
 

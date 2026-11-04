@@ -5,9 +5,12 @@ import contextlib
 import copy
 import importlib.util
 import io
+import json
 import os
+import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,6 +25,8 @@ c, delivery = fixture.fixture.c, fixture.fixture.delivery
 class ReservationCLI(fixture.HandoffCLI):
     def setUp(self):
         self.worker_process = None
+        if self._testMethodName == "test_reservation_absent_extension_import_sentinel":
+            return  # Structural fast-path test needs no expensive workflow fixture.
         if "dead_worker" in self._testMethodName:
             self.worker_process = subprocess.Popen([sys.executable, "-I", "-B", "-c", "import time; time.sleep(600)"])
             self.addCleanup(self.stop_worker)
@@ -120,8 +125,11 @@ class ReservationCLI(fixture.HandoffCLI):
             self.dispatch(request, expected=3)
             self.store_record(saved)
         self.dispatch(request)
+        before = self.task_path.read_bytes()
+        self.assertEqual(self.cli("state", "reconcile", "fixture"), {"changed": [], "state": "CURRENT"})
+        self.assertEqual(self.task_path.read_bytes(), before)
         saved = self.record()
-        for damage in ("marker", "ledger", "receipt", "reverse", "schema", "pointer", "worker"):
+        for damage in ("marker", "ledger", "receipt", "reverse", "schema", "pointer", "worker", "null-and-receipt"):
             changed = copy.deepcopy(saved)
             if damage == "marker":
                 del changed["review_reservations_initialized"]
@@ -133,6 +141,9 @@ class ReservationCLI(fixture.HandoffCLI):
                 changed["review_reservations"]["admissions"] = {}
             elif damage == "schema":
                 changed["review_reservations"]["schema_version"] = True
+            elif damage == "null-and-receipt":
+                changed["review_reservations"]["admissions"][self.admission_id]["reserve_operation_id"] = None
+                del changed["foreground_control"]["receipts"]["reserve"]
             else:
                 item = changed["review_reservations"]["admissions"][self.admission_id]
                 if damage == "pointer":
@@ -141,17 +152,129 @@ class ReservationCLI(fixture.HandoffCLI):
                     item["worker"]["worker_id"] = "0" * 32
             self.store_record(changed)
             self.dispatch(self.cancel_request(), expected=3)
+            self.cli("state", "reconcile", "fixture", expected=3)
             self.store_record(saved)
         for path in (self.state_root / "review-handoffs" / self.exported["bundle_sha256"],
                      self.state_root / "review-packets" / (self.exported["bundle"]["binding"]["packet"] + ".json")):
             moved = path.with_suffix(".missing")
             path.rename(moved)
             try:
+                before = self.task_path.read_bytes()
+                self.cli("state", "reconcile", "fixture", expected=3)
+                self.assertEqual(self.task_path.read_bytes(), before)
                 self.dispatch(self.cancel_request(), expected=3)
                 self.dispatch(self.export_request(), expected=3)
             finally:
                 moved.rename(path)
         self.dispatch(self.cancel_request())
+        saved = self.record()
+        changed = copy.deepcopy(saved)
+        changed["review_reservations"]["admissions"][self.admission_id]["reserve_operation_id"] = None
+        del changed["foreground_control"]["receipts"]["reserve"]
+        self.store_record(changed)
+        self.dispatch(self.export_request(), expected=3)
+        self.cli("state", "reconcile", "fixture", expected=3)
+        self.store_record(saved)
+        for epoch in (-1, 0):
+            self.assertGreater(saved["review_protocol"]["generations"][-1]["material_epoch"], epoch)
+            changed = copy.deepcopy(saved)
+            changed["review_protocol"]["material_epoch"] = epoch
+            self.store_record(changed)
+            before = self.task_path.read_bytes()
+            self.cli("state", "record", "fixture", "validation", "must refuse corrupt epoch", expected=3)
+            self.cli("state", "update-head", "fixture", self.adopted_head, expected=3)
+            self.assertEqual(self.task_path.read_bytes(), before)
+            self.store_record(saved)
+        # Valid later generation via the domain CLI must not be confused with a
+        # regressed epoch, or force the historical admission to become current.
+        generation = saved["review_protocol"]["generations"][-1]
+        begun = self.domain("review-evidence", "begin", {name: generation[name] for name in
+            ("base", "head", "packet", "policy", "obligations")}, "later-generation")
+        self.assertEqual(begun["generation"], 3)
+        self.cli("state", "record", "fixture", "validation", "later generation retained")
+        self.cli("state", "update-head", "fixture", self.adopted_head)
+        self.assertEqual(self.dispatch(self.export_request()), self.exported)
+
+    def test_reservation_execution_reconcile_public_cli_backend_fence(self):
+        self.admitted()
+        observer = delivery.dependency("execution-observe")
+        record = self.record()
+        # A valid, already-stopped historical execution predates reservation.
+        # Only the backend executable is mocked: definition/hash, task, lock,
+        # artifacts, CLI parsing, validation and persistence are production code.
+        # Harness /tmp is noexec; put this backend-only fixture in guest HOME
+        # (/work tmpfs), as with the existing executable CLI diagnostic shim.
+        executable = tempfile.TemporaryDirectory(prefix="reservation-backend-", dir=os.environ["HOME"])
+        self.addCleanup(executable.cleanup)
+        backend = Path(executable.name) / "fixture-backend"
+        calls = self.root / "backend-calls"
+        stopped = {"Id": "b" * 64, "Created": "fixture-date", "State": {"Running": False}}
+        backend.write_text("#!/bin/sh\nprintf 'inspect\\n' >> " + shlex.quote(str(calls))
+                           + "\nprintf '%s\\n' " + shlex.quote(json.dumps([stopped])) + "\n")
+        backend.chmod(0o700)
+        definition = {"schema_version": 1, "docker_binary": str(backend), "docker_sha256": c.digest(backend.read_bytes()),
+            "endpoint": "unix:///fixture-no-socket", "container_id": stopped["Id"], "created": stopped["Created"],
+            "image_id": "sha256:" + "c" * 64, "environment": [], "mounts": [],
+            "cases": [{"id": "fixture", "argv": ["/bin/true"], "expected_stdout": "", "expected_exit": 0, "timeout": 1}],
+            "head": record["head_sha"], "base": record["base_sha"],
+            "source_sha256": {"source.py": c.digest((self.worktree / "source.py").read_bytes())}}
+        raw = c.canonical(definition)
+        path = self.root / "execution-definition.json"
+        path.write_bytes(raw)
+        c.publish(self.state_root / "review-artifacts", raw)
+        attempt = {"request": {"operation_id": "historical-execution", "definition_sha256": c.digest(raw),
+            "expected_revision": record["revision"]}, "definition": definition, "phase": "UNKNOWN_STOPPED",
+            "termination": "STOPPED_OBSERVED", "owner": record["owner"], "head": record["head_sha"],
+            "base": record["base_sha"], "controller_sha256": c.digest(Path(observer.__file__).read_bytes()),
+            "cases": [], "launchers": [], "stop_observation": {
+                "container_id": stopped["Id"], "created": stopped["Created"], "running": False}}
+        record["execution_observations"] = {"historical-execution": attempt}
+        self.store_record(record)
+        observer.validate_attempts(record, self.state_root, c)
+        args = ("execution-observe", "fixture", "--operation-id", "historical-execution", "--definition", str(path),
+                "--definition-sha256", c.digest(raw), "--expected-revision", str(record["revision"]))
+        # Positive control proves this exact definition/request reaches backend
+        # and persistence (UNKNOWN_STOPPED honestly exits 3 rather than passing).
+        result = self.cli(*args, "--reconcile-stopped", expected=3)
+        self.assertEqual(result.get("phase"), "UNKNOWN_STOPPED", result)
+        self.assertEqual(self.record()["revision"], record["revision"] + 1)
+        self.assertEqual(calls.read_text(), "inspect\n")
+        self.dispatch(self.reserve_request())
+        before = self.task_path.read_bytes()
+        self.assertEqual(self.cli(*args, expected=3)["phase"], "UNKNOWN_STOPPED")
+        self.assertEqual(self.task_path.read_bytes(), before)
+        self.assertEqual(self.cli(*args, "--reconcile-stopped", expected=3)["status"], "UNVERIFIED")
+        self.assertEqual(self.task_path.read_bytes(), before)
+        self.assertEqual(calls.read_text(), "inspect\n")
+        self.dispatch(self.cancel_request())
+        handoff = self.state_root / "review-handoffs" / self.exported["bundle_sha256"]
+        missing = handoff.with_suffix(".missing")
+        handoff.rename(missing)
+        try:
+            before = self.task_path.read_bytes()
+            self.assertEqual(self.cli(*args, "--reconcile-stopped", expected=3)["status"], "UNVERIFIED")
+            self.assertEqual(self.task_path.read_bytes(), before)
+            self.assertEqual(calls.read_text(), "inspect\n")
+            self.cli("state", "reconcile", "fixture", expected=3)
+        finally:
+            missing.rename(handoff)
+        self.assertEqual(self.cli(*args, "--reconcile-stopped", expected=3)["phase"], "UNKNOWN_STOPPED")
+        self.assertEqual(calls.read_text(), "inspect\ninspect\n")
+
+    def test_reservation_absent_extension_import_sentinel(self):
+        coordinator = delivery.dependency("orchestrator-state")
+        with mock.patch.object(coordinator, "review_reservation_module", side_effect=AssertionError("unexpected import")):
+            coordinator.require_repair_settled({})
+            self.assertFalse(coordinator.has_review_reservations({"foreground_control": {"receipts": {
+                "pause": {"request": {"action": "pause"}, "reference": None}}}}))
+        for value in ({"review_reservations_initialized": None}, {"review_reservations": {}},
+                      {"foreground_control": None}, {"foreground_control": {"receipts": []}},
+                      {"foreground_control": {"receipts": {"orphan": {"request": {"action": "reserve-review-attempt"}}}}},
+                      {"foreground_control": {"receipts": {"orphan": {"request": {"action": "pause"},
+                          "reference": {"table": "review_reservations.admissions", "key": "0" * 64}}}}}):
+            self.assertTrue(coordinator.has_review_reservations(value))
+            with self.assertRaises(Exception):
+                coordinator.require_repair_settled(value)
 
     def test_reservation_capacity_write_failure_and_dead_worker_recovery(self):
         self.admitted()

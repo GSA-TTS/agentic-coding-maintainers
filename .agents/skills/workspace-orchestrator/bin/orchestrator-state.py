@@ -366,7 +366,8 @@ def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[st
         except Exception as exc:
             raise UnknownError("task candidate binding is invalid") from exc
     validate_legacy_dispositions(raw)
-    review_reservation_module().validate_links(raw)
+    if has_review_reservations(raw):
+        review_reservation_module().validate_links(raw)
     return raw
 
 
@@ -652,6 +653,31 @@ def require_execution_stopped(record: dict[str, Any]) -> None:
             raise UnknownError("execution stop observation is missing or malformed")
 
 
+def has_review_reservations(record):
+    """Cheap absence test only. Markers, orphan references and malformed control
+    shapes must reach the strict validator, never become an absent extension.
+    """
+    if "review_reservations" in record or "review_reservations_initialized" in record:
+        return True
+    control = record.get("foreground_control", {})
+    if not isinstance(control, dict):
+        return True
+    receipts = control.get("receipts", {})
+    if not isinstance(receipts, dict):
+        return True
+    for receipt in receipts.values():
+        if not isinstance(receipt, dict) or not isinstance(receipt.get("request"), dict):
+            return True
+        action = receipt["request"].get("action")
+        reference = receipt.get("reference")
+        if not isinstance(action, str) or action in {"reserve-review-attempt", "cancel-review-reservation"}:
+            return True
+        if reference is not None and (not isinstance(reference, dict)
+                or reference.get("table") == "review_reservations.admissions"):
+            return True
+    return False
+
+
 def review_reservation_module():
     source = Path(__file__).resolve().with_name("review-reservation.py")
     spec = importlib.util.spec_from_file_location("installed_review_reservation", source)
@@ -660,8 +686,13 @@ def review_reservation_module():
     return module
 
 
+def require_review_reservation_settled(record, root=None):
+    if has_review_reservations(record):
+        review_reservation_module().guard(record, root)
+
+
 def require_repair_settled(record: dict[str, Any], new_review: bool = False, root: Path | None = None) -> None:
-    review_reservation_module().guard(record, root)
+    require_review_reservation_settled(record, root)
     ledger = record.get("repair_protocol")
     if ledger is None:
         return
@@ -867,7 +898,7 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     value = safe_scope(args.value)
     with CoordinatorLock(root):
         record = read_task(root, args.task_id)
-        review_reservation_module().guard(record, root)
+        require_review_reservation_settled(record, root)
         if record["state"] in TERMINAL:
             raise BusyError("terminal task evidence is immutable")
         if args.category == "finding" and value in record[field]:
@@ -1100,6 +1131,8 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    if has_review_reservations(record):
+        review_reservation_module().validate_integrity(record, root)
     if record["transition_intent"]:
         record = finish_intent(root, record)
         verify_reservations(root, record)

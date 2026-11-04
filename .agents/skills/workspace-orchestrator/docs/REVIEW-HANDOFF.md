@@ -147,6 +147,25 @@ the historical worker/head to be current. The request still names the current ta
 incarnation/revision. Historical exports never authorize launch. Missing artifacts,
 markers, or links return `UNVERIFIED`; they are not reconstructed by replay.
 
+The original reserve operation is always a non-null token, including in cancelled
+history; removing its receipt and nulling its pointer is corruption. The shared
+guard also validates the current review protocol's epoch/generation ordering after
+cancellation, while permitting legitimate later generations. This calls the
+existing pure protocol validator, not a dispatcher or recursive mutation API.
+`state reconcile` checks reservation integrity and handoff artifacts before any
+unchanged/live or inactive return; an intact pending reservation remains a valid
+read-only reconciliation. `execution-observe --reconcile-stopped` is a mutation:
+even its historical-attempt branch checks the reservation guard before backend
+inspection or persistence. Ordinary historical execution replay keeps its existing
+read-only semantics. No stop-recovery exception is needed because reservation
+requires all previous executions to be stopped already.
+
+Coordinator guard calls first perform a structural absence check. A task with no
+reservation marker, ledger, receipt action or reverse reference avoids importing
+the extension; marker-only/ledger-only states, orphan receipts/references and
+malformed control shapes still reach strict validation. This is not a validity
+cache and cannot turn missing reservation history into a clean result.
+
 An artifact write followed by a failed task write may leave an unreferenced
 content-addressed file. It grants no reservation and is never inferred into the
 ledger. An exact retry validates it and completes durability before task persistence.
@@ -253,6 +272,39 @@ module. `tests/foreground-handoff-test.py` explicitly selects three real CLI
 fixture cases, reusing the existing test-local compile optimization without
 inheriting or rerunning other test methods. Both are included in `make test` and
 `make check`. Synthetic fixture reports confer no model or candidate-test credit.
-`tests/review-reservation-test.py` selects three additional workflow fixtures with
+`tests/review-reservation-test.py` selects four workflow fixtures and a lightweight
+structural sentinel test with
 compiled-source cache reuse: exact replay/frozen export/cancel, metadata and origin
-loss, and receipt/byte capacity, write failures and real dead-worker recovery.
+loss, receipt/byte capacity, write failures and real dead-worker recovery, plus
+the public execution-observe CLI using a backend-only fixture executable. The
+execution test proves its valid definition/request reaches inspection and writes
+before reservation, then proves pending/missing-handoff refusals perform neither.
+
+### Focused follow-up validation (2026-11-04)
+
+All commands ran in a network-off, non-root Docker sandbox with the source mounted
+read-only and copied into guest scratch. Cached image:
+`maintainer-ruff-validation@sha256:c3693f05068143e5acdf6d3c3bbd966b7fb5e4ce83a1fb1ba2567217797f3b5f`.
+
+- Before changes at `f5946a7`, `python3 -I -B
+  .agents/skills/workspace-orchestrator/tests/review-reservation-test.py`:
+  `Ran 3 tests in 108.344s`, `OK`.
+- After changes, the same command: `Ran 5 tests in 120.385s`, `OK`.
+  Selecting the original three method names (now with additional integrity
+  assertions) yielded `Ran 3 tests in 109.080s`, `OK`. These are single-run
+  measurements with changed coverage, not a claim of whole-suite acceleration.
+- `python3 -I -B .agents/skills/workspace-orchestrator/tests/execution-observe-test.py`:
+  `Ran 11 tests in 2.292s`, `OK`.
+- `PYTHONDONTWRITEBYTECODE=1 bash
+  .agents/skills/workspace-orchestrator/tests/orchestrator-state-test.sh`:
+  `orchestrator-state tests: PASS`.
+- `python3 -I -B .agents/skills/workspace-orchestrator/tests/review-evidence-test.py`:
+  `Ran 18 tests in 3.266s`, `OK`.
+
+A fresh isolated interpreter loaded `orchestrator-state.py` via importlib, then
+used `cProfile.Profile` and `time.perf_counter` around exactly 200 calls to
+`require_repair_settled({})`. Before: 1.207997 seconds, 402 `builtins.compile`
+calls (1.056 seconds in compilation). After: 0.000462 seconds, zero compilation
+calls. This specifically measures removal of repeated imports for absent
+extensions; it does not qualify the full CI runtime or model profile. No CI
+timeout was raised. Full-suite runtime remains unverified by this focused run.
