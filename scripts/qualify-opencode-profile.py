@@ -48,6 +48,123 @@ class Unverified(Exception):
     """Only fixed reason codes may cross into retained reports."""
 
 
+def unshare_user_network():
+    """One Linux syscall, no helper subprocess and no root mapping."""
+    flags = 0x10000000 | 0x40000000  # CLONE_NEWUSER | CLONE_NEWNET
+    unshare = getattr(os, "unshare", None)
+    if unshare is not None:
+        unshare(flags)
+        return
+    # Python builds without os.unshare still use the same libc entry point.
+    # CDLL(None) uses this process's libc, not a searched library pathname.
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    call = libc.unshare
+    call.argtypes = [ctypes.c_int]
+    call.restype = ctypes.c_int
+    if call(flags) != 0:
+        raise OSError(ctypes.get_errno(), "namespace syscall refused")
+
+
+def write_namespace_map(name, value):
+    # Names are internal constants; procfs mappings affect only this process's
+    # new user namespace. Single-ID maps preserve the outside filesystem owner.
+    with open("/proc/self/" + name, "w", encoding="ascii") as stream:
+        stream.write(value)
+
+
+def enable_private_loopback():
+    """Called only AFTER fresh network namespace and UID/GID checks."""
+    import fcntl
+    import socket
+    import struct
+
+    if [name for _, name in socket.if_nameindex()] != ["lo"]:
+        raise Unverified("namespace_interfaces_unexpected")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+        request = bytearray(40)  # Linux ifreq, large enough for 32/64-bit union
+        struct.pack_into("16sH", request, 0, b"lo", 0)
+        fcntl.ioctl(control.fileno(), 0x8913, request, True)  # SIOCGIFFLAGS
+        flags = struct.unpack_from("H", request, 16)[0]
+        struct.pack_into("H", request, 16, flags | 1)  # IFF_UP
+        fcntl.ioctl(control.fileno(), 0x8914, request, True)  # SIOCSIFFLAGS
+        fcntl.ioctl(control.fileno(), 0x8913, request, True)
+        if not struct.unpack_from("H", request, 16)[0] & 1:
+            raise Unverified("namespace_loopback_not_up")
+
+
+def setup_private_namespace():
+    """Irreversibly isolate this controller and all later children on Linux.
+
+    Requires unprivileged user/net namespace creation under the guest's outer
+    policy. Capabilities gained belong to the new user namespace only; UID/GID
+    remain the original nonzero IDs. No setns restore; namespace dies on exit.
+    Inspect mode never calls this function. IDs are compared, never retained.
+    """
+    if sys.platform != "linux":
+        raise Unverified("namespace_linux_required")
+    uid, gid = os.getuid(), os.getgid()
+    if uid == 0 or gid == 0 or os.geteuid() != uid or os.getegid() != gid:
+        raise Unverified("namespace_nonroot_identity_required")
+    try:
+        before_net = os.readlink("/proc/self/ns/net")
+        before_user = os.readlink("/proc/self/ns/user")
+        unshare_user_network()
+    except (OSError, AttributeError):
+        raise Unverified("namespace_creation_refused") from None
+    try:
+        after_net = os.readlink("/proc/self/ns/net")
+        after_user = os.readlink("/proc/self/ns/user")
+        if before_net == after_net or before_user == after_user:
+            raise Unverified("namespace_not_fresh")
+        write_namespace_map("setgroups", "deny\n")
+        write_namespace_map("uid_map", f"{uid} {uid} 1\n")
+        write_namespace_map("gid_map", f"{gid} {gid} 1\n")
+        if (os.getuid(), os.geteuid(), os.getgid(), os.getegid()) != (uid, uid, gid, gid):
+            raise Unverified("namespace_identity_mismatch")
+        for name, expected in (("uid_map", [str(uid), str(uid), "1"]),
+                               ("gid_map", [str(gid), str(gid), "1"]), ("setgroups", ["deny"])):
+            with open("/proc/self/" + name, encoding="ascii") as stream:
+                if stream.read(256).split() != expected:
+                    raise Unverified("namespace_mapping_mismatch")
+        # This is the first socket operation in setup, in the verified new netns.
+        enable_private_loopback()
+    except OSError:
+        raise Unverified("namespace_setup_failed") from None
+    return {"status": "VERIFIED", "network_namespace_changed": True,
+            "user_namespace_changed": True, "nonroot_identity_preserved": True,
+            "interfaces": ["lo"], "loopback_up": True}
+
+
+def exclude_secrets(value, passwords):
+    """Scan decoded keys AND values before any acceptance, logging or retention."""
+    pending = [(value, 0)]
+    count = 0
+    while pending:
+        item, depth = pending.pop()
+        count += 1
+        if depth > 128 or count > 100000:
+            raise Unverified("secret_scan_limit")
+        if isinstance(item, str):
+            if any(password and password in item for password in passwords):
+                raise Unverified("secret_in_response")
+        elif isinstance(item, dict):
+            pending.extend((part, depth + 1) for pair in item.items() for part in pair)
+        elif isinstance(item, (list, tuple)):
+            pending.extend((part, depth + 1) for part in item)
+
+
+def serialized_bytes(value, passwords=()):
+    exclude_secrets(value, passwords)
+    raw = (json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+    # Defend the final delivery boundary as well as individual response leaves.
+    if any(password.encode() in raw for password in passwords if password):
+        raise Unverified("secret_in_response")
+    exclude_secrets(parse_json(raw), passwords)
+    return raw
+
+
 def digest_file(path, limit, deadline):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
@@ -92,16 +209,20 @@ def interrupted(*_):
 
 
 class Runner:
-    def __init__(self, binary, cwd, env, deadline, commands):
+    def __init__(self, binary, cwd, env, deadline, commands, passwords=None):
         self.binary, self.cwd, self.env = str(binary), cwd, env
         self.deadline, self.commands = deadline, commands
         self.server: subprocess.Popen | None = None
+        self.passwords = passwords if passwords is not None else []
+        if env.get("OPENCODE_PASSWORD") and env["OPENCODE_PASSWORD"] not in self.passwords:
+            self.passwords.append(env["OPENCODE_PASSWORD"])
 
     def alive(self):
         if self.server is not None and self.server.poll() is not None:
             raise Unverified("owned_server_exited")
 
     def run(self, args):
+        exclude_secrets(args, self.passwords)
         self.alive()
         end = min(self.deadline, time.monotonic() + CALL_TIMEOUT)
         if end <= time.monotonic():
@@ -141,7 +262,7 @@ class Runner:
             self.alive()
             record.update(status="RETURNED", exit_code=code, bytes=sizes)
             # Never return secret-bearing output, including an accidental echo.
-            if self.env.get("OPENCODE_PASSWORD", "\x00").encode() in output:
+            if any(password.encode() in output for password in self.passwords):
                 raise Unverified("secret_in_response")
             return code, bytes(output)
         except Unverified as exc:
@@ -170,7 +291,9 @@ class Runner:
         code, raw = self.run(args)
         if code != 0:
             raise Unverified("api_cli_failed")
-        return parse_json(raw)
+        value = parse_json(raw)
+        exclude_secrets(value, self.passwords)
+        return value
 
 
 def parse_json(raw):
@@ -353,17 +476,20 @@ def check_sources(value, expected, root):
                 if row["type"] == "document" else {})} for row in sources]
 
 
-def observe_case(binary, output, case, port, deadline):
+def observe_case(binary, output, case, port, deadline, passwords=None):
     root = output / case
     root.mkdir(mode=0o700)
     env = environment(root)
     env["OPENCODE_PASSWORD"] = secrets.token_hex(32)
+    if passwords is None:
+        passwords = []
+    passwords.append(env["OPENCODE_PASSWORD"])
     nonce = secrets.token_hex(12)
     agent_id, marker = "qualification-" + nonce, "selected-" + nonce
     project, paths, expected = profiles(root, case, agent_id, marker)
     record: dict[str, Any] = {"case": case, "status": "UNVERIFIED", "commands": [], "effects": {},
               "tool_dispatch_enforcement": "UNVERIFIED", "launch_authorized": False}
-    runner = Runner(binary, project, env, deadline, record["commands"])
+    runner = Runner(binary, project, env, deadline, record["commands"], passwords)
     record["profiles_before"] = snapshot(paths, root, deadline)
     try:
         runner.start(port)
@@ -437,6 +563,11 @@ def observe_case(binary, output, case, port, deadline):
                 record.update(status="UNVERIFIED", reason="profile_changed")
         except (OSError, Unverified):
             record.update(status="UNVERIFIED", reason="cleanup_or_snapshot_failed")
+    try:
+        exclude_secrets(record, passwords)
+    except Unverified:
+        return {"case": case, "status": "UNVERIFIED", "reason": "secret_in_response",
+                "tool_dispatch_enforcement": "UNVERIFIED", "launch_authorized": False}
     return record
 
 
@@ -453,6 +584,129 @@ def positive_int(value):
     if not re.fullmatch(r"[0-9]+", value):
         raise argparse.ArgumentTypeError("positive integer required")
     return int(value)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def stage_json(output, name, value, passwords):
+    """Exclusive staging; partial files stay for diagnosis, never overwritten."""
+    raw = serialized_bytes(value, passwords)
+    if len(raw) > 1024 * 1024:
+        raise Unverified("publication_size_limit")
+    stage = output / (name + ".stage")
+    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return stage
+
+
+def publish_output(output, report, passwords):
+    """READY is linked exclusively LAST, after staged contents are fsynced.
+
+    A crash can lose the last directory entry; absence then fails closed. The
+    marker is a content-completion record, not proof of power-loss durability
+    or authenticity. No failed/partial publication is retried or merged.
+    """
+    observation = report["status"]
+    evidence = {**report, "status": "UNVERIFIED", "observation_status": observation,
+                "publication": "REQUIRES_VALID_READY", "schema_version": 2}
+    report_stage = stage_json(output, "report.json", evidence, passwords)
+    report_hash = digest_file(report_stage, 1024 * 1024, time.monotonic() + 1)
+    os.link(report_stage, output / "report.json", follow_symlinks=False)
+    manifest = {"schema_version": 2, "files": {"report.json": report_hash},
+                "raw_streams_retained": False, "runtime_cleanup": report["runtime_cleanup"]}
+    manifest_stage = stage_json(output, "manifest.json", manifest, passwords)
+    manifest_hash = digest_file(manifest_stage, 1024 * 1024, time.monotonic() + 1)
+    os.link(manifest_stage, output / "manifest.json", follow_symlinks=False)
+    ready = {"schema_version": 2, "status": observation, "manifest_sha256": manifest_hash,
+             "report_sha256": report_hash, "completion": "COMPLETE"}
+    ready_stage = stage_json(output, "READY", ready, passwords)
+    sync_directory(output)
+    # Hard-link creation is atomic and fails if the target exists. Never rename
+    # over an existing publication, and never expose partially written READY.
+    os.link(ready_stage, output / "READY", follow_symlinks=False)
+    return validate_output(output)
+
+
+def read_evidence(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+            raise Unverified("invalid_evidence_file")
+        data = bytearray()
+        while len(data) <= 1024 * 1024:
+            chunk = os.read(fd, min(65536, 1024 * 1024 + 1 - len(data)))
+            if not chunk:
+                return bytes(data)
+            data.extend(chunk)
+        raise Unverified("evidence_size_limit")
+    finally:
+        os.close(fd)
+
+
+def validate_output(output):
+    """Only this full READY -> manifest -> report check authorizes a status.
+
+    Read-only and offline. Re-read all three files to detect concurrent changes;
+    this is a snapshot check, not an atomic filesystem or authenticity guarantee.
+    No arbitrary evidence strings are echoed into the inspection result.
+    """
+    result = {"status": "UNVERIFIED", "publication": "INCOMPLETE_OR_INVALID",
+              "tool_dispatch_enforcement": "UNVERIFIED", "launch_authorized": False}
+    try:
+        output = Path(output)
+        if not output.is_absolute() or output.resolve(strict=True) != output:
+            raise Unverified("invalid_evidence_path")
+        raw = {name: read_evidence(output / name) for name in ("READY", "manifest.json", "report.json")}
+        ready, manifest, report = (parse_json(raw[name]) for name in ("READY", "manifest.json", "report.json"))
+        if (type(ready) is not dict or set(ready) != {"schema_version", "status", "manifest_sha256",
+                                                    "report_sha256", "completion"}
+                or ready["schema_version"] != 2 or ready["completion"] != "COMPLETE"
+                or ready["status"] not in ("UNVERIFIED", "PROFILE_POLICY_OBSERVED")):
+            raise Unverified("invalid_ready")
+        if (type(manifest) is not dict or set(manifest) != {"schema_version", "files", "raw_streams_retained",
+                                                          "runtime_cleanup"}
+                or manifest["schema_version"] != 2 or manifest["raw_streams_retained"] is not False
+                or manifest["files"] != {"report.json": ready["report_sha256"]}
+                or ready["report_sha256"] != hashlib.sha256(raw["report.json"]).hexdigest()
+                or ready["manifest_sha256"] != hashlib.sha256(raw["manifest.json"]).hexdigest()):
+            raise Unverified("invalid_manifest_binding")
+        if (type(report) is not dict or report.get("schema_version") != 2
+                or report.get("status") != "UNVERIFIED" or report.get("publication") != "REQUIRES_VALID_READY"
+                or report.get("observation_status") != ready["status"]
+                or report.get("launch_authorized") is not False
+                or report.get("tool_dispatch_enforcement") != "UNVERIFIED"
+                or report.get("runtime_cleanup") != manifest["runtime_cleanup"]
+                or type(report.get("cases")) is not list):
+            raise Unverified("invalid_report_binding")
+        if ready["status"] == "PROFILE_POLICY_OBSERVED":
+            if report.get("namespace") != {"status": "VERIFIED", "network_namespace_changed": True,
+                                           "user_namespace_changed": True, "nonroot_identity_preserved": True,
+                                           "interfaces": ["lo"], "loopback_up": True}:
+                raise Unverified("namespace_evidence_missing")
+            if report["runtime_cleanup"] != "removed" or verdict(report["cases"]) != ready["status"]:
+                raise Unverified("invalid_observation")
+            for row in report["cases"]:
+                if row.get("launch_authorized") is not False or row.get("tool_dispatch_enforcement") != "UNVERIFIED":
+                    raise Unverified("invalid_case_authority")
+            clean = next(row for row in report["cases"] if row["case"] == "clean")
+            if clean.get("effects") != {"read": "allow", "edit": "deny", "shell": "deny", "subagent": "deny"}:
+                raise Unverified("missing_positive_control")
+        if any(read_evidence(output / name) != data for name, data in raw.items()):
+            raise Unverified("evidence_changed")
+        result.update(status=ready["status"], publication="COMPLETE", case_count=len(report["cases"]))
+    except (OSError, Unverified, ValueError, KeyError, TypeError, AttributeError, StopIteration):
+        pass
+    return result
 
 
 def arguments(argv):
@@ -474,6 +728,14 @@ def arguments(argv):
 
 
 def main(argv=None):
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if any(arg == "--inspect-output" or arg.startswith("--inspect-output=") for arg in raw_args):
+        parser = argparse.ArgumentParser(description="Validate the complete local READY/manifest/report chain; no runtime launch")
+        parser.add_argument("--inspect-output", required=True)
+        inspection = parser.parse_args(raw_args)
+        result = validate_output(Path(inspection.inspect_output))
+        print(json.dumps(result))
+        return 0 if result["status"] == "PROFILE_POLICY_OBSERVED" else 3
     args = arguments(argv)
     report: dict[str, Any] = {"schema_version": 1, "status": "UNVERIFIED", "launch_authorized": False,
               "tool_dispatch_enforcement": "UNVERIFIED", "cases": [], "commands": [],
@@ -490,6 +752,7 @@ def main(argv=None):
     previous_umask = os.umask(0o077)
     previous_signals = {}
     runtime = ExitStack()
+    passwords = []  # All per-case passwords live only in memory, never artifacts.
     try:
         for sig in (signal.SIGTERM, signal.SIGINT):
             previous_signals[sig] = signal.signal(sig, interrupted)
@@ -508,6 +771,9 @@ def main(argv=None):
         report["binary_sha256"] = observed
         if observed != args.expected_sha:
             raise Unverified("binary_hash_mismatch")
+        # Mandatory before version/help, auth generation, server or client work.
+        # No production switch bypasses this prerequisite.
+        report["namespace"] = setup_private_namespace()
         preflight = scratch / "preflight"
         preflight.mkdir(mode=0o700)
         runner = Runner(binary, preflight, environment(preflight), deadline, report["commands"])
@@ -521,7 +787,7 @@ def main(argv=None):
         for index, case in enumerate(CASES):
             if digest_file(binary, MAX_BINARY, deadline) != observed:
                 raise Unverified("binary_changed")
-            report["cases"].append(observe_case(binary, scratch, case, args.port + index, deadline))
+            report["cases"].append(observe_case(binary, scratch, case, args.port + index, deadline, passwords))
         if digest_file(binary, MAX_BINARY, deadline) != observed:
             raise Unverified("binary_changed")
         report["status"] = verdict(report["cases"])
@@ -538,19 +804,22 @@ def main(argv=None):
         for sig, handler in previous_signals.items():
             signal.signal(sig, handler)
         os.umask(previous_umask)
+    result = {"status": "UNVERIFIED", "publication": "INCOMPLETE_OR_INVALID",
+              "tool_dispatch_enforcement": "UNVERIFIED", "launch_authorized": False,
+              "reason": report.get("reason"), "case_count": len(report["cases"])}
     if created:
         try:
-            write_json(output / "report.json", report)
-            report_hash = digest_file(output / "report.json", 1024 * 1024, time.monotonic() + 1)
-            write_json(output / "manifest.json", {"schema_version": 1, "files": {"report.json": report_hash},
-                                                  "runtime_cleanup": report["runtime_cleanup"],
-                                                  "raw_streams_retained": False})
-        except (OSError, Unverified):
-            report.update(status="UNVERIFIED", reason="report_write_failed")
+            result.update(publish_output(output, report, passwords))
+        except (OSError, Unverified, ValueError):
+            result.update(status="UNVERIFIED", reason="publication_failed")
     # Paths, response data, stdout, stderr and the synthetic password are omitted.
-    print(json.dumps({k: report[k] for k in ("status", "tool_dispatch_enforcement", "launch_authorized")}
-                     | {"reason": report.get("reason"), "case_count": len(report["cases"])}))
-    return 0 if report["status"] == "PROFILE_POLICY_OBSERVED" else 3
+    try:
+        rendered = serialized_bytes(result, passwords)
+    except Unverified:
+        rendered = b'{"status":"UNVERIFIED","reason":"secret_in_response","launch_authorized":false,"tool_dispatch_enforcement":"UNVERIFIED"}\n'
+        result["status"] = "UNVERIFIED"
+    print(rendered.decode(), end="")
+    return 0 if result["status"] == "PROFILE_POLICY_OBSERVED" else 3
 
 
 if __name__ == "__main__":

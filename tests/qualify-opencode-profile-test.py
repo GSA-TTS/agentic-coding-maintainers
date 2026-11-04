@@ -20,13 +20,17 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/qualify-opencode-profile.py"
 SPEC = importlib.util.spec_from_file_location("qualify_profile", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 Q = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(Q)
+
+NAMESPACE_PROOF = {"status": "VERIFIED", "network_namespace_changed": True,
+                   "user_namespace_changed": True, "nonroot_identity_preserved": True,
+                   "interfaces": ["lo"], "loopback_up": True}
 
 # Launched as a real child with the driver's allowlisted environment. Fixture
 # configuration is private file data, not an environment escape hatch.
@@ -143,8 +147,15 @@ elif args[0] == 'api':
                      [{'action': 'browser', 'resource': '*', 'effect': 'deny'}]) if agent else None)
         print(json.dumps({'location': {'directory': str(cwd)}, 'data': data}))
     elif path == '/api/session':
-        reply({'id': 'ses_fixture', 'agent': json.loads(args[6])['agent'],
-               'location': {'directory': str(cwd)}, 'createdAt': 123})
+        data = {'id': 'ses_fixture', 'agent': json.loads(args[6])['agent'],
+                'location': {'directory': str(cwd)}, 'createdAt': 123}
+        if mode == 'escaped_password_id':
+            data['id'] = 'ses_' + os.environ['OPENCODE_PASSWORD']
+            raw = json.dumps({'data': data})
+            encoded = ''.join('\\u%04x' % ord(char) for char in os.environ['OPENCODE_PASSWORD'])
+            print(raw.replace(os.environ['OPENCODE_PASSWORD'], encoded))
+        else:
+            reply(data)
     elif path == '/api/session/ses_fixture/permission':
         request = json.loads(args[6])
         action = request['action']
@@ -163,6 +174,10 @@ else:
 
 class QualificationTest(unittest.TestCase):
     def setUp(self):
+        # Test-owned injection only: never change the unittest process namespace.
+        namespace = patch.object(Q, "setup_private_namespace", return_value=dict(NAMESPACE_PROOF))
+        self.namespace_setup = namespace.start()
+        self.addCleanup(namespace.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="profile-test-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -354,7 +369,9 @@ class QualificationTest(unittest.TestCase):
 
     def test_inherited_pipe_descendant_is_killed(self):
         runner = self.runner("descendant")
-        with patch.object(Q, "CALL_TIMEOUT", 0.2):
+        # Allow the real guest interpreter time to create the descendant under
+        # CPU contention; still assert the owned inherited pipe hits a deadline.
+        with patch.object(Q, "CALL_TIMEOUT", 1):
             with self.assertRaisesRegex(Q.Unverified, "command_timeout"):
                 runner.api(28763, "GET", "/api/config")
         pid = int((runner.cwd / "child.pid").read_text())
@@ -546,7 +563,11 @@ class QualificationTest(unittest.TestCase):
         self.assertEqual(manifest["files"]["report.json"], hashlib.sha256(report_bytes).hexdigest())
         self.assertFalse(manifest["raw_streams_retained"])
         self.assertEqual(manifest["runtime_cleanup"], "removed")
-        self.assertEqual({p.name for p in self.output.iterdir()}, {"report.json", "manifest.json"})
+        self.assertEqual({p.name for p in self.output.iterdir()},
+                         {"report.json", "manifest.json", "READY", "report.json.stage", "manifest.json.stage", "READY.stage"})
+        report = json.loads(report_bytes)
+        self.assertEqual(report["status"], "UNVERIFIED")
+        self.assertEqual(report["publication"], "REQUIRES_VALID_READY")
         self.assertFalse(list(self.output.rglob("*.log")))
         self.assertNotIn(b"server password ", report_bytes)
 
@@ -561,6 +582,262 @@ class QualificationTest(unittest.TestCase):
         link.symlink_to(path)
         with self.assertRaises(OSError):
             Q.digest_file(link, 10, time.monotonic() + 1)
+
+    def test_unicode_escaped_password_id_never_reaches_permission_command(self):
+        password = "a1b2c3d4" * 8
+        with patch.object(Q.secrets, "token_hex", side_effect=[password, "f" * 24]):
+            row = self.observe(mode="escaped_password_id")
+        self.assertEqual(row["status"], "UNVERIFIED")
+        self.assertEqual(row["reason"], "secret_in_response")
+        self.assertFalse(any("/permission" in arg for command in row["commands"] for arg in command["argv"]))
+        self.assertNotIn(password, json.dumps(row))
+        self.assertFalse(row["effects"])
+
+    def test_decoded_secret_scan_covers_nested_values_and_keys(self):
+        for value in ({"outer": [{"ses_secret-value": 1}]}, {"outer": [{"id": "ses_secret-value"}]}):
+            with self.subTest(value=value), self.assertRaisesRegex(Q.Unverified, "secret_in_response"):
+                Q.exclude_secrets(value, ["secret-value"])
+
+    def test_command_secret_guard_precedes_logging_and_launch(self):
+        runner = self.runner()
+        with patch.object(Q.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(Q.Unverified, "secret_in_response"):
+                runner.run(["api", "/api/session/ses_" + runner.env["OPENCODE_PASSWORD"]])
+            launch.assert_not_called()
+        self.assertEqual(runner.commands, [])
+
+    def publication_report(self):
+        return {"schema_version": 1, "status": "PROFILE_POLICY_OBSERVED", "runtime_cleanup": "removed",
+                "namespace": dict(NAMESPACE_PROOF),
+                "launch_authorized": False, "tool_dispatch_enforcement": "UNVERIFIED", "cases": [
+                    {"case": case, "status": status, "launch_authorized": False,
+                     "tool_dispatch_enforcement": "UNVERIFIED",
+                     "effects": {"read": "allow", "edit": "deny", "shell": "deny", "subagent": "deny"}}
+                    for case, status in (("clean", "PROFILE_POLICY_OBSERVED"),
+                                         ("conflict", "PROFILE_CONTAMINATION_DETECTED"),
+                                         ("missing", "CANNOT_QUALIFY"), ("malformed", "CANNOT_QUALIFY"))]}
+
+    def test_final_serialization_rejects_prior_case_password_before_writing(self):
+        self.output.mkdir()
+        report = self.publication_report()
+        report["reason"] = "prior-case-secret"
+        with self.assertRaisesRegex(Q.Unverified, "secret_in_response"):
+            Q.publish_output(self.output, report, ["current-secret", "prior-case-secret"])
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def test_completion_validation_and_inspection_cli(self):
+        self.output.mkdir()
+        result = Q.publish_output(self.output, self.publication_report(), [])
+        self.assertEqual(result["status"], "PROFILE_POLICY_OBSERVED")
+        self.assertEqual(json.loads((self.output / "report.json").read_text())["status"], "UNVERIFIED")
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), patch.object(Q.subprocess, "Popen") as launch:
+            code = Q.main(["--inspect-output", str(self.output)])
+            launch.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["publication"], "COMPLETE")
+
+    def test_inspection_rejects_execution_arguments(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            Q.main(["--inspect-output", str(self.output), "--binary", str(self.binary)])
+
+    def test_publication_faults_never_leave_authoritative_success(self):
+        real_fsync, real_link, real_digest = Q.os.fsync, Q.os.link, Q.digest_file
+        for fault in ("hash", "manifest_fsync", "ready_fsync", "directory_fsync", "ready_link"):
+            with self.subTest(fault=fault):
+                output = self.root / fault
+                output.mkdir()
+                calls = 0
+
+                def fsync(fd):
+                    nonlocal calls
+                    calls += 1
+                    if calls == {"manifest_fsync": 2, "ready_fsync": 3, "directory_fsync": 4}.get(fault):
+                        raise OSError("fixture fsync failure")
+                    return real_fsync(fd)
+
+                def link(source, target, **kwargs):
+                    if fault == "ready_link" and Path(target).name == "READY":
+                        raise OSError("fixture ready failure")
+                    return real_link(source, target, **kwargs)
+
+                def digest(path, *args):
+                    if fault == "hash":
+                        raise Q.Unverified("fixture_hash_failure")
+                    return real_digest(path, *args)
+
+                with patch.object(Q.os, "fsync", side_effect=fsync), patch.object(Q.os, "link", side_effect=link), \
+                        patch.object(Q, "digest_file", side_effect=digest):
+                    with self.assertRaises((OSError, Q.Unverified)):
+                        Q.publish_output(output, self.publication_report(), [])
+                self.assertFalse((output / "READY").exists())
+                self.assertEqual(Q.validate_output(output)["status"], "UNVERIFIED")
+                for path in output.glob("report.json*"):
+                    self.assertEqual(json.loads(path.read_text())["status"], "UNVERIFIED")
+                before = {p.name: p.read_bytes() for p in output.iterdir()}
+                with self.assertRaises(FileExistsError):
+                    Q.publish_output(output, self.publication_report(), [])
+                self.assertEqual({p.name: p.read_bytes() for p in output.iterdir()}, before)
+
+    def test_validator_rejects_missing_corrupt_or_mismatched_artifacts(self):
+        self.assertEqual(Q.validate_output(self.output)["status"], "UNVERIFIED")
+        for name in ("READY", "manifest.json", "report.json"):
+            for change in ("missing", "corrupt", "tamper"):
+                with self.subTest(name=name, change=change):
+                    output = self.root / (name + "-" + change)
+                    output.mkdir()
+                    Q.publish_output(output, self.publication_report(), [])
+                    path = output / name
+                    if change == "missing":
+                        path.unlink()
+                    elif change == "corrupt":
+                        path.write_text("{")
+                    else:
+                        path.write_bytes(path.read_bytes() + b" ")
+                        if name == "READY":
+                            value = json.loads(path.read_text())
+                            value["report_sha256"] = "0" * 64
+                            path.write_text(json.dumps(value))
+                    self.assertEqual(Q.validate_output(output)["status"], "UNVERIFIED")
+
+    def test_main_reports_failure_if_ready_publication_fails(self):
+        self.mode.write_text("malformed_ignored")
+        real_link = Q.os.link
+
+        def link(source, target, **kwargs):
+            if Path(target).name == "READY":
+                raise OSError("fixture ready failure")
+            return real_link(source, target, **kwargs)
+
+        with patch.object(Q.os, "link", side_effect=link):
+            code, summary = self.invoke()
+        self.assertEqual(code, 3)
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertEqual(summary["reason"], "publication_failed")
+        report = json.loads((self.output / "report.json").read_text())
+        self.assertEqual(report["observation_status"], "PROFILE_POLICY_OBSERVED")
+        self.assertEqual(report["status"], "UNVERIFIED")
+        self.assertEqual(Q.validate_output(self.output)["status"], "UNVERIFIED")
+
+    def test_password_excluded_from_all_published_artifacts(self):
+        self.mode.write_text("escaped_password_id")
+        passwords = [format(index, "064x") for index in range(1, 5)]
+        tokens = [token for password in passwords for token in (password, "f" * 24)]
+        with patch.object(Q.secrets, "token_hex", side_effect=tokens):
+            code, summary = self.invoke()
+        self.assertEqual(code, 3)
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        for path in self.output.iterdir():
+            if path.is_file():
+                raw = path.read_bytes()
+                for password in passwords:
+                    self.assertNotIn(password.encode(), raw)
+                Q.exclude_secrets(json.loads(raw), passwords)
+
+    def test_validator_refuses_evidence_symlink(self):
+        self.output.mkdir()
+        Q.publish_output(self.output, self.publication_report(), [])
+        (self.output / "READY").unlink()
+        (self.output / "READY").symlink_to(self.output / "READY.stage")
+        self.assertEqual(Q.validate_output(self.output)["status"], "UNVERIFIED")
+
+    def test_namespace_failure_precedes_all_runtime_and_auth_work(self):
+        self.namespace_setup.side_effect = Q.Unverified("namespace_creation_refused")
+        with patch.object(Q.subprocess, "Popen") as launch, patch.object(Q.secrets, "token_hex") as password:
+            code, summary = self.invoke()
+            launch.assert_not_called()
+            password.assert_not_called()
+        self.assertEqual((code, summary["reason"]), (3, "namespace_creation_refused"))
+        report = json.loads((self.output / "report.json").read_text())
+        self.assertEqual(report["commands"], [])
+        self.assertEqual(report["cases"], [])
+
+    def test_version_child_requires_namespace_setup_first(self):
+        self.mode.write_text("version")
+        original = Q.Runner.run
+
+        def run(runner, args):
+            self.namespace_setup.assert_called_once_with()
+            return original(runner, args)
+
+        with patch.object(Q.Runner, "run", run):
+            self.invoke()
+
+    def test_inspection_never_creates_namespace(self):
+        self.output.mkdir()
+        Q.publish_output(self.output, self.publication_report(), [])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(Q.main(["--inspect-output", str(self.output)]), 0)
+        self.namespace_setup.assert_not_called()
+
+    def test_publication_without_namespace_proof_cannot_validate_success(self):
+        self.output.mkdir()
+        report = self.publication_report()
+        del report["namespace"]
+        self.assertEqual(Q.publish_output(self.output, report, [])["status"], "UNVERIFIED")
+
+
+class NamespaceSetupTest(unittest.TestCase):
+    """Exercise ordering/refusal without creating sockets or real namespaces."""
+
+    def setUp(self):
+        for name, value in (("getuid", 502), ("geteuid", 502), ("getgid", 20), ("getegid", 20)):
+            handle = patch.object(Q.os, name, return_value=value)
+            handle.start()
+            self.addCleanup(handle.stop)
+        platform = patch.object(Q.sys, "platform", "linux")
+        platform.start()
+        self.addCleanup(platform.stop)
+
+    def test_refused_unshare_never_maps_or_opens_socket(self):
+        with patch.object(Q.os, "readlink", side_effect=["net:[1]", "user:[1]"]), \
+                patch.object(Q, "unshare_user_network", side_effect=PermissionError()), \
+                patch.object(Q, "write_namespace_map") as maps, \
+                patch.object(Q, "enable_private_loopback") as loopback:
+            with self.assertRaisesRegex(Q.Unverified, "namespace_creation_refused"):
+                Q.setup_private_namespace()
+            maps.assert_not_called()
+            loopback.assert_not_called()
+
+    def test_unchanged_namespace_refused_before_socket(self):
+        with patch.object(Q.os, "readlink", side_effect=["net:[1]", "user:[1]", "net:[1]", "user:[2]"]), \
+                patch.object(Q, "unshare_user_network"), patch.object(Q, "write_namespace_map") as maps, \
+                patch.object(Q, "enable_private_loopback") as loopback:
+            with self.assertRaisesRegex(Q.Unverified, "namespace_not_fresh"):
+                Q.setup_private_namespace()
+            maps.assert_not_called()
+            loopback.assert_not_called()
+
+    def test_maps_original_nonzero_ids_before_loopback(self):
+        events = []
+        maps = {"uid_map": "502 502 1\n", "gid_map": "20 20 1\n", "setgroups": "deny\n"}
+
+        def read_map(path, **kwargs):
+            return mock_open(read_data=maps[Path(path).name])()
+
+        with patch.object(Q.os, "readlink", side_effect=["net:[1]", "user:[1]", "net:[2]", "user:[2]"]), \
+                patch.object(Q, "unshare_user_network", side_effect=lambda: events.append("unshare")), \
+                patch.object(Q, "write_namespace_map", side_effect=lambda name, value: events.append((name, value))), \
+                patch("builtins.open", side_effect=read_map), \
+                patch.object(Q, "enable_private_loopback", side_effect=lambda: events.append("loopback")):
+            self.assertEqual(Q.setup_private_namespace(), NAMESPACE_PROOF)
+        self.assertEqual(events, ["unshare", ("setgroups", "deny\n"), ("uid_map", "502 502 1\n"),
+                                  ("gid_map", "20 20 1\n"), "loopback"])
+
+    def test_mapping_failure_never_opens_socket(self):
+        with patch.object(Q.os, "readlink", side_effect=["net:[1]", "user:[1]", "net:[2]", "user:[2]"]), \
+                patch.object(Q, "unshare_user_network"), \
+                patch.object(Q, "write_namespace_map", side_effect=PermissionError()), \
+                patch.object(Q, "enable_private_loopback") as loopback:
+            with self.assertRaisesRegex(Q.Unverified, "namespace_setup_failed"):
+                Q.setup_private_namespace()
+            loopback.assert_not_called()
+
+    def test_root_identity_refused_before_unshare(self):
+        with patch.object(Q.os, "getuid", return_value=0), patch.object(Q, "unshare_user_network") as unshare:
+            with self.assertRaisesRegex(Q.Unverified, "namespace_nonroot_identity_required"):
+                Q.setup_private_namespace()
+            unshare.assert_not_called()
 
 
 if __name__ == "__main__":
