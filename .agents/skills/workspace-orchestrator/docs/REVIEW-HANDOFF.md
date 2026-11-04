@@ -26,7 +26,8 @@ Export creates no task receipt, revision, packet or artifact-store entry. It use
 the existing coordinator lock, whose acquisition/release creates and removes an
 **ephemeral lock directory**. “Read-only” describes authoritative task/artifact
 state, not an absence of these lock filesystem operations. There is no unlocked
-mode. A repeat revalidates current state; it is not historical receipt replay.
+mode. Before reservation, a repeat revalidates current state. After reservation,
+export returns the validated frozen historical bundle described below.
 
 Success is `REVIEW_HANDOFF_EXPORTED` with `bundle` and `bundle_sha256`. Save only
 the `bundle` object as JSON in operator-selected private staging. The hash is over
@@ -81,6 +82,97 @@ ancestor directories outside the mount and future tool conventions remain the
 operator's responsibility. Original repository names remain untrusted metadata.
 
 ## Guest materialization
+
+### Controller reservation (groundwork; launch remains BLOCKED_PROFILE)
+
+The same foreground envelope accepts `reserve-review-attempt` with exactly:
+
+```json
+{
+  "admission_id": "<admission SHA256>",
+  "bundle_sha256": "<current canonical export SHA256>",
+  "destination": {
+    "backend": "docker",
+    "sandbox_id": "<opaque bounded identity>",
+    "created": "2026-11-04T00:00:00Z",
+    "endpoint_sha256": "<operator endpoint identity SHA256>",
+    "result_root": "/review-results/attempt"
+  }
+}
+```
+
+Backend is exactly `docker` or `msb`. Sandbox identity is an ASCII token (at most
+80 characters); creation identity is a UTC timestamp with optional fractional
+seconds; endpoint identity is a SHA256, never a URL, socket, credential or command.
+The result root is one bounded token below `/review-results/`. These fields are
+operator declarations, **not verified sandbox identity or an executable route**.
+No backend is contacted and no result directory is created.
+
+Reservation first exports the **current** prepared admission under the existing
+lock and all current exporter prerequisites. The caller's hash must match exactly.
+It retains canonical bundle bytes as a private `0400` content-addressed file under
+`review-handoffs/`, fsyncs the file/store/root, then persists one admission-keyed
+task entry and one reverse-linked foreground receipt. Entry fields retain the
+original export revision, bundle pointer, original owner/full worker snapshot,
+destination and admit-operation pointer; worker/endpoint metadata never enters
+the export bundle. The initialization marker, schema, domain links and both receipt
+directions are validated, including on shared lifecycle mutation paths.
+
+Only `RESERVED` and `CANCELLED_UNCONSUMED` exist. One admission can be reserved
+**once forever**, including after cancellation: another operation ID, request-file
+path or destination cannot reserve it again. Exact operation replay acknowledges
+retained history only. Exports and reservation results always carry
+`replay_only: true`, `launch_authorized: false`, and `launch_gate: BLOCKED_PROFILE`.
+There is no production consume/spawn action or profile bypass. This establishes
+reservation groundwork, **not at-most-once inference**.
+
+`cancel-review-reservation` takes exactly `{"admission_id": "<digest>"}` at the
+current task revision. Cancellation validates retained artifacts, domain links,
+capacity reservations and exact original owner/full worker, but does not require
+that worker to remain alive. It works while paused. A dead owner does not free
+capacity until cancellation permits ordinary coordinator reconciliation.
+Pause remains available subject to receipt capacity. Each pending reservation
+reserves one cancellation receipt slot and projects maximum-size cancellation
+metadata through the production serialized task-size limits; other actions cannot
+spend that capacity. Cancellation neither releases coordinator leases nor asserts
+anything about a spawned process: no consumer exists. Reserved admissions cannot
+acquire runtime collections or reports even after cancellation.
+
+Pending reservations block lifecycle, head and evidence mutations through the
+shared guard. After cancellation, those ordinary APIs are available again. Export
+of a reserved admission continues to return the **original canonical bundle bytes**
+after pause, cancellation, reclaim or generation/head supersession. It validates
+the retained packet, bundle hash and domain references, but no longer requires
+the historical worker/head to be current. The request still names the current task
+incarnation/revision. Historical exports never authorize launch. Missing artifacts,
+markers, or links return `UNVERIFIED`; they are not reconstructed by replay.
+
+The original reserve operation is always a non-null token, including in cancelled
+history; removing its receipt and nulling its pointer is corruption. The shared
+guard also validates the current review protocol's epoch/generation ordering after
+cancellation, while permitting legitimate later generations. This calls the
+existing pure protocol validator, not a dispatcher or recursive mutation API.
+`state reconcile` checks reservation integrity and handoff artifacts before any
+unchanged/live or inactive return; an intact pending reservation remains a valid
+read-only reconciliation. `execution-observe --reconcile-stopped` is a mutation:
+even its historical-attempt branch checks the reservation guard before backend
+inspection or persistence. Ordinary historical execution replay keeps its existing
+read-only semantics. No stop-recovery exception is needed because reservation
+requires all previous executions to be stopped already.
+
+Coordinator guard calls first perform a structural absence check. A task with no
+reservation marker, ledger, receipt action or reverse reference avoids importing
+the extension; marker-only/ledger-only states, orphan receipts/references and
+malformed control shapes still reach strict validation. This is not a validity
+cache and cannot turn missing reservation history into a clean result.
+
+An artifact write followed by a failed task write may leave an unreferenced
+content-addressed file. It grants no reservation and is never inferred into the
+ledger. An exact retry validates it and completes durability before task persistence.
+The controller lock is cooperative; rollback of all authoritative state or a
+malicious same-UID writer is outside this consistency protocol's guarantees.
+
+### Materialization CLI
 
 Install trusted `review-materialize.py`, `review-handoff.py` and `review-source-map.py` together outside
 candidate mounts. Example (all CLI paths are trusted operator choices):
@@ -180,3 +272,97 @@ module. `tests/foreground-handoff-test.py` explicitly selects three real CLI
 fixture cases, reusing the existing test-local compile optimization without
 inheriting or rerunning other test methods. Both are included in `make test` and
 `make check`. Synthetic fixture reports confer no model or candidate-test credit.
+`tests/review-reservation-test.py` selects four workflow fixtures and a lightweight
+structural sentinel test with
+compiled-source cache reuse: exact replay/frozen export/cancel, metadata and origin
+loss, receipt/byte capacity, write failures and real dead-worker recovery, plus
+the public execution-observe CLI using a backend-only fixture executable. The
+execution test proves its valid definition/request reaches inspection and writes
+before reservation, then proves pending/missing-handoff refusals perform neither.
+
+### Focused follow-up validation (2026-11-04)
+
+All commands ran in a network-off, non-root Docker sandbox with the source mounted
+read-only and copied into guest scratch. Cached image:
+`maintainer-ruff-validation@sha256:c3693f05068143e5acdf6d3c3bbd966b7fb5e4ce83a1fb1ba2567217797f3b5f`.
+
+- Before changes at `f5946a7`, `python3 -I -B
+  .agents/skills/workspace-orchestrator/tests/review-reservation-test.py`:
+  `Ran 3 tests in 108.344s`, `OK`.
+- After changes, the same command: `Ran 5 tests in 120.385s`, `OK`.
+  Selecting the original three method names (now with additional integrity
+  assertions) yielded `Ran 3 tests in 109.080s`, `OK`. These are single-run
+  measurements with changed coverage, not a claim of whole-suite acceleration.
+- `python3 -I -B .agents/skills/workspace-orchestrator/tests/execution-observe-test.py`:
+  `Ran 11 tests in 2.292s`, `OK`.
+- `PYTHONDONTWRITEBYTECODE=1 bash
+  .agents/skills/workspace-orchestrator/tests/orchestrator-state-test.sh`:
+  `orchestrator-state tests: PASS`.
+- `python3 -I -B .agents/skills/workspace-orchestrator/tests/review-evidence-test.py`:
+  `Ran 18 tests in 3.266s`, `OK`.
+
+A fresh isolated interpreter loaded `orchestrator-state.py` via importlib, then
+used `cProfile.Profile` and `time.perf_counter` around exactly 200 calls to
+`require_repair_settled({})`. Before: 1.207997 seconds, 402 `builtins.compile`
+calls (1.056 seconds in compilation). After: 0.000462 seconds, zero compilation
+calls. This specifically measures removal of repeated imports for absent
+extensions; it does not qualify the full CI runtime or model profile. No CI
+timeout was raised. Full-suite runtime remains unverified by this focused run.
+
+### Absent-history dispatcher follow-up
+
+`reservation-history.py::has_reservation_history` is the central, import-free,
+I/O-free structural predicate. Both dispatcher and coordinator load this small
+definition with their installed code. Foreground retention, pending counts,
+mutation fencing, export and post-write budget checks use it before importing
+the heavy reservation helper. There is no production module/evidence cache.
+New reservation actions still run the strict helper even on an absent ledger.
+All original fixture assertions remain; a nested-loader regression rejects *any*
+reservation-helper import during absent-history status/export/mutation/validation.
+
+Profile case (unchanged original receipt-history fixture):
+`test_last_slot_cannot_reconcile_completed_application_instead_of_pending`.
+This creates two repair histories and fills the shared receipt budget. In one
+network-off Docker sandbox, local Git archives of `dcfbb63` and `a03e192`, followed
+by the edited tree, ran consecutively using
+`foreground-diagnostic-benchmark.py --profile --case <case>`. Existing test-local
+compiled-source reuse stayed enabled; each profile captured the parent and all
+20 real foreground CLI children. No full suite or increased timeout was used.
+
+| Revision | Fixture wall seconds | Child compile calls | Child profile seconds | Child module exec calls |
+| --- | ---: | ---: | ---: | ---: |
+| `dcfbb63` | 41.930 | 299 | 4.878845 | 1428 |
+| `a03e192` | 33.214 | 359 | 3.892379 | 1641 |
+| Edited tree | 35.044 | 319 | 3.776324 | 1527 |
+
+All three passed, zero skips, with identical command counts: 20 foreground,
+29 Git, 2 ps, 1 collection, 5 review-evidence, 10 state. Child compile self time:
+2.281811 / 2.063939 / 1.819105 seconds respectively. Parent compile counts were
+12 / 13 / 11; parent module exec counts were 5318 / 5866 / 5488. Parent fixture
+imports share the benchmark interpreter in this consecutive measurement; the
+foreground children are fresh processes. The remaining +20 child compilations
+over base are one small shared predicate module per child. Unnecessary protocol
+validation is also gone on absent histories (268 child calls, matching base,
+versus 281 in the prior separately profiled run).
+
+The compile/import regression is reduced, but these wall measurements do **not**
+prove the reported full-suite timeout resolved: the prior tree was not slower
+than base in this case. Publish readiness remains blocked on that unresolved
+runtime evidence. Do not extrapolate this profile to a whole-suite time.
+
+Execution environment detail matters: `TMPDIR=/work/tmp` places executable fixture
+shims on the guest's executable tmpfs. The harness `/tmp` is `noexec`; an initial
+attempt there passed the base test in 73.085s but could not retrieve child profile
+files because the shim was not executed. That incomplete measurement is excluded.
+An earlier valid base/prior pair in one sandbox gave 46.972s / 46.340s and the same
+299 / 359 child compile counts, reinforcing that this case did not reproduce the
+reported timeout. A separate edited-tree profile gave 49.943s / 319 compilations.
+
+Targeted edited-tree checks, same pinned image and executable guest TMPDIR:
+
+- `review-reservation-test.py`: 5 tests, 207.552s, OK (includes nested import and
+  orphan/malformed fast-path assertions).
+- `foreground-delivery-test.py ForegroundTests.test_receipt_budget_keeps_exact_replay_and_read_only_status`:
+  1 test, 3.811s, OK.
+- `foreground-handoff-test.py`: 3 tests, 32.433s, OK.
+- `orchestrator-state-test.sh`: PASS.

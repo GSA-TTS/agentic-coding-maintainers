@@ -24,7 +24,8 @@ DOMAIN_ACTIONS = {"collect-review": "collect", "accept-review": "accept-collecte
                   "admit-owner-proposal": "admit", "collect-owner-proposal": "collect"}
 REPAIR_ACTIONS = {"apply-owner-proposal", "reconcile-owner-proposal"}
 PREPARED_ACTIONS = {"assign-prepared-review", "admit-prepared-review"}
-ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | PREPARED_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head", "prepare-repaired-review", "export-admitted-review"}
+RESERVATION_ACTIONS = {"reserve-review-attempt", "cancel-review-reservation"}
+ACTIONS = set(DOMAIN_ACTIONS) | REPAIR_ACTIONS | PREPARED_ACTIONS | RESERVATION_ACTIONS | {"prepare-correction", "pause", "resume", "status", "adopt-owner-repair-head", "prepare-repaired-review", "export-admitted-review"}
 PROPOSAL_FIELDS = {"correction_id", "session", "model", "agent", "binary_sha256",
                    "profile_sha256", "cwd", "sources"}
 
@@ -37,6 +38,13 @@ def dependency(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+has_reservation_history = dependency("reservation-history").has_reservation_history
+
+
+def reservation_pending(record):
+    return dependency("review-reservation").pending(record) if has_reservation_history(record) else 0
 
 
 def validate_request(request, c, e):
@@ -60,8 +68,13 @@ def validate_request(request, c, e):
         {"apply_operation_id"} if action == "reconcile-owner-proposal" else set())))
     if action in PREPARED_ACTIONS:
         expected = ({"prepare_operation_id", "run_id", "reviewer", "profile", "session"} if action == "assign-prepared-review"
-                    else {"assign_operation_id", "binary_sha256", "model", "agent", "cwd", "sources"})
+                     else {"assign_operation_id", "binary_sha256", "model", "agent", "cwd", "sources"})
+    if action in RESERVATION_ACTIONS:
+        expected = {"admission_id"} | ({"bundle_sha256", "destination"} if action == "reserve-review-attempt" else set())
     c.fields(payload, expected)
+    if action == "reserve-review-attempt":
+        e.hash_value(payload["bundle_sha256"])
+        dependency("review-reservation").destination(payload["destination"])
     if action == "assign-prepared-review":
         for name in ("prepare_operation_id", "run_id", "reviewer"):
             e.token(payload[name])
@@ -133,6 +146,11 @@ def acknowledgement(request, domain_result):
 def referenced_result(record, request, reference, c, root):
     """Resolve a receipt through already-validated authoritative domain history."""
     action, operation = request["action"], request["operation_id"]
+    if action in RESERVATION_ACTIONS:
+        reservation = dependency("review-reservation")
+        if reference != reservation.reference(request["payload"]["admission_id"]):
+            raise c.Unverified("reservation reference differs")
+        return reservation.result(request)
     if action in PREPARED_ACTIONS:
         return dependency("foreground-admission").retained(record, request, reference)
     if action == "prepare-repaired-review":
@@ -194,6 +212,10 @@ def validate_retained(record, root, c, e):
     if "repair_proposals" in record:
         dependency("repair-proposal").validate(record, root)
     dependency("repair-apply").validate_retained(record, root)
+    if has_reservation_history(record):
+        reservation = dependency("review-reservation")
+        reservation.validate_links(record)
+        reservation.validate_artifacts(record, root)
     initialized = record.get("foreground_initialized")
     if "foreground_initialized" in record and initialized is not True:
         raise c.Unverified("invalid foreground initialization marker")
@@ -236,7 +258,7 @@ def validate_retained(record, root, c, e):
     for _, action in sorted(ordered):
         if action in {"pause", "resume"}:
             paused = action == "pause"
-        elif paused and action != "reconcile-owner-proposal":
+        elif paused and action not in {"reconcile-owner-proposal", "cancel-review-reservation"}:
             raise c.Unverified("foreground action recorded while dispatcher paused")
     if state["paused"] != paused:
         raise c.Unverified("pause state differs from retained receipts")
@@ -367,7 +389,9 @@ def status(record, state):
             "paused": state["paused"], "pause_scope": "dispatcher-only",
             "receipt_count": len(state["receipts"]) + dependency("foreground-repair").count(record),
             "next_action": next_action,
-            "preparation_progress": dependency("foreground-admission").progress(record),
+             "preparation_progress": dependency("foreground-admission").progress(record),
+             "review_reservations_pending": reservation_pending(record),
+             "launch_authorized": False, "launch_gate": "BLOCKED_PROFILE",
             "review_claims": review, "candidate_ready": False,
             "execution_credit": False, "delivery_credit": False}
 
@@ -411,6 +435,13 @@ def dispatch(record, request, root, bundle=None, persist=None):
         raise c.Unverified("bundle requires a collection action")
     if action == "export-admitted-review":
         # Read operations never replay mutation receipts or consume receipt capacity.
+        reservation = dependency("review-reservation") if has_reservation_history(record) else None
+        retained = reservation.ledger(record)["admissions"].get(request["payload"]["admission_id"]) if reservation else None
+        if retained is not None:
+            if request["expected_revision"] != record["revision"]:
+                raise c.Unverified("export requires current request revision")
+            return record, dependency("review-handoff").response(
+                reservation.read_bundle(root, retained["bundle_sha256"])), False
         if (request["expected_revision"] != record["revision"] or state["paused"]
                 or record["state"] != "Implementing" or record.get("transition_intent")):
             raise c.Unverified("export requires current unpaused implementation admission")
@@ -437,7 +468,9 @@ def dispatch(record, request, root, bundle=None, persist=None):
         raise c.Unverified("task is not admitted for foreground mutation")
     coordinator = dependency("orchestrator-state")
     coordinator.require_execution_stopped(record)
-    if action not in {"pause", "resume", "reconcile-owner-proposal"}:
+    if action not in {"pause", "resume", "cancel-review-reservation"} and has_reservation_history(record):
+        dependency("review-reservation").guard(record, root)
+    if action not in {"pause", "resume", "reconcile-owner-proposal", "cancel-review-reservation"}:
         coordinator.require_repair_settled(record, root=root)
         if repair_bridge.pending(record):
             raise c.Unverified("foreground repair requires reconciliation")
@@ -446,10 +479,12 @@ def dispatch(record, request, root, bundle=None, persist=None):
     receipt_count = len(state["receipts"]) + repair_bridge.count(record)
     if receipt_count >= MAX_RECEIPTS:
         raise c.Unverified("foreground receipt budget exhausted")
+    if action != "cancel-review-reservation" and receipt_count + reservation_pending(record) >= MAX_RECEIPTS:
+        raise c.Unverified("remaining receipt slots reserved for cancellation")
     if (not repair_bridge.targets_pending(record, request) and repair_bridge.pending(record)
             and receipt_count >= MAX_RECEIPTS - 1):
         raise c.Unverified("final receipt slot requires reconciliation of a pending application")
-    if state["paused"] and action not in {"pause", "resume", "reconcile-owner-proposal"}:
+    if state["paused"] and action not in {"pause", "resume", "reconcile-owner-proposal", "cancel-review-reservation"}:
         raise c.Unverified("foreground dispatcher is paused")
     operation = request["operation_id"]
     if operation.startswith(repair_bridge.PREFIX):
@@ -467,7 +502,9 @@ def dispatch(record, request, root, bundle=None, persist=None):
         return record, repair_bridge.run(record, request, root, persist, state), False
     # Never hand the caller's object to an API that might return/mutate it.
     updated, reference = copy.deepcopy(record), None
-    if action == "adopt-owner-repair-head":
+    if action in RESERVATION_ACTIONS:
+        result, reference = dependency("review-reservation").apply(updated, request, root)
+    elif action == "adopt-owner-repair-head":
         result, reference = dependency("foreground-adopt").adopt(updated, request, root)
     elif action == "prepare-repaired-review":
         updated, result, reference = dependency("foreground-review").prepare(updated, request, root)
@@ -506,8 +543,10 @@ def dispatch(record, request, root, bundle=None, persist=None):
     validate_retained({**updated, "revision": record["revision"] + 1}, root, c, e)
     if len(c.canonical(updated)) > 900_000:
         raise c.Unverified("task evidence budget exceeded")
-    if action in PREPARED_ACTIONS | {"adopt-owner-repair-head", "prepare-repaired-review"}:
+    if action in PREPARED_ACTIONS | RESERVATION_ACTIONS | {"adopt-owner-repair-head", "prepare-repaired-review"}:
         repair_bridge.check_write_budget(updated, record["revision"] + 1, c, coordinator)
+    if reservation_pending(updated):
+        dependency("review-reservation").cancellation_budget(updated)
     return updated, response, True
 
 
@@ -531,7 +570,14 @@ def main():
             if record.get("transition_intent"):
                 raise c.Unverified("unfinished lifecycle transition; reconcile explicitly")
             worker = record.get("worker")
-            if worker is not None:
+            # Cancellation is a no-launch recovery operation. Keep exact retained
+            # owner/worker and reservation checks, but permit that worker to be dead.
+            cancel = request is not None and request.get("action") == "cancel-review-reservation"
+            historical_export = (request is not None and request.get("action") == "export-admitted-review"
+                and has_reservation_history(record)
+                and request.get("payload", {}).get("admission_id") in
+                    dependency("review-reservation").ledger(record)["admissions"])
+            if worker is not None and not cancel and not historical_export:
                 live, start = coordinator.process_identity(worker["pid"])
                 if (live != "alive" or start != worker["process_start"]
                         or worker["hostname"] != socket.gethostname() or worker["owner"] != record["owner"]):
