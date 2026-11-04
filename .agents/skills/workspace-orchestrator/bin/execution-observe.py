@@ -400,6 +400,7 @@ def main() -> int:
                 if prior["request"] != request:
                     raise Unverified("operation ID reused with changed request")
                 if args.reconcile_stopped:
+                    coordinator.require_review_reservation_settled(record, root)
                     item = inspect_backend(definition, prefix, env)
                     reconcile_stop(record, prior, item, root, c)
                     coordinator.write_task(root, record)
