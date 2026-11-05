@@ -8,6 +8,7 @@ exercise the handoff protocol; they are not model or execution evidence.
 import base64
 import copy
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -326,6 +327,7 @@ class ForegroundTests(unittest.TestCase):
         self.dispatch(self.request("collect-owner-proposal", "terminal-owner-collect"), expected=3, bundle=True)
 
     def test_not_applied_same_head_new_generation_clears_historical_boundary(self):
+        self.require_repair_metadata()
         self.prepare_owner()
         self.admit_owner()
         collected = self.dispatch(self.request("collect-owner-proposal"), bundle=True)
@@ -837,8 +839,31 @@ class ForegroundTests(unittest.TestCase):
         self.dispatch(self.request("collect-owner-proposal"), bundle=True)
         return self.request("apply-owner-proposal")
 
+    def repair_metadata_unavailable(self):
+        """Measure the host independently; never skip on a production refusal."""
+        if not hasattr(os, "listxattr"):
+            return "host Python lacks fd xattr inspection; successful repair unmeasured"
+        for name in ("source.py", "second.py"):
+            with (self.worktree / name).open("rb") as handle:
+                try:
+                    attrs = os.listxattr(handle.fileno())
+                except OSError as exc:
+                    if exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+                        return "fixture filesystem lacks xattr inspection; successful repair unmeasured"
+                    raise
+                if attrs:
+                    return "fixture has extended metadata; successful ordinary-file repair unmeasured"
+        return None
+
+    def require_repair_metadata(self):
+        reason = self.repair_metadata_unavailable()
+        if reason:
+            self.skipTest(reason)
+
     def injected_apply(self, request, failure=None):
         """Only fault seams are mocked; main, locks, validators and writes are real."""
+        if request["action"] == "apply-owner-proposal":
+            self.require_repair_metadata()
         bridge = delivery.dependency("foreground-repair")
         repair = bridge.load("repair-apply")
         coordinator = delivery.dependency("orchestrator-state")
@@ -875,12 +900,23 @@ class ForegroundTests(unittest.TestCase):
         return replacements, persists, json.loads(output.getvalue())
 
     def repair_cli(self, request, expected=0):
+        if expected == 0 and request["action"] == "apply-owner-proposal":
+            self.require_repair_metadata()
         path = self.root / "repair-foreground-request.json"
         path.write_bytes(c.canonical(request))
         return self.cli("foreground-delivery", "fixture", "--request", str(path), expected=expected)
 
     def target_bytes(self):
         return [(self.worktree / name).read_bytes() for name in ("source.py", "second.py")]
+
+    def test_unavailable_host_metadata_refuses_public_repair_without_writes(self):
+        if self.repair_metadata_unavailable() is None:
+            self.skipTest("host supports fixture metadata inspection; refusal exercised on unsupported hosts")
+        request = self.collected_two_file_proposal()
+        before = self.task_path.read_bytes(), self.target_bytes()
+        result = self.repair_cli(request, expected=3)
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertEqual((self.task_path.read_bytes(), self.target_bytes()), before)
 
     def test_apply_two_files_public_cli_pause_replay_and_fresh_head(self):
         request = self.collected_two_file_proposal()
@@ -1126,6 +1162,7 @@ class ForegroundTests(unittest.TestCase):
         self.assertEqual(self.target_bytes(), [self.source] * 2)
 
     def test_completion_budget_valid_record_refuses_before_persist_or_targets(self):
+        self.require_repair_metadata()
         request = self.collected_two_file_proposal()
         saved = self.record()
         bridge = delivery.dependency("foreground-repair")
@@ -1339,6 +1376,29 @@ class ForegroundTests(unittest.TestCase):
 
 
 class DiagnosticCompileTests(unittest.TestCase):
+    def test_repair_capability_guard_does_not_swallow_unexpected_errors(self):
+        # Exercise the capability helper without running the expensive CLI setup.
+        fixture = ForegroundTests(methodName="runTest")
+        with tempfile.TemporaryDirectory() as directory:
+            fixture.worktree = Path(directory).resolve()
+            for name in ("source.py", "second.py"):
+                (fixture.worktree / name).write_bytes(b"fixture\n")
+            with mock.patch.object(os, "listxattr", return_value=[], create=True) as probe:
+                self.assertIsNone(fixture.repair_metadata_unavailable())
+                self.assertEqual(probe.call_count, 2)
+                self.assertTrue(all(type(call.args[0]) is int for call in probe.call_args_list))
+            with mock.patch.object(os, "listxattr", return_value=["user.fixture"], create=True):
+                self.assertIn("extended metadata", fixture.repair_metadata_unavailable())
+            with mock.patch.object(os, "listxattr", side_effect=OSError(errno.ENOTSUP, "unsupported"), create=True):
+                self.assertIn("lacks xattr inspection", fixture.repair_metadata_unavailable())
+            with mock.patch.object(os, "listxattr", side_effect=OSError(errno.EIO, "unexpected I/O"), create=True):
+                with self.assertRaises(OSError):
+                    fixture.require_repair_metadata()
+            with mock.patch.dict(os.__dict__, {"listxattr": None}):
+                del os.listxattr
+                with self.assertRaisesRegex(unittest.SkipTest, "host Python lacks"):
+                    fixture.require_repair_metadata()
+
     def test_benchmark_resolves_exact_discovered_method_and_rejects_ambiguity(self):
         benchmark = load(Path(__file__).with_name("foreground-diagnostic-benchmark.py"), "benchmark")
 
