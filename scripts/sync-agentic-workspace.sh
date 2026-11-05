@@ -56,6 +56,28 @@ installed=false
 marker_created=false
 backup_owned=false
 outbox=""
+write_sync_manifest() {
+  cat > "$outbox/MANIFEST.md" <<EOF
+# Skill sync disposal manifest
+
+Created by scripts/sync-agentic-workspace.sh from canonical commit $source_commit.
+Outcome: $1; exit: $2; rollback: $3; disposal: $4; skill: $SKILL.
+
+This record is written before shared-lock release. COMPLETE is not final success
+unless cleanup-lock/ exists here and the root tmp/cleanup/.lock is absent.
+This outbox contains only artifacts this invocation created or replaced.
+If present, previous/ was the old consumer skill (safe to delete ONLY if the
+new one is installed); stage/ is an unfinished candidate; marker/ and lock/
+are this run's transaction metadata. cleanup-lock/ retains the shared root lock
+after finalization. Inspect the destination and these paths
+before deleting anything, especially if exit is nonzero.
+Recovery paths outside this outbox (may be present):
+  backup: $backup
+  destination: ${DEST%/}
+  marker: $marker
+  lock: $lock
+EOF
+}
 finalize_sync() {
   local result=$? outcome rollback_state=NOT_NEEDED disposal_state=COMPLETE
   trap - EXIT HUP INT TERM
@@ -93,30 +115,19 @@ finalize_sync() {
     if [[ "$disposal_state" != COMPLETE ]]; then result=3; fi
     outcome=REFUSED
     [[ "$installed" == true ]] && outcome=INSTALLED
-    if ! cat > "$outbox/MANIFEST.md" <<EOF
-# Skill sync disposal manifest
-
-Created by scripts/sync-agentic-workspace.sh from canonical commit $source_commit.
-Outcome: $outcome; exit: $result; rollback: $rollback_state; disposal: $disposal_state; skill: $SKILL.
-
-This outbox contains only artifacts this invocation created or replaced.
-If present, previous/ was the old consumer skill (safe to delete ONLY if the
-new one is installed); stage/ is an unfinished candidate; marker/ and lock/
-are this run's transaction metadata. cleanup-lock/ retains the shared root lock
-after finalization. Inspect the destination and these paths
-before deleting anything, especially if exit is nonzero.
-Recovery paths outside this outbox (may be present):
-  backup: $backup
-  destination: ${DEST%/}
-  marker: $marker
-  lock: $lock
-EOF
-    then echo "UNVERIFIED: could not record disposal manifest at $outbox; cleanup lock retained" >&2; exit 3; fi
+    if ! write_sync_manifest "$outcome" "$result" "$rollback_state" "$disposal_state"; then
+      echo "UNVERIFIED: could not record disposal manifest at $outbox; cleanup lock retained" >&2
+      exit 3
+    fi
     # The shared allocator transferred this invocation's root lock to us.
     # Retain it as evidence, just like the existing per-skill transaction lock.
     if ! mv "$WORKSPACE/tmp/cleanup/.lock" "$outbox/cleanup-lock"; then
       echo "UNVERIFIED: could not retain cleanup lock at $outbox" >&2
       result=3
+      disposal_state=FAILED_CLEANUP_LOCK
+      if ! write_sync_manifest "$outcome" "$result" "$rollback_state" "$disposal_state"; then
+        echo "UNVERIFIED: cleanup-lock move and failure-manifest update failed; manifest is not success authority; inspect retained root lock and outbox" >&2
+      fi
     fi
     printf 'DISPOSAL_OUTBOX=%s\n' "$outbox"
   elif [[ "$lock_owned" == true && -d "$lock" ]]; then

@@ -58,12 +58,22 @@ def git_workspace(root: Path, required: bool) -> bool:
     return True
 
 
+def contains_root_name(names: bytes, name: str) -> bool:
+    """Compare literal root components, conservatively even on case-sensitive hosts."""
+    folded = name.casefold()
+    return any(os.fsdecode(path.split(b"/", 1)[0]).casefold() == folded
+               for path in names.split(b"\0") if path)
+
+
 def tracked(root: Path, name: str) -> bool:
-    if git(root, "ls-files", "-z", "--", name).stdout:
+    # No user-supplied pathspec: ls-tree lacks icase/literal magic support.
+    # The index needs all names (including descendants); HEAD only needs root
+    # entries, including trees/gitlinks. NUL framing preserves metacharacters.
+    if contains_root_name(git(root, "ls-files", "--cached", "--full-name", "-z").stdout, name):
         return True
     head = git(root, "rev-parse", "--verify", "--quiet", "HEAD", allowed=(0, 1))
     if head.returncode == 0:
-        return bool(git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", name).stdout)
+        return contains_root_name(git(root, "ls-tree", "--name-only", "-z", "HEAD").stdout, name)
     # Only a verifiably unborn symbolic branch may have no HEAD tree.
     branch = git(root, "symbolic-ref", "HEAD").stdout.decode().strip()
     if git(root, "show-ref", "--verify", "--quiet", branch, allowed=(0, 1)).returncode != 1:

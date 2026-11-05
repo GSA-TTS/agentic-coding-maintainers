@@ -108,6 +108,7 @@ ln -s /tmp "$consumer/.agents/skills/cross-repo-epic"
 rc=$?
 set -e
 [[ "$rc" -eq 3 ]]
+rm "$consumer/.agents/skills/cross-repo-epic"
 
 # A stale symlink inside the old selected skill is refused during cleanup and is
 # never followed to mutate its target.
@@ -137,14 +138,25 @@ grep -q prior-evidence "$consumer/.agents/skills/.cross-repo-epic.sync-in-progre
 
 # A PID-named pre-existing backup belongs to a prior recovery attempt. The
 # refused invocation must not stage or consume it as if this run created it.
-collision="$consumer/.agents/skills/.workspace-orchestrator.previous.$$"
-mkdir "$collision"
-printf 'prior recovery evidence\n' > "$collision/KEEP"
+rm "$consumer/.agents/skills/workspace-orchestrator/stale-link"
 set +e
-"$ROOT/scripts/sync-agentic-workspace.sh" "$consumer" workspace-orchestrator >/dev/null 2>&1
+collision_out="$(bash -c '
+  set -eu
+  collision="$2/.agents/skills/.workspace-orchestrator.previous.$$"
+  mkdir "$collision"
+  printf "prior recovery evidence\n" > "$collision/KEEP"
+  printf "COLLISION=%s\n" "$collision"
+  exec "$1/scripts/sync-agentic-workspace.sh" "$2" workspace-orchestrator
+' fixture "$ROOT" "$consumer" 2>&1)"
 rc=$?
 set -e
+collision="$(sed -n 's/^COLLISION=//p' <<<"$collision_out")"
 [[ "$rc" -eq 3 && -f "$collision/KEEP" ]]
+grep -Fq "sync backup already exists: $collision" <<<"$collision_out"
+grep -qx 'prior recovery evidence' "$collision/KEEP"
+outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$collision_out")"
+[[ -d "$outbox/lock" && -d "$outbox/cleanup-lock" ]]
+[[ ! -e "$outbox/previous" && ! -e "$outbox/stage" && ! -e "$outbox/marker" ]]
 [[ -f "$consumer/.agents/skills/workspace-orchestrator/SKILL.md" ]]
 
 # Git consumers must opt into the shared store before any skill/lock mutation.
@@ -258,6 +270,60 @@ grep -q 'rollback: BLOCKED' "$outbox/MANIFEST.md"
 [[ -f "$rollback_consumer/.agents/skills/cross-repo-epic/CONFLICT" ]]
 find "$rollback_consumer/.agents/skills" -path '*/.cross-repo-epic.previous.*/ORIGINAL' -type f -print | grep -q .
 [[ -d "$outbox/lock" && -d "$outbox/cleanup-lock" ]]
+
+# Fail only the final shared-lock move, after a successful installation and
+# manifest write. The record must be rewritten as failure, not stale success.
+cat > "$shim/mv" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "$FAIL_ROOT_LOCK" ]]; then
+  if [[ "${FAIL_MANIFEST_UPDATE:-false}" == true ]]; then
+    : > "$FAIL_ROOT_LOCK/fail-manifest-update"
+  fi
+  exit 1
+fi
+exec /bin/mv "$@"
+SH
+lock_consumer="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-sync-lock-failure.XXXXXX")"
+lock_consumer="$(cd "$lock_consumer" && pwd -P)"
+printf '# consumer\n' > "$lock_consumer/AGENTS.md"
+set +e
+sync_out="$(PATH="$shim:$PATH" FAIL_ROOT_LOCK="$lock_consumer/tmp/cleanup/.lock" \
+  "$ROOT/scripts/sync-agentic-workspace.sh" "$lock_consumer" cross-repo-epic)"
+rc=$?
+set -e
+[[ "$rc" -eq 3 ]]
+outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
+[[ -d "$lock_consumer/tmp/cleanup/.lock" && ! -e "$outbox/cleanup-lock" ]]
+[[ -d "$outbox/lock" && -d "$outbox/marker" ]]
+[[ -f "$lock_consumer/.agents/skills/cross-repo-epic/SKILL.md" ]]
+grep -q 'Outcome: INSTALLED; exit: 3; rollback: NOT_NEEDED; disposal: FAILED_CLEANUP_LOCK;' "$outbox/MANIFEST.md"
+if grep -Eq 'exit: 0;|disposal: COMPLETE;' "$outbox/MANIFEST.md"; then
+  echo 'stale success in shared-lock failure manifest' >&2
+  exit 1
+fi
+
+# Also fail only the subsequent manifest rewrite; retain the shared lock and
+# emit a fixed diagnostic rather than letting errexit hide the double failure.
+cat > "$shim/cat" <<'SH'
+#!/usr/bin/env bash
+if [[ -f "$FAIL_ROOT_LOCK/fail-manifest-update" ]]; then
+  exit 1
+fi
+exec /bin/cat "$@"
+SH
+chmod +x "$shim/cat"
+double_consumer="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-sync-double-failure.XXXXXX")"
+double_consumer="$(cd "$double_consumer" && pwd -P)"
+printf '# consumer\n' > "$double_consumer/AGENTS.md"
+set +e
+sync_out="$(PATH="$shim:$PATH" FAIL_ROOT_LOCK="$double_consumer/tmp/cleanup/.lock" FAIL_MANIFEST_UPDATE=true \
+  "$ROOT/scripts/sync-agentic-workspace.sh" "$double_consumer" cross-repo-epic 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 3 ]]
+outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
+[[ -d "$double_consumer/tmp/cleanup/.lock" && ! -e "$outbox/cleanup-lock" ]]
+grep -Fq 'UNVERIFIED: cleanup-lock move and failure-manifest update failed; manifest is not success authority; inspect retained root lock and outbox' <<<"$sync_out"
 
 # Unsafe shared hierarchy is refused before .agents or any transaction lock.
 for unsafe in tmp-link cleanup-link permissions; do

@@ -7,6 +7,14 @@ repository. Consumer Git repositories must explicitly add their own root
 policy. Paths in either HEAD or the index block storage, including staged
 deletions. Ignored does not mean disposable, nonsensitive, or inactive.
 
+HEAD/index guards compare literal root components using case folding, even on
+case-sensitive filesystems. A disk-only case rename cannot bypass tracked-file
+protection, and tracked `TMP/` descendants also block `tmp/` allocation. This
+conservatively refuses distinct case-variant names on Linux. No filename is
+interpreted as a glob or Git pathspec. Each check reads NUL-delimited index names
+and nonrecursive HEAD root names; Git's timeout still applies, but index output
+is buffered in memory without a separate byte cap (cost grows with index size).
+
 ## Operator round after handoff
 
 1. Reconcile live task/PR ownership, outstanding workers and retained evidence.
@@ -111,6 +119,11 @@ Sync retains its existing per-skill lock, marker, staging, rollback behavior and
 `manifest.json` for common inventory, **`MANIFEST.md` for sync outcome/recovery**,
 and, when present, `previous/`, `stage/`, `marker/`, `lock/`, `cleanup-lock/`.
 The generic journal's `allocated` state does not assert installation succeeded.
+The sync manifest is written before shared-lock release; its COMPLETE disposal
+record is not final success without the retained `cleanup-lock/` and absence of
+the root lock. A failed shared-lock move rewrites the manifest with exit 3 and
+`FAILED_CLEANUP_LOCK`. If that rewrite also fails, stderr explicitly reports that
+the manifest is not success authority; preserve the root lock and inspect manually.
 An uncertain prior lock/marker or blocked rollback is preserved. On finalization,
 this invocation's shared lock is retained inside its outbox, not deleted.
 

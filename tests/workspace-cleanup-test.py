@@ -140,6 +140,66 @@ class CleanupTests(unittest.TestCase):
         self.cli("quarantine", "loose.txt", "--reason", "test", "--apply", ok=False)
         self.assertFalse((self.root / "tmp/cleanup").exists())
 
+    def test_case_only_disk_rename_preserves_index_and_head_protection(self) -> None:
+        # Two steps emulate a case-only disk rename on Linux and macOS without
+        # updating the index. Exact spelling checks alone cannot protect this.
+        (self.root / "tracked.txt").rename(self.root / "rename-intermediate")
+        (self.root / "rename-intermediate").rename(self.root / "TRACKED.TXT")
+        self.assertIn(b"tracked.txt\0", self.git("ls-files", "-z"))
+        self.cli("quarantine", "TRACKED.TXT", "--reason", "test", "--apply", ok=False)
+        self.git("rm", "--cached", "tracked.txt")
+        self.assertNotIn(b"tracked.txt\0", self.git("ls-files", "-z"))
+        self.cli("quarantine", "TRACKED.TXT", "--reason", "test", "--apply", ok=False)
+        self.assertEqual((self.root / "TRACKED.TXT").read_text(), "tracked bytes\n")
+        self.assertFalse((self.root / "tmp").exists())
+
+    def test_case_only_index_addition_is_protected(self) -> None:
+        self.git("add", "loose.txt")
+        (self.root / "loose.txt").rename(self.root / "rename-intermediate")
+        (self.root / "rename-intermediate").rename(self.root / "LOOSE.TXT")
+        self.assertIn(b"loose.txt\0", self.git("ls-files", "-z"))
+        self.cli("quarantine", "LOOSE.TXT", "--reason", "test", "--apply", ok=False)
+        self.assertFalse((self.root / "tmp").exists())
+
+    def test_case_folded_tmp_descendants_block_allocation(self) -> None:
+        (self.root / "TMP").mkdir(mode=0o700)
+        (self.root / "TMP/keep").write_text("keep")
+        self.git("add", "-f", "TMP/keep")
+        self.assertIn(b"TMP/keep\0", self.git("ls-files", "-z"))
+        (self.root / "TMP").rename(self.root / "rename-intermediate")
+        (self.root / "rename-intermediate").rename(self.root / "tmp")
+        self.cli("allocate-sync", "--skill", "cross-repo-epic", "--apply", ok=False)
+        self.cli("quarantine", "loose.txt", "--reason", "test", "--apply", ok=False)
+        self.git("commit", "-qm", "test: upper-case tmp in HEAD")
+        self.git("rm", "--cached", "TMP/keep")
+        self.assertNotIn(b"TMP/keep\0", self.git("ls-files", "-z"))
+        self.cli("allocate-sync", "--skill", "cross-repo-epic", "--apply", ok=False)
+        self.assertEqual((self.root / "tmp/keep").read_text(), "keep")
+        self.assertFalse((self.root / "tmp/cleanup").exists())
+
+    def test_case_folded_restore_destination_is_protected(self) -> None:
+        entry = self.quarantine()
+        (self.root / "LOOSE.TXT").write_text("tracked upper-case destination")
+        self.git("add", "LOOSE.TXT")
+        (self.root / "LOOSE.TXT").unlink()
+        self.cli("restore", entry.name, "--apply", ok=False)
+        self.git("commit", "-qm", "test: upper-case restore destination")
+        self.git("rm", "--cached", "LOOSE.TXT")
+        self.cli("restore", entry.name, "--apply", ok=False)
+        self.assertTrue((entry / "payload").is_file())
+
+    def test_tracking_root_match_is_literal_not_glob_or_prefix(self) -> None:
+        for name in ("reportA.txt", "report[ab].txt", "report*.txt", "report?.txt", ":(glob)report*"):
+            (self.root / name).write_text("fixture")
+        self.git("--literal-pathspecs", "add", "--", "reportA.txt", "report[ab].txt")
+        self.git("commit", "-qm", "test: literal metacharacters")
+        self.assertTrue(cleanup.tracked(self.root, "REPORT[AB].TXT"))
+        self.git("--literal-pathspecs", "rm", "--cached", "--", "report[ab].txt")
+        self.assertTrue(cleanup.tracked(self.root, "REPORT[AB].TXT"))
+        for name in ("report*.txt", "report?.txt", ":(glob)report*", "report"):
+            self.assertFalse(cleanup.tracked(self.root, name), name)
+        self.cli("quarantine", "report*.txt", "--reason", "literal preview")
+
     def test_root_ignore_is_anchored(self) -> None:
         (self.root / "nested/tmp").mkdir(parents=True)
         (self.root / "nested/tmp/keep").write_text("visible")
