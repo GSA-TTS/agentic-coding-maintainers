@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "active_claim_ids": ["synthetic-claim"],
+  "sources": [
+    {
+      "id": "synthetic-source",
+      "uri": "https://example.invalid/SYNTHETIC",
+      "publisher": "SYNTHETIC fictional publisher",
+      "locator": "SYNTHETIC fixture paragraph 1",
+      "quote": "SYNTHETIC fixture text, not an authority or legal claim.",
+      "artifact_sha256": "",
+      "version": "SYNTHETIC fixture v1",
+      "retrieved_at": "2026-01-01T00:00:00Z",
+      "reviewed_at": null,
+      "review_ref": "",
+      "effective_from": "2026-01-01",
+      "effective_until": null,
+      "review_due": "2026-02-01",
+      "status": "unverified"
+    }
+  ],
+  "claims": [
+    {
+      "id": "synthetic-claim",
+      "source_ids": ["synthetic-source"],
+      "rule_id": "SYNTHETIC.Example",
+      "authority_kind": "heuristic",
+      "applicability": "SYNTHETIC fixtures only; not real documents",
+      "exceptions": "No real-world applicability is asserted",
+      "status": "unverified"
+    }
+  ]
+}
