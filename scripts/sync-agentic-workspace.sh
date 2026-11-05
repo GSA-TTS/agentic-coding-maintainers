@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $# -eq 1 || $# -eq 2 ]] || { echo "usage: $0 /path/to/agentic [skill-name]" >&2; exit 2; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE="$(cd "$1" && pwd)"
+WORKSPACE="$(cd "$1" && pwd -P)"
 SKILL="${2:-cross-repo-epic}"
 case "$SKILL" in
   cross-repo-epic|workspace-orchestrator) ;;
@@ -22,10 +22,15 @@ if find "$SOURCE" ! -type f ! -type d -print -quit | grep -q .; then
   exit 3
 fi
 git_safe() {
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$ROOT" "$@"
+  python3 -I -B - "$ROOT" "$@" <<'PY'
+from pathlib import Path
+import runpy
+import sys
+
+root = Path(sys.argv[1])
+cleanup = runpy.run_path(str(root / "scripts/workspace-cleanup.py"))
+sys.stdout.buffer.write(cleanup["git"](root, *sys.argv[2:]).stdout)
+PY
 }
 source_commit="$(git_safe rev-parse HEAD)" || { echo "canonical commit is unavailable" >&2; exit 3; }
 source_dirty=false
@@ -41,16 +46,9 @@ fi
 for path in "$WORKSPACE/.agents" "$WORKSPACE/.agents/skills" "${DEST%/}"; do
   [[ ! -L "$path" ]] || { echo "destination path must not contain a symlink: $path" >&2; exit 3; }
 done
-[[ ! -L "$WORKSPACE/deleteme" ]] || { echo "destination disposal path is a symlink" >&2; exit 3; }
-mkdir -p "$WORKSPACE/deleteme"
-[[ -d "$WORKSPACE/deleteme" && ! -L "$WORKSPACE/deleteme" ]] || { echo "destination disposal path is unsafe" >&2; exit 3; }
-mkdir -p "$WORKSPACE/.agents/skills"
 parent="$WORKSPACE/.agents/skills"
 lock="$parent/.${SKILL}.sync-lock"
-if ! mkdir "$lock" 2>/dev/null; then
-  echo "sync lock exists; inspect destination/backup before manual recovery: $lock" >&2
-  exit 3
-fi
+lock_owned=false
 stage=""
 backup="$parent/.${SKILL}.previous.$$"
 marker="$parent/.${SKILL}.sync-in-progress"
@@ -89,7 +87,7 @@ finalize_sync() {
         disposal_state=UNCERTAIN_MARKER
       fi
     fi
-    if [[ -d "$lock" ]]; then
+    if [[ "$lock_owned" == true && -d "$lock" ]]; then
       mv "$lock" "$outbox/lock" || disposal_state=FAILED_LOCK
     fi
     if [[ "$disposal_state" != COMPLETE ]]; then result=3; fi
@@ -104,7 +102,8 @@ Outcome: $outcome; exit: $result; rollback: $rollback_state; disposal: $disposal
 This outbox contains only artifacts this invocation created or replaced.
 If present, previous/ was the old consumer skill (safe to delete ONLY if the
 new one is installed); stage/ is an unfinished candidate; marker/ and lock/
-are this run's transaction metadata. Inspect the destination and these paths
+are this run's transaction metadata. cleanup-lock/ retains the shared root lock
+after finalization. Inspect the destination and these paths
 before deleting anything, especially if exit is nonzero.
 Recovery paths outside this outbox (may be present):
   backup: $backup
@@ -112,9 +111,15 @@ Recovery paths outside this outbox (may be present):
   marker: $marker
   lock: $lock
 EOF
-    then echo "UNVERIFIED: could not record disposal manifest at $outbox" >&2; exit 3; fi
+    then echo "UNVERIFIED: could not record disposal manifest at $outbox; cleanup lock retained" >&2; exit 3; fi
+    # The shared allocator transferred this invocation's root lock to us.
+    # Retain it as evidence, just like the existing per-skill transaction lock.
+    if ! mv "$WORKSPACE/tmp/cleanup/.lock" "$outbox/cleanup-lock"; then
+      echo "UNVERIFIED: could not retain cleanup lock at $outbox" >&2
+      result=3
+    fi
     printf 'DISPOSAL_OUTBOX=%s\n' "$outbox"
-  elif [[ -d "$lock" ]]; then
+  elif [[ "$lock_owned" == true && -d "$lock" ]]; then
     echo "UNVERIFIED: disposal unavailable; inspect owned lock $lock" >&2
     exit 3
   fi
@@ -122,8 +127,14 @@ EOF
 }
 trap finalize_sync EXIT
 trap 'exit 3' HUP INT TERM
+outbox="$(python3 -I -B "$ROOT/scripts/workspace-cleanup.py" --workspace "$WORKSPACE" allocate-sync --skill "$SKILL" --apply)" || exit 3
+mkdir -p "$WORKSPACE/.agents/skills"
+if ! mkdir "$lock" 2>/dev/null; then
+  echo "sync lock exists; inspect destination/backup before manual recovery: $lock" >&2
+  exit 3
+fi
+lock_owned=true
 [[ ! -e "$backup" && ! -L "$backup" ]] || { echo "sync backup already exists: $backup" >&2; exit 3; }
-outbox="$(mktemp -d "$WORKSPACE/deleteme/$(date -u +%Y-%m-%d)-${SKILL}-sync.XXXXXX")" || exit 3
 marker_token="$(python3 -I -B -c 'import secrets; print(secrets.token_hex(16))')" || exit 3
 if ! mkdir "$marker" 2>/dev/null; then
   echo "prior sync marker exists: $marker" >&2

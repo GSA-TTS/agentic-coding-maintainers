@@ -54,6 +54,7 @@ rm "$SOURCE/tests/fixtures/orchestrator-monitor-bin"
 mv "$SOURCE/tests/fixtures/orchestrator-monitor-bin.real" "$SOURCE/tests/fixtures/orchestrator-monitor-bin"
 
 consumer="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-sync.XXXXXX")"
+consumer="$(cd "$consumer" && pwd -P)"
 printf '# consumer\n' > "$consumer/AGENTS.md"
 mkdir -p "$consumer/.agents/skills/sibling"
 printf keep > "$consumer/.agents/skills/sibling/KEEP"
@@ -94,6 +95,9 @@ outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
 [[ ! -e "$consumer/.agents/skills/.workspace-orchestrator.sync-lock" ]]
 [[ ! -e "$consumer/.agents/skills/.workspace-orchestrator.sync-in-progress" ]]
 [[ -d "$outbox/marker" && -d "$outbox/lock" ]]
+[[ "$outbox" == "$consumer/tmp/cleanup/"* ]]
+[[ -f "$outbox/manifest.json" && -d "$outbox/cleanup-lock" ]]
+[[ ! -e "$consumer/deleteme" && ! -e "$consumer/tmp/cleanup/.lock" ]]
 grep -q 'old consumer skill' "$outbox/MANIFEST.md"
 grep -qx 'Consumer-owned delivery guidance.' "$consumer/docs/HUMAN-REVIEWED-DELIVERY.md"
 cmp -s "$consumer/.opencode/commands/orchestrate-start.md" "$consumer/.agents/skills/workspace-orchestrator/examples/commands/orchestrate-start.md"
@@ -119,7 +123,7 @@ set -e
 [[ -f "$target/KEEP" ]]
 [[ -f "$consumer/.agents/skills/workspace-orchestrator/ORIGINAL" ]]
 [[ -z "$(find "$consumer/.agents/skills" -maxdepth 1 \( -name '.workspace-orchestrator.previous.*' -o -name '.workspace-orchestrator.sync.*' -o -name '.workspace-orchestrator.sync-in-progress' -o -name '.workspace-orchestrator.sync-lock' \) -print)" ]]
-find "$consumer/deleteme" -name MANIFEST.md -type f -print | grep -q .
+find "$consumer/tmp/cleanup" -name MANIFEST.md -type f -print | grep -q .
 
 # A pre-existing uncertain marker is not deleted by a later refused invocation.
 mkdir "$consumer/.agents/skills/.cross-repo-epic.sync-in-progress"
@@ -142,6 +146,135 @@ rc=$?
 set -e
 [[ "$rc" -eq 3 && -f "$collision/KEEP" ]]
 [[ -f "$consumer/.agents/skills/workspace-orchestrator/SKILL.md" ]]
+
+# Git consumers must opt into the shared store before any skill/lock mutation.
+git_consumer="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-sync-git.XXXXXX")"
+git_consumer="$(cd "$git_consumer" && pwd -P)"
+git -C "$git_consumer" init -q --template="$SOURCE-empty-template"
+git -C "$git_consumer" config user.name 'Sync Test'
+git -C "$git_consumer" config user.email 'sync-test@example.invalid'
+printf '# consumer\n' > "$git_consumer/AGENTS.md"
+set +e
+"$ROOT/scripts/sync-agentic-workspace.sh" "$git_consumer" cross-repo-epic >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 3 && ! -e "$git_consumer/.agents" && ! -e "$git_consumer/tmp" ]]
+printf '/tmp/\n' > "$git_consumer/.gitignore"
+git -C "$git_consumer" add .
+git -C "$git_consumer" commit -qm 'test: consumer ignore policy'
+# Redirection cannot bypass consumer policy or redirect canonical provenance.
+sync_out="$(GIT_DIR=/missing GIT_WORK_TREE=/missing GIT_INDEX_FILE=/missing/index \
+  "$ROOT/scripts/sync-agentic-workspace.sh" "$git_consumer" cross-repo-epic)"
+outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
+[[ "$outbox" == "$git_consumer/tmp/cleanup/"* && -f "$outbox/MANIFEST.md" ]]
+[[ ! -e "$git_consumer/deleteme" ]]
+
+# Preserve an uncertain prior per-skill lock; only this invocation's root lock
+# is moved to its new outbox when the sync is refused.
+mkdir "$git_consumer/.agents/skills/.cross-repo-epic.sync-lock"
+printf keep > "$git_consumer/.agents/skills/.cross-repo-epic.sync-lock/KEEP"
+set +e
+"$ROOT/scripts/sync-agentic-workspace.sh" "$git_consumer" cross-repo-epic >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 3 ]]
+[[ -f "$git_consumer/.agents/skills/.cross-repo-epic.sync-lock/KEEP" ]]
+[[ ! -e "$git_consumer/tmp/cleanup/.lock" ]]
+
+# A prior marker is preserved even when no symlink short-circuits the sync.
+mkdir "$git_consumer/.agents/skills/.workspace-orchestrator.sync-in-progress"
+printf prior > "$git_consumer/.agents/skills/.workspace-orchestrator.sync-in-progress/owner"
+set +e
+"$ROOT/scripts/sync-agentic-workspace.sh" "$git_consumer" workspace-orchestrator >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 3 ]]
+grep -qx prior "$git_consumer/.agents/skills/.workspace-orchestrator.sync-in-progress/owner"
+[[ ! -e "$git_consumer/.agents/skills/.workspace-orchestrator.sync-lock" ]]
+
+# Linked worktrees have a .git file, not a directory.
+linked="$git_consumer-linked"
+git -C "$git_consumer" worktree add -q -b fixture-linked "$linked"
+"$ROOT/scripts/sync-agentic-workspace.sh" "$linked" cross-repo-epic >/dev/null
+[[ -f "$linked/.agents/skills/cross-repo-epic/SKILL.md" && ! -e "$linked/deleteme" ]]
+
+# HEAD paths remain protected even after staging their deletion.
+printf keep > "$linked/tmp/tracked"
+git -C "$linked" add -f tmp/tracked
+git -C "$linked" commit -qm 'test: tracked tmp guard'
+git -C "$linked" rm --cached -q tmp/tracked
+set +e
+"$ROOT/scripts/sync-agentic-workspace.sh" "$linked" workspace-orchestrator >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 3 && -f "$linked/tmp/tracked" ]]
+[[ ! -e "$linked/.agents/skills/workspace-orchestrator" ]]
+
+# Installation failure retains the existing rollback contract and outbox evidence.
+rollback_consumer="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-sync-rollback.XXXXXX")"
+printf '# consumer\n' > "$rollback_consumer/AGENTS.md"
+mkdir -p "$rollback_consumer/.agents/skills/cross-repo-epic"
+printf original > "$rollback_consumer/.agents/skills/cross-repo-epic/ORIGINAL"
+shim="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-sync-shim.XXXXXX")"
+cat > "$shim/mv" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  */.cross-repo-epic.sync.*) exit 1 ;;
+esac
+exec /bin/mv "$@"
+SH
+chmod +x "$shim/mv"
+set +e
+sync_out="$(PATH="$shim:$PATH" "$ROOT/scripts/sync-agentic-workspace.sh" "$rollback_consumer" cross-repo-epic)"
+rc=$?
+set -e
+[[ "$rc" -eq 3 ]]
+outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
+[[ -f "$rollback_consumer/.agents/skills/cross-repo-epic/ORIGINAL" ]]
+grep -q 'rollback: RESTORED' "$outbox/MANIFEST.md"
+[[ -d "$outbox/lock" && -d "$outbox/marker" && -d "$outbox/cleanup-lock" ]]
+# The shim refuses disposal of that stage as well: preserve it, report failure.
+grep -q 'disposal: FAILED_STAGE' "$outbox/MANIFEST.md"
+find "$rollback_consumer/.agents/skills" -maxdepth 1 -name '.cross-repo-epic.sync.*' -type d -print | grep -q .
+
+# An occupied destination during failed installation must not consume the backup.
+cat > "$shim/mv" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  */.cross-repo-epic.sync.*)
+    case "$2" in
+      */cross-repo-epic) mkdir "$2"; printf conflict > "$2/CONFLICT"; exit 1 ;;
+    esac ;;
+esac
+exec /bin/mv "$@"
+SH
+set +e
+sync_out="$(PATH="$shim:$PATH" "$ROOT/scripts/sync-agentic-workspace.sh" "$rollback_consumer" cross-repo-epic)"
+rc=$?
+set -e
+[[ "$rc" -eq 3 ]]
+outbox="$(sed -n 's/^DISPOSAL_OUTBOX=//p' <<<"$sync_out")"
+grep -q 'rollback: BLOCKED' "$outbox/MANIFEST.md"
+[[ -f "$rollback_consumer/.agents/skills/cross-repo-epic/CONFLICT" ]]
+find "$rollback_consumer/.agents/skills" -path '*/.cross-repo-epic.previous.*/ORIGINAL' -type f -print | grep -q .
+[[ -d "$outbox/lock" && -d "$outbox/cleanup-lock" ]]
+
+# Unsafe shared hierarchy is refused before .agents or any transaction lock.
+for unsafe in tmp-link cleanup-link permissions; do
+  unsafe_consumer="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-sync-unsafe.XXXXXX")"
+  printf '# consumer\n' > "$unsafe_consumer/AGENTS.md"
+  case "$unsafe" in
+    tmp-link) ln -s "$target" "$unsafe_consumer/tmp" ;;
+    cleanup-link) mkdir -m 700 "$unsafe_consumer/tmp"; ln -s "$target" "$unsafe_consumer/tmp/cleanup" ;;
+    permissions) mkdir -m 755 "$unsafe_consumer/tmp" ;;
+  esac
+  set +e
+  "$ROOT/scripts/sync-agentic-workspace.sh" "$unsafe_consumer" cross-repo-epic >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -eq 3 && ! -e "$unsafe_consumer/.agents" ]]
+  [[ -f "$target/KEEP" && ! -e "$unsafe_consumer/deleteme" ]]
+done
 
 # Unmanifested symlinks in the canonical source are never copied.
 target2="$(mktemp -d "${TMPDIR:-/tmp}/maintainers-canonical-target.XXXXXX")"

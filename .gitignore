@@ -12,6 +12,7 @@ venv/
 .nexus-agents/
 .import/
 # Runtime state and checkouts for this maintainer workspace, never source.
+/tmp/
 .orchestrator/
 work/
 clones/*
