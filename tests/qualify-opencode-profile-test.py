@@ -64,7 +64,10 @@ elif args[0] == 'serve':
     time.sleep(60)
 elif args[0] == 'api':
     assert args[1] == '--server' and args[2].startswith('http://127.0.0.1:')
-    assert set(os.environ) <= {'PATH','LANG','LC_ALL','HOME','XDG_CONFIG_HOME',
+    # macOS injects this process metadata even with an explicit Popen env.
+    # The probe's constructed environment remains tested independently below.
+    runtime_metadata = {'__CF_USER_TEXT_ENCODING'} if sys.platform == 'darwin' else set()
+    assert set(os.environ) - runtime_metadata <= {'PATH','LANG','LC_ALL','HOME','XDG_CONFIG_HOME',
         'XDG_DATA_HOME','XDG_CACHE_HOME','XDG_STATE_HOME','XDG_RUNTIME_DIR',
         'TMPDIR','OPENCODE_PASSWORD'}
     assert 'GH_TOKEN' not in os.environ and 'HTTP_PROXY' not in os.environ
