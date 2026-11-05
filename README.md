@@ -58,11 +58,14 @@ scripts/sync-agentic-workspace.sh /path/to/agentic workspace-orchestrator
 ```
 
 Each successful sync prints `DISPOSAL_OUTBOX=`. The replaced skill tree and
-this invocation's lock/marker live in a dated manifest-backed `deleteme/`
-directory in the consumer workspace. The operator reviews and deletes that
-outbox later; the sync script does not delete backups or work around the
-review workspace's removal policy. A refused sync preserves pre-existing
-uncertain markers for recovery.
+this invocation's lock/marker live in a manifest-backed `tmp/cleanup/<uuid>/`
+entry in the consumer workspace, alongside owner-selected loose-file quarantine.
+Git consumers must ignore root `/tmp/` and have no HEAD/index paths there before
+sync; non-Git consumers use the same private directory convention. Sync preserves
+`MANIFEST.md`, backups and pre-existing uncertain markers. It does not delete
+artifacts. Use the [single workspace cleanup round](docs/WORKSPACE-CLEANUP.md)
+to inventory these entries; legacy `deleteme/` requires an explicit maintenance
+window migration, never an automatic move or a second ongoing process.
 
 The script stages then replaces only the selected canonical skill directory,
 with a transaction marker and trap that restores the previous copy if interrupted
@@ -107,6 +110,17 @@ Restart OpenCode after changing agents or commands.
 
 See `AGENTS.md` for worker limits, ownership, recovery and the trust boundary:
 a worktree is not a sandbox for untrusted PR code.
+
+After task handoff, inventory loose root artifacts and the shared cleanup store:
+
+```bash
+bin/workspace-cleanup.sh --workspace /absolute/workspace
+```
+
+Inventory is read-only. Quarantine and restore preview unless `--apply` is given;
+neither accepts directories or batches, and there is no purge command. See
+[`docs/WORKSPACE-CLEANUP.md`](docs/WORKSPACE-CLEANUP.md) for ownership checks,
+recovery limits and the unified skill-sync outbox process.
 
 ## Checks
 
