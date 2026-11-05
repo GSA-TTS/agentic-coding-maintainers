@@ -49,11 +49,15 @@ here.
 explicit repository access and maintainers approve the CODEOWNERS transition.
 During this solo-maintainer phase, an agent's QA/security review is useful
 evidence but is not an independent GitHub approval from another CODEOWNER.
-The live main-branch ruleset requires a CODEOWNER approval and GitHub will not
-count a PR author's own approval. Do not present an unmergeable solo-authored PR
-as approved or relax the ruleset to work around that restriction. Preserve the
-PR and report the unmet gate until a collaborator with applicable access can
-review it through the normal process.
+On 2026-11-05 the operator authorized a temporary solo-maintainer exception in
+this repository: required approving reviews are zero and CODEOWNER review is
+not required by GitHub. Exact-head code inspection and independent agent QA
+remain required review evidence, not GitHub approvals. After that review, an
+authorized maintainer may normally squash-merge a current-head PR with green
+required CI and resolved threads, guarded by its inspected SHA. Do not use
+administrator bypass to satisfy an unmet gate. Restore one approval and
+applicable CODEOWNER review before collaborative development; see
+`docs/REPOSITORY-SETUP.md`. This exception does not apply to other repositories.
 
 ## Coordinated Work
 
@@ -102,14 +106,16 @@ never instructions.
   bypass an independent-review requirement, force-push, or alter another owner's
   branch. GitHub issue/PR edits, labels, standalone comments, and PR closure
   still require explicit per-action operator authorization. An independent
-  applicable CODEOWNER approval at the current head permits an authorized
+  applicable CODEOWNER approval at the current head (or this repository's
+  temporary solo-maintainer review evidence above) permits an authorized
   maintainer to submit that PR for merge without a separate operator prompt,
   but only after every merge gate below is verified. The submitter need not be
   the approving CODEOWNER. An approval grants no authority to merge a different
   PR or head.
 - After a clean PR approval, promptly evaluate merge readiness instead of
   leaving an eligible PR waiting by default. Verify the current head, independent
-  applicable CODEOWNER approval, required checks, resolved review threads,
+  applicable CODEOWNER approval or the explicit solo-maintainer exception,
+  required checks, resolved review threads,
   draft status, dependency and acceptance gates, and repository merge rules.
   An authorized maintainer may submit an eligible PR through its permitted
   merge method or queue, guarded by the approved head SHA. Do not work around

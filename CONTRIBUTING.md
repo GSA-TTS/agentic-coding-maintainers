@@ -21,8 +21,15 @@
 6. Use a Conventional Commit message with a verified contributor identity.
 7. Open a pull request and complete the template.
 
-At least one applicable CODEOWNER must review the change. Do not merge when CI
-is failing or required evidence is missing.
+During the explicitly authorized solo-maintainer phase in this repository,
+inspect the exact PR head and obtain independent agent QA evidence before a
+normal, head-guarded squash merge. Required CI must be green, the branch current,
+and review threads resolved. GitHub requires zero approving reviews in this
+temporary phase; agent review is evidence, not a GitHub approval. Restore at
+least one approval and applicable CODEOWNER review before collaborative
+development, as described in `docs/REPOSITORY-SETUP.md`. Do not merge when CI
+is failing or required evidence is missing, or use administrator bypass to
+satisfy an unmet gate.
 
 Hosted CI runs `make check`, pinned Gitleaks, and the core Ruff/Pyright/Bandit/
 ShellCheck/actionlint/zizmor gate under pinned Python 3.12.15. The local strict hook additionally runs
