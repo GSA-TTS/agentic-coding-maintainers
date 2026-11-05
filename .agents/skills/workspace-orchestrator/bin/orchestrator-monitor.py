@@ -23,10 +23,16 @@ FIELDS = "number,title,author,isDraft,state,headRefOid,updatedAt,reviewDecision,
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 OWNER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 TASK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+GATEWAY_ERROR_RE = re.compile(r"^(?:gh: )?HTTP (?:502|503|504)(?::|\s)")
+READ_QUERY_PREFIXES = (("gh", "pr", "list"), ("gh", "project", "item-list"))
 
 
 class MonitorError(Exception):
     pass
+
+
+class GatewayError(MonitorError):
+    """A failed read returned an explicit transient HTTP gateway diagnostic."""
 
 
 def workspace_root() -> Path:
@@ -96,18 +102,53 @@ def safe_text(value: object, limit: int = 200) -> str:
 
 
 def run(argv: list[str], timeout: int = 90) -> str:
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise MonitorError(f"{argv[0]} could not run: {safe_text(exc)}") from exc
-    if result.returncode != 0:
-        raise MonitorError(f"{' '.join(argv[:3])} failed: {safe_text(result.stderr)}")
-    if len(result.stdout) > 5_000_000:
-        raise MonitorError("monitor output exceeded 5 MB")
-    return result.stdout
+    # Only discovery commands get retries; discard every failed response.
+    attempts = 3 if tuple(argv[:3]) in READ_QUERY_PREFIXES else 1
+    deadline = time.monotonic() + timeout
+    for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MonitorError("monitor query exhausted its time budget")
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=remaining, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise MonitorError(f"{argv[0]} could not run: {safe_text(exc)}") from exc
+        if result.returncode == 0:
+            if len(result.stdout) > 5_000_000:
+                raise MonitorError("monitor output exceeded 5 MB")
+            return result.stdout
+        delay = attempt + 1
+        if (
+            attempt + 1 < attempts
+            and GATEWAY_ERROR_RE.match(result.stderr)
+            and deadline - time.monotonic() > delay
+        ):
+            time.sleep(delay)
+            continue
+        raise MonitorError(
+            f"{' '.join(argv[:3])} failed after {attempt + 1} attempt(s): {safe_text(result.stderr)}"
+        )
+    raise MonitorError("monitor query exhausted its attempts")
 
 
 def bounded_run(argv: list[str], timeout: float) -> str:
+    attempts = 3 if tuple(argv[:3]) in READ_QUERY_PREFIXES else 1
+    deadline = time.monotonic() + timeout
+    for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MonitorError("poll deadline exhausted")
+        try:
+            return _bounded_run_once(argv, remaining)
+        except GatewayError as exc:
+            delay = attempt + 1
+            if attempt + 1 >= attempts or deadline - time.monotonic() <= delay:
+                raise MonitorError(f"GitHub observation failed after {attempt + 1} attempt(s)") from exc
+            time.sleep(delay)
+    raise MonitorError("monitor query exhausted its attempts")
+
+
+def _bounded_run_once(argv: list[str], timeout: float) -> str:
     if timeout <= 0:
         raise MonitorError("poll deadline exhausted")
     output, errors = bytearray(), bytearray()
@@ -131,6 +172,8 @@ def bounded_run(argv: list[str], timeout: float) -> str:
                                 raise MonitorError("GitHub observation output exceeds bound")
                 process.wait(timeout=max(0.01, deadline-time.monotonic()))
             if process.returncode != 0:
+                if GATEWAY_ERROR_RE.match(errors.decode("utf-8", errors="replace")):
+                    raise GatewayError("GitHub gateway failure")
                 raise MonitorError("GitHub observation failed")
             return output.decode("utf-8")
         finally:

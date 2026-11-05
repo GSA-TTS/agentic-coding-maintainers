@@ -112,6 +112,39 @@ changes, and exits `3` with `UNVERIFIED` when it could not query complete state.
 Checkpoints store the last successful observation and a separate failure record;
 they do not prove that monitoring continued after process exit.
 
+The monitor retries its read-only `gh pr list` and `gh project item-list`
+queries on explicit HTTP 502/503/504 diagnostics only: at most three attempts,
+with one- and two-second delays inside the existing query budget (90 seconds
+for legacy polls; up to 30 seconds per source within the durable poll's
+120-second deadline). Durable reads retain their per-attempt combined 5 MB
+stdout/stderr bound. Failed-attempt output is discarded. Exhaustion remains
+`UNVERIFIED`; a partial portfolio never replaces the successful legacy
+checkpoint. Durable polls retain their per-source
+`UNVERIFIED`/`NOT_ATTEMPTED` semantics. Authentication/rate-limit errors,
+subprocess timeouts, malformed JSON and incomplete coverage are not retried.
+Other commands never inherit this retry policy.
+
+For historical task reconciliation, prefer small discovery pages followed by
+detail queries for the recorded PR numbers. A large `--state all` query that
+includes review decisions can time out in GitHub GraphQL. Reducing `--limit`
+without checking pagination is not complete coverage. Keep head/review/CI
+comparisons separate from discovery, and do not reuse a partial result as a
+current verdict. Ad hoc status scripts do not automatically use the monitor's
+retry helper.
+
+### Gateway-timeout RCA (2026-11-04)
+
+An ad hoc historical query (`gh pr list --state all --limit 200`, including
+`reviewDecision`) returned HTTP 504 from GitHub GraphQL. The local task
+reconcile/list commands had succeeded; the request was not the foreground
+monitor's open-PR query. Subsequent small open-PR, per-PR detail, and REST
+20-item discovery requests succeeded. Rate-limit counters were nearly unused.
+These observations support a transient upstream/query failure, not credential
+expiry or demonstrated rate exhaustion. They do not establish GitHub's internal
+timeout cause or prove that request size alone caused it. The bounded monitor
+retry is related resilience work, not a claim that it repairs GitHub or reruns
+the failed historical reconciliation automatically.
+
 OpenCode v1.19.0 has no scheduler. Child/background work dies with the CLI
 process. Do not claim this loop survives logout, TUI exit, sleep, or restart.
 
