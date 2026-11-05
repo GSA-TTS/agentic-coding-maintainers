@@ -27,12 +27,37 @@ Protect `main` with a ruleset that:
 
 - blocks deletion and force pushes;
 - requires pull requests and linear history;
-- requires one approval and applicable CODEOWNER review;
+- during the operator-authorized solo-maintainer phase, requires zero approving
+  reviews and does not require CODEOWNER or extra unattributed-change approval;
 - dismisses stale approvals after a new commit;
 - requires review conversations to be resolved;
-- requires the `Repository checks` status check;
+- requires the `Repository checks` status check with strict branch freshness;
 - permits squash merges only; and
 - records any administrator bypass in the repository audit trail.
+
+### Temporary Solo-Maintainer Review
+
+The operator authorized the temporary approval settings on 2026-11-05 for this
+repository only. Review is enforced by the maintainer workflow rather than a
+GitHub approval count: inspect the exact head, obtain independent agent QA
+evidence, verify green required CI and resolved threads, then normally
+squash-merge guarded by that head SHA. An agent review is not a GitHub approval.
+Administrator bypass is not part of this workflow.
+
+Before collaborative development, restore these pull-request parameters on
+the `Protect main` ruleset:
+
+- `required_approving_review_count`: `1`;
+- `require_code_owner_review`: `true`;
+- `require_extra_approval_for_unattributed_changes`: `true`.
+
+Reinspect the live ruleset before updating it; preserve unrelated changes.
+Verify effective default-branch rules and a collaborator's applicable CODEOWNER
+access after restoration. Keep PRs, strict required checks, resolved threads,
+squash-only integration, linear history, deletion and force-push protections
+throughout both phases. The host-local `.orchestrator/solo-maintainer-rules/`
+contains the original update payload and recovery notes; those runtime records
+are not a substitute for checking live settings.
 
 ## Actions And Security
 
