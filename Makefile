@@ -49,6 +49,7 @@ test:
 	python3 -I -B tests/observe-github-issues-test.py
 	python3 -I -B tests/observe-review-requests-test.py
 	python3 -I -B tests/adapt-issues-capture-test.py
+	python3 -I -B tests/check-native-ownership-test.py
 	bash tests/operating-surface-test.sh
 
 review-workspace-preflight-test:
