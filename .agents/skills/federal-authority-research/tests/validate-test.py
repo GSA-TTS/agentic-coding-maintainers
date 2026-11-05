@@ -232,6 +232,24 @@ class ValidatorTests(unittest.TestCase):
         self.source["uri"] = "file:///etc/passwd"
         self.run_cli(4)
 
+    def test_malformed_http_uri_rejected(self):
+        for uri in (
+            "https://exa mple.invalid/source", " https://example.invalid/source",
+            "https://example.invalid/line\nfeed", "https://example.invalid/\x7f",
+            "https://example.invalid:invalid/source", "https://example.invalid:65536/",
+            "https://example.invalid:/", "https://@example.invalid/",
+            "https://example.invalid\\other/source",
+        ):
+            with self.subTest(uri=uri):
+                self.source["uri"] = uri
+                self.run_cli(4)
+
+    def test_valid_http_uri_ports_and_encoded_space(self):
+        for uri in ("https://example.invalid:443/a%20b", "http://[::1]:8080/source"):
+            with self.subTest(uri=uri):
+                self.source["uri"] = uri
+                self.run_cli(0)
+
     def test_nul_raw_and_escaped(self):
         self.run_cli(4, raw=b"\x00")
         self.source["quote"] = "escaped\x00NUL"

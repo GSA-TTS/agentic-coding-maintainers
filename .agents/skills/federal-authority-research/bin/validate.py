@@ -140,12 +140,22 @@ def validate(bundle, as_of):
         sources[sid] = source
         for key in ("uri", "publisher", "locator"):
             text(source[key], key)
+        require(
+            not any(char.isspace() or ord(char) < 32 or ord(char) == 127
+                    for char in source["uri"])
+            and "\\" not in source["uri"],
+            "uri: whitespace, controls and backslashes are invalid",
+        )
         uri = urlsplit(source["uri"])
+        # Accessing .port validates numeric syntax and range; urlsplit alone does not.
+        port = uri.port
         require(
             uri.scheme in {"https", "http"}
             and bool(uri.hostname)
-            and not uri.username
-            and not uri.password,
+            and uri.username is None
+            and uri.password is None
+            and not uri.netloc.endswith(":")
+            and (port is None or 0 <= port <= 65535),
             "uri: expected HTTP(S) publisher URI",
         )
         for key in ("quote", "artifact_sha256", "version"):
