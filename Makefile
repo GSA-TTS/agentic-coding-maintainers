@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: test check strict-check review-workspace-preflight-test qualify-opencode-profile-test qualify-opencode-profile
+.PHONY: test check strict-check review-workspace-preflight-test qualify-opencode-profile-test qualify-opencode-profile qualify-opencode-tools-test qualify-opencode-tools
 
 test:
 	python3 -I -B tests/pr-review-eligibility-test.py
@@ -11,6 +11,7 @@ test:
 	sh -n scripts/review-workspace-preflight.sh
 	python3 -I -B tests/review-workspace-preflight-test.py
 	python3 -I -B tests/qualify-opencode-profile-test.py
+	python3 -I -B tests/qualify-opencode-tools-test.py
 	python3 -I -B tests/delivery-batch-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/candidate-binding-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/monitor-journal-test.py
@@ -58,6 +59,13 @@ qualify-opencode-profile-test:
 # Guest-only: caller supplies --isolated-guest and all binary/output bindings.
 qualify-opencode-profile:
 	python3 -I -B scripts/qualify-opencode-profile.py $(QUALIFY_ARGS)
+
+qualify-opencode-tools-test:
+	python3 -I -B tests/qualify-opencode-tools-test.py
+
+# Opt-in actual binary dispatch. Run ONLY in an independently isolated guest.
+qualify-opencode-tools:
+	python3 -I -B scripts/qualify-opencode-tools.py $(QUALIFY_TOOLS_ARGS)
 
 check: test
 	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
