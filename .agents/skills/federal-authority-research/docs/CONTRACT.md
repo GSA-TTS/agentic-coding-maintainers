@@ -7,6 +7,10 @@ fields or unknown fields. Input must be a regular file, not a symlink (including
 symlink path components); reading is bounded. Concurrent path replacement must
 be prevented by the sandbox: path inspection is not host containment.
 
+Input paths containing a literal `..` parent component are refused before
+absolute-path normalization, whether or not a symlink is present. This prevents
+normalization from hiding a symlink followed by parent traversal.
+
 Top level has exactly `schema_version`, `active_claim_ids`, `sources` and `claims`.
 `schema_version` must be integer **1**: booleans, floats and other versions are
 rejected. `active_claim_ids` is a nonempty array of unique existing claim IDs,

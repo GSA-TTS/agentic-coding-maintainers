@@ -259,6 +259,42 @@ class ValidatorTests(unittest.TestCase):
         link.symlink_to(self.root, target_is_directory=True)
         self.run_cli(4, path=link / self.path.name)
 
+    def test_symlink_followed_by_parent_traversal(self):
+        target = self.root / "target"
+        nested = target / "nested"
+        nested.mkdir(parents=True)
+        alternate = target / self.path.name
+        alternate.write_bytes(b"different file reached by actual symlink traversal")
+        before = alternate.read_bytes()
+        link = self.root / "linked-dir"
+        link.symlink_to(nested, target_is_directory=True)
+        output = self.run_cli(4, path=link / ".." / self.path.name)
+        self.assertIn("parent traversal", output["error"])
+        self.assertEqual(alternate.read_bytes(), before)
+
+    def test_parent_traversal_without_symlink(self):
+        child = self.root / "child"
+        child.mkdir()
+        output = self.run_cli(4, path=child / ".." / self.path.name)
+        self.assertIn("parent traversal", output["error"])
+
+    def test_hostile_strings_are_json_data_only(self):
+        marker = self.root / "must-not-be-created"
+        hostile = f"SYNTHETIC\n\t\x01$(touch {marker}); `touch {marker}`"
+        self.source["id"] = hostile
+        self.source["quote"] = hostile
+        self.source["status"] = "unverified"
+        self.claim["source_ids"] = [hostile]
+        output = self.run_cli(3)
+        self.assertEqual(
+            output["reasons"],
+            [{"kind": "source", "id": hostile, "code": "unverified"}],
+        )
+        retained = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(retained["sources"][0]["id"], hostile)
+        self.assertEqual(retained["sources"][0]["quote"], hostile)
+        self.assertFalse(marker.exists())
+
     def test_directory_input(self):
         self.run_cli(4, path=self.root)
 

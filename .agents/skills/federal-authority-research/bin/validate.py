@@ -90,6 +90,7 @@ def invalid_constant(value):
 
 
 def read_bundle(path):
+    require(".." not in Path(path).parts, "input parent traversal forbidden")
     # Refuse symlink components as well as final symlinks. The sandbox must
     # prevent concurrent ancestor replacement; this is not host containment.
     path = Path(os.path.abspath(path))
