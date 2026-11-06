@@ -194,6 +194,48 @@ class CooperativeBindingTest(unittest.TestCase):
                               "--session-id", OTHER_SESSION, "--expected-generation", str((1 << 63) - 1),
                               "--expected-revision", str((1 << 63) - 1), expected=4)
 
+    def test_opt_in_validates_complete_legacy_scope_before_capacity_or_persistence(self):
+        self.create()
+        initial = self.invoke("show", "pilot")
+        scope_path = self.state / "scopes" / f"{initial['scope_key']}.lock/owner.json"
+        original = json.loads(scope_path.read_text())
+        malformed = [dict(original, scope="wrong-scope"), dict(original, schema_version=3),
+                     dict(original, schema_version=True), dict(original, extra="unsupported")]
+        for metadata in malformed:
+            with self.subTest(metadata=metadata):
+                self.persist_fixture(scope_path, metadata)
+                self.refuses_unchanged("claim", "pilot", "--owner", "fixture", "--pid", str(os.getpid()),
+                                      "--session-id", SESSION, "--expected-generation", "0",
+                                      "--expected-revision", "0")
+                self.assertEqual(json.loads(self.task_path().read_text()), initial)
+                self.assertEqual(list((self.state / "slots").iterdir()), [])
+                self.assertEqual(list((self.state / "implementation").iterdir()), [])
+        self.persist_fixture(scope_path, original)
+        self.assertEqual(self.claim()["schema_version"], 3)
+
+    def test_retained_extensions_cannot_enter_or_bypass_bound_schema(self):
+        self.create()
+        initial = self.invoke("show", "pilot")
+        for extension in ("unsupported", "execution_observations", "review_protocol", "candidate_binding"):
+            with self.subTest(extension=extension):
+                self.persist_fixture(self.task_path(), dict(initial, **{extension: {}}))
+                self.refuses_unchanged("claim", "pilot", "--owner", "fixture", "--pid", str(os.getpid()),
+                                      "--session-id", SESSION, "--expected-generation", "0",
+                                      "--expected-revision", "0")
+        self.persist_fixture(self.task_path(), initial)
+        bound = self.claim()
+        for extension in ("unsupported", "execution_observations", "review_protocol", "candidate_binding"):
+            with self.subTest(bound_extension=extension):
+                forged = dict(bound, **{extension: {}})
+                self.persist_fixture(self.task_path(), forged)
+                self.refuses_unchanged("show", "pilot")
+                self.refuses_unchanged("record", "pilot", "validation", "fixture", *self.owned(bound))
+                with self.assertRaises(self.core_module.UnknownError):
+                    self.core_module.validate_record(forged)
+                with self.assertRaises(self.core_module.UnknownError):
+                    self.core_module.validate_record(forged, allow_bound=True)
+        self.persist_fixture(self.task_path(), bound)
+
     def test_malformed_binding_worker_and_all_reservation_metadata(self):
         self.create()
         claimed = self.claim()

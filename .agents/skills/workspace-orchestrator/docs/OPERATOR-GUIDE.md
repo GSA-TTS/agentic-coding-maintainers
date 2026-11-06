@@ -90,6 +90,10 @@ personal data. Retained `cooperative_binding` generation starts at 1, and the
 worker/global-slot/implementation-lane records agree exactly on session and
 generation. This is cooperative correlation and stale-write fencing, not native
 caller authentication or remote authority.
+Opt-in checks complete prospective state and exact scope metadata before
+capacity reservation. Retained domain or unknown extensions are unsupported in
+schema 3; only base fields, cooperative binding, and core legacy-finding
+dispositions are accepted.
 
 For bound active tasks, every `record`, `update-head`, `transition`, and
 `resolve-finding` invocation supplies `--expected-session-id`,

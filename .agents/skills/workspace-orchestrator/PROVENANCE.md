@@ -36,3 +36,9 @@ The canonical
 repository adds `tests/cooperative-session-binding-test.py` and registers it in
 `Makefile`; copied-skill consumers must separately carry/run that fixture when
 validating this pilot. `CANONICAL-SHA256SUMS` binds the adapted skill assets.
+
+Independent-review correction: validate the complete prospective bound record
+and exact legacy scope metadata under lock before opt-in reserves capacity or
+persists a claim. Schema 3 allows only base task fields, cooperative binding,
+and the core legacy-finding disposition ledger; unsupported retained domain or
+unknown extensions are refused on opt-in and subsequent reads without coercion.

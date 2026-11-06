@@ -315,6 +315,8 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
     missing = required - raw.keys()
     if missing:
         raise UnknownError(f"task record missing fields: {', '.join(sorted(missing))}")
+    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions"}:
+        raise UnknownError("cooperative core-only task has unsupported retained extensions")
     if raw["schema_version"] not in {SCHEMA, BOUND_SCHEMA} or type(raw["revision"]) is not int or raw["revision"] < 0:
         raise UnknownError("task schema or revision is invalid")
     validate_task_id(str(raw["task_id"]))
@@ -765,6 +767,12 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                 raise BusyError("cooperative generation/revision limit reached")
             record["schema_version"] = BOUND_SCHEMA
             record["cooperative_binding"] = {"session_id": session, "generation": generation + 1}
+            # Legacy admission compares only scope task/token. Validate the full
+            # prospective bound record and exact scope metadata before reserving
+            # capacity; otherwise opt-in could persist an unusable bound claim.
+            prospective = dict(record, revision=record["revision"] + 1)
+            validate_record(prospective, record["task_id"], allow_bound=True)
+            verify_reservations(root, prospective)
         elif any(getattr(args, key, None) is not None for key in ("expected_generation", "expected_revision")):
             raise InputError("claim expectations require an explicit session token")
         if record["state"] not in {"Ready", "Rework"}:

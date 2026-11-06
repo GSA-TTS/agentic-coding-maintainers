@@ -25,6 +25,10 @@ session identity or authenticated authority. The task becomes schema 3 with
 its complete global-slot/implementation-lane metadata carry the same session and
 generation. Counts use exact integers bounded by `2^63-1`. Scope metadata must
 also agree exactly with the existing task scope and token.
+Opt-in validates this complete prospective shape and scope metadata before
+reserving capacity. Schema 3 accepts base task fields, cooperative binding, and
+the core legacy-finding disposition ledger only; retained domain/unknown
+extensions are unsupported and cannot be silently carried into the pilot.
 
 `record`, `update-head`, `transition`, and `resolve-finding` on active bound tasks
 require all four explicit `--expected-session-id`, `--expected-worker-id`,
