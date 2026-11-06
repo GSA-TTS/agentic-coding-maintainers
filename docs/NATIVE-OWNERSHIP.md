@@ -27,7 +27,8 @@ generation. Counts use exact integers bounded by `2^63-1`. Scope metadata must
 also agree exactly with the existing task scope and token.
 Opt-in validates this complete prospective shape and scope metadata before
 reserving capacity. Schema 3 accepts base task fields, cooperative binding, and
-the core legacy-finding disposition ledger only; retained domain/unknown
+the core legacy-finding disposition ledger and private transition-recovery receipt;
+retained domain/unknown
 extensions are unsupported and cannot be silently carried into the pilot.
 
 `record`, `update-head`, `transition`, and `resolve-finding` on active bound tasks
@@ -61,8 +62,68 @@ preflight intentionally remains schema-2-only and reports schema 3 unsupported.
 Automatic reconciliation refuses with exit 3 whenever any bound task is present
 in the authority, including selected-task calls. All tasks are preflighted before
 legacy recovery can mutate an earlier task. Interrupted bound transitions remain
-preserved and block mutations/admission; automatic and guarded interrupted-intent
-recovery are pending a separately reviewed design.
+preserved and block ordinary mutations/admission. Explicit recovery of one selected
+task is available through the guarded command below.
+
+### Explicit interrupted-transition recovery
+
+```sh
+"$SKILL_DIR/run.sh" state reconcile --recover selected-task --operator-action \
+  --expected-revision <current-revision> --expected-generation <current-generation> \
+  --operator-reason 'Preserved interrupted work; checkpoint for operator review'
+```
+
+The declaration is cooperative operator action, not authentication. Positional
+task selection and `--recover` are mutually exclusive; abbreviated recovery flags
+are refused. All four flags are explicit. The task must be schema 3 with a legal
+durable transition intent. An active source retains its complete worker and lease
+snapshot; the recorded host must be this host and the actual PID must be absent.
+Alive, reused, foreign-host, or unknown process evidence refuses recovery. An
+inactive source is supported only with its normal worker-free parent shape.
+
+Under the existing coordinator lock, recovery validates the exact retained scope,
+complete capacity owners, and reverse reservation associations across the authority.
+Missing capacity is accepted only when the original intent releases that capacity,
+or when a durable pending recovery receipt proves cleanup has begun. Another
+unsettled task, conflicting/duplicate reverse reservation, malformed or ownerless
+directory, changed metadata, or missing scope refuses before task/lease effects.
+Existing execution-stop and repair-settlement guards still apply.
+
+Full capacity release, both original and pending recovery, is slot-first then
+lane. A retained slot with an absent recorded lane is refused unless that lane
+was already released by the original `Implementing → Reviewing` lane-only
+transition. The receipt binds the actual pre-cleanup capacity-presence observations;
+retry checks those observations against current reservations, refuses reappearance
+of originally absent capacity, and checks cleanup ordering. A Reviewing intent
+alone cannot excuse lane-first cleanup after pending recovery started with both
+reservations present.
+
+A bounded private `transition_recovery` receipt records pending/settled phase,
+original source/intent, generation, original worker/leases, capacity observations, rationale, revision
+binding, and immutable-correlation digests. Both prospective records are validated
+and size-checked before persisting pending. Pending is durable before capacity
+cleanup. Retry uses the **current** revision and the same rationale; it revalidates
+snapshot correlation and every remaining owner before releasing anything. Ordinary
+mutations refuse pending recovery. Settlement is only `Blocked`, clearing intent,
+worker and capacity while retaining scope, generation, findings, head, validation,
+reviewers and the already-persisted rework count. It never publishes readiness or
+replays the original target. The settled receipt remains private history and can
+survive later guarded lifecycle actions.
+
+**Receipt-aware core required:** once recovery persists either a pending or settled
+receipt, retain a core version supporting that receipt. The previous schema-3 core
+at `aeaa68ce` rejects `transition_recovery` as an unsupported retained extension,
+including after settlement; schema number 3 alone does not establish compatibility.
+An older core cannot operate the receipt-bearing authority. Never remove the
+receipt to make an older reader accept it; preserve the authority and use the
+receipt-aware core or quarantine it pending reviewed migration.
+
+This is bounded recovery, not recovery of every crash. Terminal scope already
+released, empty cleanup remnants, and lane acquisition before durable intent are
+unsupported; no scope or empty reservation directory is recreated. Stale
+coordinator-lock recovery remains separate. Correlation digests detect inconsistent
+retained edits, not coherent tampering by the owning account. Automatic reconcile,
+native authentication and bound domain activation retain their previous boundaries.
 
 **Core-CLI-only boundary:** standalone monitor polling accepts only schema 1 or 2.
 It rejects schema 3 before loading configuration or creating its monitor directory,
@@ -87,7 +148,8 @@ To stop the pilot, stop admitting bound claims. Ask the retained owner to releas
 its task through a guarded transition to `Blocked`; if that owner has exited,
 independently verify termination and use the guarded absent-worker cancellation
 path when applicable. Preserve dirty worktrees and all unsettled evidence.
-An interrupted transition stays blocked pending separately reviewed recovery.
+For a supported interrupted intent, use explicit recovery to checkpoint `Blocked`;
+unsupported interruptions remain preserved for operator investigation.
 
 Keep the original authority state intact. Export a complete private backup of
 task records, reservations, and referenced evidence through operator-approved
@@ -109,8 +171,18 @@ release, re-claim, malformed/mismatched binding and reservations, stale callers,
 reader compatibility, and reconciliation preservation. Git probes in its
 update-head case use a fixture executable. Standalone monitor cases prove refusal
 without poll files or forge dispatch, and execution-observation cases prove that
-definition/config/runtime work is not reached. Run the fixture, `make check`, and the
+definition/config/runtime work is not reached. Recovery cases intercept actual
+transition/recovery boundaries using fixture-local monkeypatches and exceptions,
+with real claimed children terminated and reaped to establish absence. They cover
+durable intent, partial cleanup, pending retry, refusal preservation (including
+directory metadata), and unsupported crash boundaries; no production crash hooks
+are added. Run the fixture, `make check`, and the
 strict hook only in an independently isolated validation environment.
+
+The offline previous-schema-3 compatibility case embeds the actual pinned
+`aeaa68ce` schema/extension-validation excerpt. It checks pending and settled
+receipt rejection without runtime Git history; it is not a complete previous-core
+reader or end-to-end old-CLI compatibility test.
 
 ## Select the correct authority explicitly
 

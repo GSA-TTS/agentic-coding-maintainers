@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -273,11 +274,19 @@ def atomic_json(path: Path, data: dict[str, Any]) -> None:
             os.unlink(tmp)
 
 
-def read_json(path: Path, label: str) -> dict[str, Any]:
+def read_json(path: Path, label: str, *, strict: bool = False) -> dict[str, Any]:
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
             raise ValueError("not a bounded regular file")
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object if strict else None)
     except Exception as exc:
         raise UnknownError(f"{label} unreadable or malformed: {exc}") from exc
     if not isinstance(raw, dict):
@@ -315,7 +324,7 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
     missing = required - raw.keys()
     if missing:
         raise UnknownError(f"task record missing fields: {', '.join(sorted(missing))}")
-    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions"}:
+    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions", "transition_recovery"}:
         raise UnknownError("cooperative core-only task has unsupported retained extensions")
     if raw["schema_version"] not in {SCHEMA, BOUND_SCHEMA} or type(raw["revision"]) is not int or raw["revision"] < 0:
         raise UnknownError("task schema or revision is invalid")
@@ -364,6 +373,7 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
         if worker["task_id"] != raw["task_id"]:
             raise UnknownError("task worker id does not match task")
     validate_cooperative_binding(raw)
+    validate_transition_recovery(raw)
     if "candidate_binding" in raw:
         path = Path(__file__).resolve().with_name("candidate-binding.py")
         spec = importlib.util.spec_from_file_location("installed_candidate_binding", path)
@@ -413,6 +423,106 @@ def validate_cooperative_binding(record: dict[str, Any]) -> None:
             raise UnknownError("cooperative active task lacks ownership")
     elif worker is not None or any(record["leases"][key] is not None for key in ("global_slot", "implementation_lane")):
         raise UnknownError("cooperative inactive task retains ownership")
+
+
+def recovery_digest(value: dict[str, Any]) -> str:
+    return hashlib.sha256(serialized_json(value)).hexdigest()
+
+
+def interrupted_shape(record: dict[str, Any]) -> None:
+    source, target = record["state"], record["transition_intent"]
+    if not isinstance(target, str) or target not in TRANSITIONS[source]:
+        raise UnknownError("recovery requires a legal durable transition intent")
+    lane = record["leases"]["implementation_lane"]
+    needs_lane = source == "Implementing" or target == "Implementing"
+    if needs_lane and record["kind"] != "implementation":
+        raise UnknownError("interrupted implementation intent has wrong task kind")
+    if (lane is not None) != needs_lane:
+        raise UnknownError("interrupted task lane snapshot is not reachable")
+
+
+def original_capacity_observation(record: dict[str, Any], observed: dict[str, bool]) -> None:
+    if (not isinstance(observed, dict) or set(observed) != {"slots", "implementation"}
+            or any(type(value) is not bool for value in observed.values())):
+        raise UnknownError("recovery capacity observation shape is invalid")
+    for group, field in (("slots", "global_slot"), ("implementation", "implementation_lane")):
+        if record["leases"][field] is None:
+            if observed[group]:
+                raise UnknownError("recovery observation names unrecorded capacity")
+        elif not observed[group]:
+            releases = record["transition_intent"] not in ACTIVE or (
+                group == "implementation" and record["transition_intent"] == "Reviewing")
+            if not releases:
+                raise UnknownError("missing capacity is not justified by durable intent")
+    # Original full release uses release_capacity: slot first, then lane.
+    # Reviewing alone uses release_implementation_lane and retains the slot.
+    if (record["leases"]["global_slot"] is not None
+            and record["leases"]["implementation_lane"] is not None
+            and record["transition_intent"] not in ACTIVE
+            and observed["slots"] and not observed["implementation"]):
+        raise UnknownError("original capacity release order is unreachable")
+
+
+def validate_transition_recovery(record: dict[str, Any]) -> None:
+    receipt = record.get("transition_recovery")
+    if "transition_recovery" not in record:
+        return
+    fields = {"phase", "source", "intent", "generation", "base_revision", "pending_revision",
+              "worker", "leases", "capacity_observed", "operator_reason", "task_sha256", "correlation_sha256"}
+    if (record["schema_version"] != BOUND_SCHEMA or not isinstance(receipt, dict)
+            or set(receipt) != fields or not isinstance(receipt["phase"], str)
+            or receipt["phase"] not in {"pending", "settled"}
+            or not isinstance(receipt["source"], str) or receipt["source"] not in STATES
+            or not isinstance(receipt["intent"], str) or receipt["intent"] not in STATES):
+        raise UnknownError("transition recovery receipt shape is invalid")
+    for key in ("generation", "base_revision", "pending_revision"):
+        if type(receipt[key]) is not int or not 1 <= receipt[key] <= MAX_GENERATION:
+            raise UnknownError("transition recovery receipt counter is invalid")
+    if receipt["pending_revision"] != receipt["base_revision"] + 1:
+        raise UnknownError("transition recovery revision binding is invalid")
+    reason = receipt["operator_reason"]
+    if (not isinstance(reason, str) or not reason or reason != reason.strip()
+            or len(reason) > 500 or any(ord(c) < 32 for c in reason)):
+        raise UnknownError("transition recovery rationale is invalid")
+    for key in ("task_sha256", "correlation_sha256"):
+        if not isinstance(receipt[key], str) or not re.fullmatch(r"[0-9a-f]{64}", receipt[key]):
+            raise UnknownError("transition recovery digest is invalid")
+    correlation = {key: value for key, value in receipt.items() if key not in {"phase", "correlation_sha256"}}
+    if receipt["correlation_sha256"] != recovery_digest(correlation):
+        raise UnknownError("transition recovery correlation changed")
+    # Validate the old worker/parent combination without weakening stable active
+    # worker=None checks. Settled history can survive a later guarded re-claim.
+    snapshot = copy.deepcopy(record)
+    snapshot.pop("transition_recovery")
+    snapshot.pop("legacy_finding_dispositions", None)
+    snapshot.update(state=receipt["source"], transition_intent=receipt["intent"],
+                    worker=receipt["worker"], leases=receipt["leases"], revision=receipt["base_revision"])
+    worker = receipt["worker"]
+    snapshot["cooperative_binding"] = {"session_id": worker.get("session_id") if isinstance(worker, dict) else record["cooperative_binding"]["session_id"],
+                                       "generation": receipt["generation"]}
+    if isinstance(worker, dict):
+        snapshot["owner"] = worker.get("owner")
+    validate_record(snapshot, record["task_id"], allow_bound=True)
+    interrupted_shape(snapshot)
+    original_capacity_observation(snapshot, receipt["capacity_observed"])
+    if receipt["phase"] == "pending":
+        if (record["revision"] != receipt["pending_revision"]
+                or record["cooperative_binding"]["generation"] != receipt["generation"]
+                or any(record[key] != receipt[field] for key, field in
+                       (("state", "source"), ("transition_intent", "intent"), ("worker", "worker"), ("leases", "leases")))):
+            raise UnknownError("pending recovery snapshot changed")
+        retained = {key: value for key, value in record.items() if key not in {"transition_recovery", "revision", "updated_at"}}
+        if recovery_digest(retained) != receipt["task_sha256"]:
+            raise UnknownError("pending recovery task correlation changed")
+    elif (record["revision"] <= receipt["pending_revision"]
+          or record["cooperative_binding"]["generation"] < receipt["generation"]
+          or record["leases"]["scope_token"] != receipt["leases"]["scope_token"]):
+        raise UnknownError("settled recovery revision is invalid")
+    elif record["revision"] == receipt["pending_revision"] + 1 and (
+            record["state"] != "Blocked" or record["transition_intent"] is not None
+            or record["worker"] is not None or record["next_action"] != reason
+            or record["cooperative_binding"]["generation"] != receipt["generation"]):
+        raise UnknownError("initial recovery settlement is not Blocked")
 
 
 def validate_legacy_dispositions(record: dict[str, Any]) -> None:
@@ -823,8 +933,8 @@ def require_cooperative_mutation(args: argparse.Namespace, root: Path, record: d
                 for key in ("expected_session_id", "expected_worker_id", "expected_generation"))):
             raise InputError("cooperative mutation flags require schema 3")
         return
-    if record["transition_intent"]:
-        raise UnknownError("cooperative interrupted transition requires separately reviewed recovery")
+    if record["transition_intent"] or record.get("transition_recovery", {}).get("phase") == "pending":
+        raise UnknownError("cooperative interrupted transition requires explicit recovery")
     if record["revision"] >= MAX_GENERATION - (2 if args.command == "transition" else 1):
         raise BusyError("cooperative revision limit reached")
     verify_reservations(root, record)
@@ -1281,7 +1391,118 @@ def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], b
     return record, True
 
 
+def recovery_reservations(root: Path, selected: dict[str, Any], pending: bool) -> dict[str, bool]:
+    """Preflight both directions before the first recovery write or release."""
+    records = {}
+    for path in sorted((root / "tasks").glob("*/task.json")):
+        record = validate_record(read_json(path, "recovery task", strict=True), path.parent.name, allow_bound=True)
+        records[record["task_id"]] = record
+        if record["task_id"] != selected["task_id"]:
+            if record["transition_intent"] or record.get("transition_recovery", {}).get("phase") == "pending":
+                raise UnknownError("another task has unsettled ownership")
+            verify_reservations(root, record)
+    expected = {"scopes": selected["scope_key"], "slots": selected["leases"]["global_slot"],
+                "implementation": selected["leases"]["implementation_lane"]}
+    seen = set()
+    for group in expected:
+        for lock in sorted((root / group).iterdir()):
+            if (lock.is_symlink() or not lock.is_dir() or lock.stat().st_uid != os.getuid()
+                    or lock.stat().st_mode & 0o022 or {path.name for path in lock.iterdir()} != {"owner.json"}):
+                raise UnknownError("recovery reservation directory is ambiguous")
+            owner = read_json(lock / "owner.json", "recovery reservation", strict=True)
+            task_id = owner.get("task_id")
+            record = records.get(task_id) if isinstance(task_id, str) else None
+            if record is None:
+                raise UnknownError("recovery reservation has no task")
+            index = record["scope_key"] if group == "scopes" else record["leases"]["global_slot" if group == "slots" else "implementation_lane"]
+            if index is None or lock.name != f"{index}.lock":
+                raise UnknownError("reverse recovery reservation association disagrees")
+            if group == "scopes":
+                metadata = {"schema_version": SCHEMA, "task_id": task_id, "scope": record["scope"], "token": record["leases"]["scope_token"]}
+                exact_types = type(owner.get("schema_version")) is int
+                valid = record["state"] not in TERMINAL
+            else:
+                metadata = record["worker"]
+                exact_types = type(owner.get("pid")) is int
+                if record["schema_version"] == BOUND_SCHEMA:
+                    exact_types = exact_types and type(owner.get("generation")) is int
+                valid = record["state"] in ACTIVE and (group == "slots" or record["kind"] == "implementation")
+            if not valid or not exact_types or owner != metadata:
+                raise UnknownError("complete recovery reservation ownership changed")
+            if task_id == selected["task_id"]:
+                seen.add(group)
+    if "scopes" not in seen:
+        raise UnknownError("recovery requires the exact retained scope")
+    observed = {group: group in seen for group in ("slots", "implementation")}
+    if not pending:
+        original_capacity_observation(selected, observed)
+    else:
+        original = selected["transition_recovery"]["capacity_observed"]
+        if any(observed[group] and not original[group] for group in observed):
+            raise UnknownError("capacity absent at recovery start has reappeared")
+        # Pending cleanup also releases slot first. A lane already absent in
+        # the original Reviewing transition is the sole retained-slot exception.
+        if observed["slots"] and original["implementation"] and not observed["implementation"]:
+            raise UnknownError("pending recovery capacity release order is unreachable")
+    return observed
+
+
+def command_recover(args: argparse.Namespace, root: Path) -> list[dict[str, Any]]:
+    if not args.operator_action:
+        raise UnknownError("recovery requires explicit operator action")
+    if not isinstance(args.operator_reason, str) or args.operator_reason != safe_scope(args.operator_reason):
+        raise UnknownError("recovery requires explicit single-line operator rationale")
+    with CoordinatorLock(root):
+        path = task_path(root, args.recover)
+        record = validate_record(read_json(path, "recovery task", strict=True), args.recover, allow_bound=True)
+        if record["schema_version"] != BOUND_SCHEMA:
+            raise UnknownError("explicit recovery requires schema 3")
+        require_expected_counters(args, record, record["cooperative_binding"]["generation"])
+        interrupted_shape(record)
+        worker = record["worker"]
+        if worker is not None and (worker["hostname"] != socket.gethostname() or process_identity(worker["pid"])[0] != "absent"):
+            raise UnknownError("recovery worker absence is not verified")
+        require_execution_stopped(record)
+        require_repair_settled(record, root=root)
+        pending = record.get("transition_recovery", {}).get("phase") == "pending"
+        observed = recovery_reservations(root, record, pending)
+        if record["revision"] > MAX_GENERATION - (1 if pending else 2):
+            raise BusyError("recovery revision limit reached")
+        prepared = copy.deepcopy(record)
+        if pending:
+            if args.operator_reason != record["transition_recovery"]["operator_reason"]:
+                raise BusyError("pending recovery rationale changed")
+        else:
+            receipt = {"phase": "pending", "source": record["state"], "intent": record["transition_intent"],
+                       "generation": record["cooperative_binding"]["generation"], "base_revision": record["revision"],
+                       "pending_revision": record["revision"] + 1, "worker": copy.deepcopy(worker),
+                       "leases": copy.deepcopy(record["leases"]), "capacity_observed": observed,
+                       "operator_reason": args.operator_reason,
+                       "task_sha256": recovery_digest({key: value for key, value in record.items()
+                                                        if key not in {"transition_recovery", "revision", "updated_at"}})}
+            receipt["correlation_sha256"] = recovery_digest({key: value for key, value in receipt.items() if key != "phase"})
+            prepared["transition_recovery"] = receipt
+            prepared["revision"] += 1
+            prepared["updated_at"] = now()
+        final = copy.deepcopy(prepared)
+        final.update(state="Blocked", transition_intent=None, worker=None, next_action=args.operator_reason,
+                     revision=prepared["revision"] + 1, updated_at=now())
+        final["leases"].update(global_slot=None, implementation_lane=None)
+        final["transition_recovery"]["phase"] = "settled"
+        # Both exact prospective writes must be readable and fit before effects.
+        for prospective in (prepared, final):
+            validate_record(prospective, args.recover, allow_bound=True)
+            serialized_json(prospective)
+        if not pending:
+            atomic_json(path, prepared)
+        release_capacity(root, copy.deepcopy(prepared))
+        atomic_json(path, final)
+    return [final]
+
+
 def command_reconcile(args: argparse.Namespace, root: Path) -> list[dict[str, Any]]:
+    if getattr(args, "recover", None) is not None:
+        return command_recover(args, root)
     changed = []
     with CoordinatorLock(root):
         paths = [task_path(root, args.task_id)] if args.task_id else sorted((root / "tasks").glob("*/task.json"))
@@ -1365,8 +1586,14 @@ def parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show")
     show.add_argument("task_id")
     sub.add_parser("list")
-    reconcile = sub.add_parser("reconcile")
-    reconcile.add_argument("task_id", nargs="?")
+    reconcile = sub.add_parser("reconcile", allow_abbrev=False)
+    selection = reconcile.add_mutually_exclusive_group()
+    selection.add_argument("task_id", nargs="?")
+    selection.add_argument("--recover")
+    reconcile.add_argument("--operator-action", action="store_true")
+    reconcile.add_argument("--operator-reason")
+    reconcile.add_argument("--expected-generation", type=int)
+    reconcile.add_argument("--expected-revision", type=int)
     update = sub.add_parser("update-head")
     update.add_argument("task_id")
     update.add_argument("head_sha")
@@ -1404,7 +1631,11 @@ def emit(value: Any) -> None:
 def main() -> int:
     try:
         args = parser().parse_args()
-        root = state_root()
+        recovering = args.command == "reconcile" and args.recover is not None
+        if args.command == "reconcile" and not recovering and (args.operator_action or any(
+                getattr(args, field) is not None for field in ("operator_reason", "expected_generation", "expected_revision"))):
+            raise InputError("explicit recovery flags require --recover TASK")
+        root = state_root(create=not recovering)
         if args.command == "create":
             emit(command_create(args, root))
         elif args.command == "claim":
