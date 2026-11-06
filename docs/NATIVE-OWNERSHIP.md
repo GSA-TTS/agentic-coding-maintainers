@@ -22,7 +22,8 @@ The values above are fictional. Roots name the **workspace containing
 `.orchestrator`**, not `.orchestrator` itself. `--invoking-root` means the
 explicitly chosen state authority for the invocation, not the current checkout.
 A worktree wrapper that defaults its root to its checkout can select a different
-`.orchestrator` and lose the retained ownership context. Pass the canonical
+`.orchestrator` and lose the retained ownership context. The repository wrapper
+now refuses that implicit linked-worktree selection. Pass the canonical
 coordinator workspace to the wrapper and this preflight explicitly. The script
 does not use environment defaults, discover roots, or scan neighboring stores.
 
@@ -31,6 +32,72 @@ empty/dot/parent components, or trailing slash; `/` is refused. On macOS use
 `/private/var/...` rather than the `/var` symlink. Device/inode identity must
 agree, so two distinct existing roots conflict even if their contents agree.
 Missing roots and symlink aliases are unverified.
+
+### Repository shell-wrapper admission guard
+
+`bin/orchestrator-state.sh` defaults to its physical checkout root in a primary
+checkout (ordinary `.git` directory), and retains that implicit default for an
+archive copy without `.git`. When its checkout has a regular `.git`
+gitfile, every invocation except the exact sole argument `--help` requires an
+explicit `WORKSPACE_ORCHESTRATOR_ROOT`. This includes `list`, `show`, and
+`reconcile`: the state CLI can initialize directories for reads too. Refusal
+occurs before imported-skill dispatch or state initialization, with exit 3, empty
+stdout, and the fixed stderr line:
+
+```text
+orchestrator: UNVERIFIED - shared authority root required
+```
+
+An explicitly set empty variable is invalid. The explicit root must already
+exist, be absolute, equal its `cd`/`pwd -P` physical path, and contain a primary
+`.git` directory. Symlink aliases, relative/dot/parent/trailing-slash spellings,
+missing directories, another linked checkout, and unrelated primary repositories
+are refused. Metadata-only `git rev-parse` compares canonical common Git
+directories for the wrapper checkout and selected primary; it uses explicit Git
+paths, clears inherited `GIT_*` variables, disables system/global configuration,
+optional locks, hooks, and fsmonitor, and performs no repository discovery.
+The wrapper creates no directories during admission and does not select another
+root as a fallback. Exact `--help` prints wrapper-local usage without dispatch.
+
+From an admitted linked checkout, use the primary root explicitly:
+
+```sh
+WORKSPACE_ORCHESTRATOR_ROOT=/physical/coordinator-workspace \
+  bin/orchestrator-state.sh list
+```
+
+This is a cooperative guard on the repository's top-level state wrapper only,
+not native caller authentication or a defense against malicious/replaced Git
+metadata, concurrent root replacement, or a caller controlling its environment.
+Direct imported-skill entry points bypass it; their explicit standalone-consumer
+behavior remains supported, including non-Git consumers. The repository wrapper
+itself accepts an explicit root only for its own shared-Git primary checkout.
+The skill's test-mode state override also remains caller-controlled after
+admission. The static retained-state preflight below is a separate check.
+
+`tests/shared-authority-admission-test.py` copies the wrapper and skill into a
+temporary fixture, creates real primary/linked Git checkouts with hooks disabled,
+and checks refusal without new authority directories, shared scope contention,
+root/identity rejection, metadata environment isolation, and direct-skill
+compatibility. Subprocesses have bounded timeouts and download nothing. Run this
+fixture and `make check` in the independently isolated validation environment.
+
+Full-suite environment: a primary checkout can run the normal
+`make check`/strict hook without an authority-root export. Archive copies retain
+the wrapper's implicit default; the full repository gates still require Git.
+A linked checkout
+requires `WORKSPACE_ORCHESTRATOR_ROOT` exported as its existing physical primary
+checkout **inside the validation environment**, with the same common Git
+identity. `tests/operating-surface-test.sh` invokes the actual repository wrapper
+for `reconcile`; its copied command-parity fixture does not invoke a state
+wrapper. The imported production-worktree fixture sets its own temporary
+consumer root and invokes the imported skill directly. The new admission fixture
+supplies an allowlisted subprocess environment, excluding inherited authority
+and test-state overrides, so the validator's root cannot leak into its independent
+copied repositories. Test subprocess exports do not change the parent make/hook
+environment. No test-source patch or hook bypass is required. An unrelated
+exported root, or a host root unavailable in the isolated guest, is refused;
+the validator must supply a real shared-Git primary rather than fabricate one.
 
 `--task-id` uses the existing flat 1–80 character task-ID syntax.
 `--expected-revision` is a nonnegative canonical decimal integer at most
