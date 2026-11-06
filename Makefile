@@ -3,6 +3,7 @@ SHELL := /bin/bash
 .PHONY: test check strict-check review-workspace-preflight-test qualify-opencode-profile-test qualify-opencode-profile qualify-opencode-tools-test qualify-opencode-tools
 
 test:
+	python3 -I -B tests/cooperative-session-binding-test.py
 	python3 -I -B tests/release-config-test.py
 	python3 -I -B tests/shared-authority-admission-test.py
 	python3 -I -B tests/workspace-cleanup-test.py

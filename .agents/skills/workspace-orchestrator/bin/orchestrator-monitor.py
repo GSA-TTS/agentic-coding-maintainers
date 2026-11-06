@@ -200,7 +200,7 @@ def atomic_json(path: Path, data: dict[str, Any]) -> None:
             os.unlink(tmp)
 
 
-def state_dir() -> Path:
+def state_dir(*, create: bool = True) -> Path:
     test_mode = os.environ.get("ORCHESTRATOR_TEST_MODE") == "1"
     raw = os.environ.get("ORCHESTRATOR_STATE_DIR") if test_mode else None
     root = Path(raw) if raw else workspace_root() / ".orchestrator"
@@ -211,14 +211,18 @@ def state_dir() -> Path:
             raise MonitorError("test state root must stay under the system temporary directory") from exc
     if root.exists() and root.is_symlink():
         raise MonitorError("state root is a symlink")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if create:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
     st = root.stat()
     if st.st_uid != os.getuid() or st.st_mode & 0o022:
         raise MonitorError("state root must be current-user owned and not group/world writable")
     path = root / "monitor"
     if path.exists() and path.is_symlink():
         raise MonitorError("monitor state directory is a symlink")
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not create and not path.exists():
+        return path
+    if create:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
     pst = path.stat()
     if not path.is_dir() or pst.st_uid != os.getuid() or pst.st_mode & 0o022:
         raise MonitorError("monitor state directory must be private and current-user owned")
@@ -237,6 +241,8 @@ def validate_monitor_task(root: Path, task_id: str) -> None:
         raise ValueError("monitor task id is invalid")
     task_record = root.parent / "tasks" / task_id / "task.json"
     task = read_bounded_json(task_record, "monitor task")
+    if type(task.get("schema_version")) is not int or task["schema_version"] not in {1, 2}:
+        raise ValueError("monitor task schema is unsupported; cooperative tasks are core-CLI-only")
     if task.get("kind") != "monitor" or task.get("state") not in {"Claimed", "Reviewing"} or task.get("worker") is None:
         raise ValueError("monitor task is not actively claimed")
     worker = task["worker"]
@@ -415,6 +421,7 @@ def configured_sources(config: dict[str, Any]) -> list[str]:
 def durable_poll(root: Path, config: dict[str, Any], config_path: Path, task_id: str) -> dict[str, Any]:
     if not sys.flags.isolated or not sys.dont_write_bytecode:
         raise MonitorError("durable monitor requires python3 -I -B")
+    validate_monitor_task(root, task_id)
     journal = journal_module()
     db = journal.open_store(root, writable=True)
     try:
@@ -486,8 +493,11 @@ def main() -> int:
         print("monitor: polling requires --task-id", file=sys.stderr)
         return 2
     try:
-        root = state_dir()
+        root = state_dir(create=False)
+        validate_monitor_task(root, args.task_id)
         config = load_config(args.config)
+        validate_monitor_task(root, args.task_id)
+        root = state_dir()
     except Exception as exc:
         print(f"monitor: UNVERIFIED - {exc}", file=sys.stderr)
         return 3
