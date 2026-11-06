@@ -92,8 +92,8 @@ generation. This is cooperative correlation and stale-write fencing, not native
 caller authentication or remote authority.
 Opt-in checks complete prospective state and exact scope metadata before
 capacity reservation. Retained domain or unknown extensions are unsupported in
-schema 3; only base fields, cooperative binding, and core legacy-finding
-dispositions are accepted.
+schema 3; only base fields, cooperative binding, core legacy-finding
+dispositions, and the private transition-recovery receipt are accepted.
 
 For bound active tasks, every `record`, `update-head`, `transition`, and
 `resolve-finding` invocation supplies `--expected-session-id`,
@@ -114,7 +114,48 @@ Core `show`/`list` support pilot observations but emit private raw state and con
 no authority. Public core readers/writers default to rejecting schema 3, as do
 older schema-2 core readers and the existing native preflight. Reconcile refuses
 the entire authority before recovery writes if any bound task exists. Interrupted
-bound intents are preserved and block mutations; recovery requires future review.
+bound intents are preserved and block ordinary mutations. To recover one supported
+interrupted task explicitly:
+
+```bash
+"$SKILL_DIR/run.sh" state reconcile --recover selected-task --operator-action \
+  --expected-revision <current-revision> --expected-generation <current-generation> \
+  --operator-reason 'Preserved interrupted work; checkpoint for operator review'
+```
+
+The only settlement is `Blocked`. This operator declaration is not authentication.
+Use exact flags; positional selection cannot accompany `--recover`. Recovery
+requires a legal durable intent, exact retained scope, complete worker/capacity
+metadata, consistent reverse associations, and actual same-host worker absence
+when the source is active. Unknown runtime or another unsettled task refuses.
+Existing execution/repair guards apply. Missing capacity is justified only by an
+original releasing intent or a durable pending receipt. Both pending/final record
+shapes and byte budgets are preflighted before effects. A private pending receipt
+is persisted before cleanup; retry supplies the current revision and original
+rationale and rechecks immutable-correlation snapshots and remaining owners.
+Pending recovery blocks ordinary mutation/admission. Settlement preserves scope,
+generation, findings, head, review/validation evidence and existing rework count;
+it does not replay the original target or increment rework again.
+
+Full capacity cleanup is slot-first then lane, for original release and pending
+recovery. The pending receipt binds actual initial capacity-presence observations.
+Retry refuses capacity reappearance and lane-absent/slot-present cleanup when
+both were initially present. A lane already absent from the original
+`Implementing → Reviewing` lane-only release remains legitimate, including on
+pending retry; an intent label alone cannot grant that exception.
+
+After any pending or settled receipt is persisted, a receipt-aware core is
+required. The previous schema-3 core at canonical base `aeaa68ce` rejects
+`transition_recovery` as an unsupported extension. An older core cannot operate
+this authority even after settlement. Never strip the receipt for compatibility;
+retain the supporting core or quarantine state pending reviewed migration.
+
+Recovery does not cover every crash. Missing terminal scope, empty reservation
+remnants, or a lane acquired before durable intent are unsupported. No reservation
+is recreated. Changed identity, duplicate/reverse conflicts, live/reused/foreign
+or unknown processes refuse before cleanup. Stale coordinator-lock recovery is
+separate; automatic reconciliation and bound domain activation remain unchanged.
+Receipt digests are local consistency checks, not tamper-proof attestations.
 
 Keep this pilot on core lifecycle commands. Standalone monitor polling rejects
 schema 3 before configuration loading and monitor-directory/poll-lock/store
@@ -129,7 +170,8 @@ Migration is per-task opt-in, with no bulk conversion. To stop the pilot, stop
 new bound claims, have the current owner make a guarded release to `Blocked`,
 and preserve dirty worktrees and unsettled evidence. If the owner exited, use
 only the guarded cancellation path after independently verifying termination.
-Interrupted bound intents remain preserved pending reviewed recovery.
+Use explicit recovery for supported interrupted intents; preserve unsupported
+interruptions for operator investigation.
 
 For rollback, preserve the original authority and use operator-approved tooling
 to export a complete, access-restricted private backup including reservations
