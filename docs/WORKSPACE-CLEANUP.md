@@ -75,6 +75,14 @@ directories prevent traversal by other users. Hardlinks, symlinks, special files
 directories, hidden names, runtime/config paths and reserved Git layout names
 cannot be selected. Hashing is bounded to 256 MiB per file.
 
+Regular-file device numbers are bound to that file's identity, not compared to
+directory device numbers: overlayfs can report different devices for a directory
+and its files even when rename succeeds. Directory-hierarchy device checks remain
+required. A preview cannot guarantee rename will succeed. Cross-filesystem file
+moves are rejected by the actual atomic `os.rename` operation (`EXDEV`), with no
+copy/delete fallback. On `EXDEV`, quarantine retains the source and `prepared`
+journal without a payload; restore retains the payload and unchanged journal.
+
 **Exclusive cooperative access is a precondition.** Quiesce the selected file,
 Git index and workspace lifecycle before applying. An exclusive per-root
 `tmp/cleanup/.lock` serializes cooperative mutations, not arbitrary processes.
@@ -85,7 +93,8 @@ same-user editor. Locks are never silently taken over.
 
 ## Crash recovery, not automatic repair
 
-File quarantine hashes a no-follow descriptor and binds device/inode, size,
+File quarantine checks path identity against the opened no-follow descriptor,
+hashes that descriptor and binds device/inode, size,
 mode, mtime, SHA-256, root device/inode, basename, UTC and reason. It fsyncs a
 `prepared` manifest **before** renaming, then syncs the affected directories and
 updates the journal to `quarantined`. A crash may leave:
@@ -185,4 +194,7 @@ cleanup Python files also need direct pinned Ruff/Pyright/Bandit review: the
 existing core-quality script does not scan root scripts automatically. Tests
 exercise byte/mode roundtrips, no-write previews, tracked/staged-deleted paths,
 unsafe types/hierarchies, lock contention, malformed/corrupt journals, bounded
-inputs, injected rename/journal failures, Git redirection and linked worktrees.
+inputs, differing directory/file devices with real file identities, directory
+device refusal, path/descriptor replacement, injected `EXDEV` in both directions
+with source/payload/journal retention, other rename/journal failures, Git
+redirection and linked worktrees.

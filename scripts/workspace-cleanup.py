@@ -173,7 +173,7 @@ def exists(parent: int, name: str) -> bool:
         return False
 
 
-def fingerprint(parent: int, name: str, device: int) -> dict[str, object]:
+def fingerprint(parent: int, name: str) -> dict[str, object]:
     path_info = os.stat(name, dir_fd=parent, follow_symlinks=False)
     if not stat.S_ISREG(path_info.st_mode) or path_info.st_nlink != 1:
         raise Refused("file must be regular and single-link")
@@ -181,8 +181,12 @@ def fingerprint(parent: int, name: str, device: int) -> dict[str, object]:
     try:
         before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
-                or before.st_dev != device or before.st_size > MAX_FILE):
-            raise Refused("file must be regular, single-link, same-filesystem and at most 256 MiB")
+                or before.st_size > MAX_FILE):
+            raise Refused("file must be regular, single-link and at most 256 MiB")
+        if identity(path_info) != identity(before) or path_info.st_ctime_ns != before.st_ctime_ns:
+            raise Refused("file identity changed while opening")
+        # Overlayfs may report different devices for directories and files.
+        # Bind the file's own identity; only the actual rename proves movability.
         digest = hashlib.sha256()
         total = 0
         while chunk := os.read(fd, 1024 * 1024):
@@ -332,7 +336,7 @@ def quarantine(root: Path, root_fd: int, name: str, why: str, apply: bool) -> st
         raise Refused("select the exact directory-entry spelling, not a filesystem alias")
     if tracked(root, name):
         raise Refused("source is tracked in HEAD or index")
-    details = fingerprint(root_fd, name, os.fstat(root_fd).st_dev)
+    details = fingerprint(root_fd, name)
     if not apply:
         return f"would quarantine {name!r}; no writes"
     with store(root_fd, True) as cleanup, lock(cleanup):
@@ -373,12 +377,12 @@ def restore_entry(root: Path, root_fd: int, cleanup: int, entry_id: str, apply: 
         payload = exists(entry, "payload")
         destination = exists(root_fd, name)
         if data["state"] == "restored" and not payload and destination:
-            if fingerprint(root_fd, name, device) == details:
+            if fingerprint(root_fd, name) == details:
                 return "already restored (identity and bytes verified)"
             raise Refused("restored file changed")
         if destination or not payload or data["state"] == "restored":
             raise Refused("conflict or partial state; inspect source, payload and journal")
-        if fingerprint(entry, "payload", device) != details:
+        if fingerprint(entry, "payload") != details:
             raise Refused("payload identity/hash mismatch")
         if not apply:
             return f"would restore {name!r}; no writes"

@@ -5,6 +5,22 @@ not an installer or a claim of completed runtime tests. The initial source
 release target is v0.1.0. OpenCode is the first reference harness; Pi follows.
 Prime retirement is separate work and is not performed or certified here.
 
+## Measured checkpoint — 2026-11-06
+
+Operator-reported guest measurements: OpenCode 2.0.30, Pi 0.84.3, Podman 5.7.0
+and base Python 3.14.4. Guest-local uv 0.9.26 and Python 3.12.12 were installed;
+all six quality tools were version-verified. The 15 session and 6 authority
+fixtures passed. The pre-fix cleanup suite had 12 failures and 1 error across
+25 tests: overlayfs reported directory `st_dev=28` and file/path-descriptor
+`st_dev=29`, while rename into a child directory succeeded with the inode
+unchanged. This checkpoint does not claim post-fix cleanup validation.
+
+A manual, bounded guest-root cgroup prototype obtained verifier PASS with
+CPU `100000/100000`, memory `134217728` bytes, PIDs `32`, and exact cleanup.
+This is prototype evidence only, not shipped startup integration, reboot
+qualification or OpenCode/Pi harness parity. The acceptance sequence below
+remains open; these measurements do not qualify full MSB support.
+
 ## Deployment and authority boundary
 
 MSB is the first outer VM target. Put the **full maintainer workspace and its

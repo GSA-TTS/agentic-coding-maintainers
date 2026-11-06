@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import importlib.util
 import io
 import json
@@ -118,6 +120,118 @@ class CleanupTests(unittest.TestCase):
                 self.cli("quarantine", name, "--reason", "test", "--apply", ok=False)
         self.assertFalse((self.root / "tmp").exists())
         self.assertEqual((self.root / "loose.txt").read_bytes(), b"loose\x00bytes\n")
+
+    def test_directory_and_file_devices_can_differ(self) -> None:
+        source = self.root / "loose.txt"
+        original = cleanup.identity(source.stat())
+        real_fstat = os.fstat
+        directory_device = source.stat().st_dev + 1
+
+        def overlay_fstat(fd: int) -> os.stat_result:
+            info = real_fstat(fd)
+            if stat.S_ISDIR(info.st_mode):
+                fields = list(info)
+                fields[2] = directory_device
+                return os.stat_result(fields)
+            return info  # Preserve real file device/inode and nanosecond timestamps.
+
+        with patch.object(cleanup.os, "fstat", side_effect=overlay_fstat):
+            before = self.snapshot()
+            self.cli("quarantine", "loose.txt", "--reason", "overlay preview")
+            self.assertEqual(before, self.snapshot())
+            entry = self.quarantine()
+            data = json.loads((entry / "manifest.json").read_text())
+            self.assertEqual(data["root"]["dev"], directory_device)
+            self.assertEqual(data["file"]["dev"], original["dev"])
+            self.assertEqual(cleanup.identity((entry / "payload").stat()), original)
+            before = self.snapshot()
+            self.cli("restore", entry.name)
+            self.assertEqual(before, self.snapshot())
+            self.cli("restore", entry.name, "--apply")
+            self.assertIn("already restored", self.cli("restore", entry.name, "--apply"))
+        self.assertEqual(cleanup.identity(source.stat()), original)
+        self.assertEqual(source.read_bytes(), b"loose\x00bytes\n")
+
+    def test_directory_device_mismatch_still_refused(self) -> None:
+        tmp = self.root / "tmp"
+        tmp.mkdir(mode=0o700)
+        tmp_ino = tmp.stat().st_ino
+        real_fstat = os.fstat
+
+        def different_device(fd: int) -> os.stat_result:
+            info = real_fstat(fd)
+            if stat.S_ISDIR(info.st_mode) and info.st_ino == tmp_ino:
+                fields = list(info)
+                fields[2] += 1
+                return os.stat_result(fields)
+            return info
+
+        before = self.snapshot()
+        with patch.object(cleanup.os, "fstat", side_effect=different_device):
+            self.cli("quarantine", "loose.txt", "--reason", "test", ok=False)
+            self.cli("quarantine", "loose.txt", "--reason", "test", "--apply", ok=False)
+        self.assertEqual(before, self.snapshot())
+
+    def test_path_and_open_descriptor_identity_must_match(self) -> None:
+        replacement = self.root / "replacement.txt"
+        replacement.write_bytes(b"loose\x00bytes\n")
+        real_open = os.open
+
+        def replace_before_open(path: str, flags: int, *, dir_fd: int) -> int:
+            replacement.rename(self.root / path)
+            return real_open(path, flags, dir_fd=dir_fd)
+
+        root_fd = os.open(self.root, cleanup.DIR_FLAGS)
+        try:
+            with patch.object(cleanup.os, "open", side_effect=replace_before_open):
+                with self.assertRaisesRegex(cleanup.Refused, "identity changed while opening"):
+                    cleanup.fingerprint(root_fd, "loose.txt")
+        finally:
+            os.close(root_fd)
+        self.assertFalse((self.root / "tmp").exists())
+
+    def test_quarantine_exdev_retains_source_and_prepared_journal(self) -> None:
+        source = self.root / "loose.txt"
+        original = cleanup.identity(source.stat())
+        with patch.object(cleanup.os, "rename", side_effect=OSError(errno.EXDEV, "cross-device rename")) as rename:
+            before = self.snapshot()
+            self.cli("quarantine", "loose.txt", "--reason", "test")
+            self.assertEqual(before, self.snapshot())
+            rename.assert_not_called()
+            self.cli("quarantine", "loose.txt", "--reason", "test", "--apply", ok=False)
+            rename.assert_called_once()
+            self.assertEqual(rename.call_args.args, ("loose.txt", "payload"))
+        entries = list((self.root / "tmp/cleanup").iterdir())
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(str(uuid.UUID(entry.name)), entry.name)
+        data = json.loads((entry / "manifest.json").read_text())
+        self.assertEqual(data["state"], "prepared")
+        self.assertEqual(data["file"], {**original, "sha256": hashlib.sha256(b"loose\x00bytes\n").hexdigest()})
+        self.assertEqual([path.name for path in entry.iterdir()], ["manifest.json"])
+        self.assertEqual(cleanup.identity(source.stat()), original)
+        self.assertEqual(source.read_bytes(), b"loose\x00bytes\n")
+        before = self.snapshot()
+        self.cli("restore", entry.name, "--apply", ok=False)
+        self.assertEqual(before, self.snapshot())
+
+    def test_restore_exdev_retains_payload_and_journal(self) -> None:
+        entry = self.quarantine()
+        payload = entry / "payload"
+        original = cleanup.identity(payload.stat())
+        before = self.snapshot()
+        with patch.object(cleanup.os, "rename", side_effect=OSError(errno.EXDEV, "cross-device rename")) as rename:
+            self.cli("restore", entry.name)
+            self.assertEqual(before, self.snapshot())
+            rename.assert_not_called()
+            self.cli("restore", entry.name, "--apply", ok=False)
+            rename.assert_called_once()
+            self.assertEqual(rename.call_args.args, ("payload", "loose.txt"))
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(cleanup.identity(payload.stat()), original)
+        self.assertEqual(payload.read_bytes(), b"loose\x00bytes\n")
+        self.assertFalse((self.root / "loose.txt").exists())
+        self.assertEqual(json.loads((entry / "manifest.json").read_text())["state"], "quarantined")
 
     def test_tracked_head_index_and_staged_deletion(self) -> None:
         self.cli("quarantine", "tracked.txt", "--reason", "test", "--apply", ok=False)
