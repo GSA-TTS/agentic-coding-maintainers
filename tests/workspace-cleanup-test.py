@@ -408,6 +408,42 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual((self.root / "loose.txt").read_bytes(), b"loose\x00bytes\n")
         self.cli("restore", entry.name, "--apply", ok=False)
 
+    def test_successful_rename_with_changed_identity_does_not_advance_journal(self) -> None:
+        original_rename = cleanup.os.rename
+
+        def copy_up(source, destination, **kwargs):
+            original_rename(source, destination, **kwargs)
+            directory = kwargs["dst_dir_fd"]
+            saved = destination + ".before-copy-up"
+            original_rename(destination, saved, src_dir_fd=directory, dst_dir_fd=directory)
+            old = os.open(saved, os.O_RDONLY, dir_fd=directory)
+            try:
+                content = os.read(old, 1024)
+                mode = stat.S_IMODE(os.fstat(old).st_mode)
+            finally:
+                os.close(old)
+            new = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode, dir_fd=directory)
+            try:
+                os.write(new, content)
+            finally:
+                os.close(new)
+
+        with patch.object(cleanup.os, "rename", side_effect=copy_up):
+            self.cli("quarantine", "loose.txt", "--reason", "copy-up fixture", "--apply", ok=False)
+        entry = next((self.root / "tmp/cleanup").iterdir())
+        self.assertEqual(json.loads((entry / "manifest.json").read_text())["state"], "prepared")
+        self.assertEqual((entry / "payload").read_bytes(), b"loose\x00bytes\n")
+        self.assertFalse((self.root / "loose.txt").exists())
+        self.cli("restore", entry.name, "--apply", ok=False)
+
+        (self.root / "loose.txt").write_bytes(b"loose\x00bytes\n")
+        second = self.quarantine()
+        with patch.object(cleanup.os, "rename", side_effect=copy_up):
+            self.cli("restore", second.name, "--apply", ok=False)
+        self.assertEqual(json.loads((second / "manifest.json").read_text())["state"], "quarantined")
+        self.assertEqual((self.root / "loose.txt").read_bytes(), b"loose\x00bytes\n")
+        self.assertFalse((second / "payload").exists())
+
     def test_manifest_limits_and_artifact_validation(self) -> None:
         entry = self.quarantine()
         manifest = entry / "manifest.json"

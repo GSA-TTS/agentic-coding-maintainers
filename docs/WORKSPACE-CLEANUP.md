@@ -80,7 +80,11 @@ directory device numbers: overlayfs can report different devices for a directory
 and its files even when rename succeeds. Directory-hierarchy device checks remain
 required. A preview cannot guarantee rename will succeed. Cross-filesystem file
 moves are rejected by the actual atomic `os.rename` operation (`EXDEV`), with no
-copy/delete fallback. On `EXDEV`, quarantine retains the source and `prepared`
+copy/delete fallback. The destination is fingerprinted after each rename before
+the journal advances. If overlay copy-up changes identity or bytes, the operation
+returns exit 3 and preserves the previous journal and moved artifact for manual
+recovery; it does not silently rebind identity or claim success.
+On `EXDEV`, quarantine retains the source and `prepared`
 journal without a payload; restore retains the payload and unchanged journal.
 
 **Exclusive cooperative access is a precondition.** Quiesce the selected file,

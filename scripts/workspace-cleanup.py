@@ -355,6 +355,8 @@ def quarantine(root: Path, root_fd: int, name: str, why: str, apply: bool) -> st
             os.rename(name, "payload", src_dir_fd=root_fd, dst_dir_fd=entry)
             os.fsync(root_fd)
             os.fsync(entry)
+            if fingerprint(entry, "payload") != details:
+                raise Refused("renamed payload identity changed; preserve prepared journal for manual recovery")
             data["state"] = "quarantined"
             write_manifest(entry, data)
         return entry_id
@@ -392,6 +394,8 @@ def restore_entry(root: Path, root_fd: int, cleanup: int, entry_id: str, apply: 
         os.rename("payload", name, src_dir_fd=entry, dst_dir_fd=root_fd)
         os.fsync(entry)
         os.fsync(root_fd)
+        if fingerprint(root_fd, name) != details:
+            raise Refused("restored file identity changed; preserve journal and file for manual recovery")
         data["state"] = "restored"
         write_manifest(entry, data)
         return f"restored {name!r}"
