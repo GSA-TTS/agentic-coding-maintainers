@@ -86,7 +86,7 @@ class CooperativeBindingTest(unittest.TestCase):
                            "--expected-revision", str(revision))
 
     def live_child(self):
-        child = subprocess.Popen([sys.executable, "-I", "-B", "-c", "import time; time.sleep(30)"],
+        child = subprocess.Popen([sys.executable, "-I", "-B", "-c", "import time; time.sleep(120)"],
                                  cwd=self.root, env=self.env, stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(self.stop_child, child)
@@ -571,6 +571,138 @@ class CooperativeBindingTest(unittest.TestCase):
         self.refuses_unchanged("record", "pilot", "validation", "stale", *stale, expected=4)
         self.assertEqual(self.invoke("show", "pilot"), second)
         self.assertEqual(self.invoke("list"), [second])
+
+    def test_same_account_two_live_sessions_acknowledged_handoff(self):
+        initial = self.create()
+        child_a, child_b = self.live_child(), self.live_child()
+        self.assertNotEqual(child_a.pid, child_b.pid)
+        claimed = self.claim(revision=initial["revision"], pid=child_a.pid)
+        active = self.invoke("transition", "pilot", "Implementing", *self.owned(claimed))
+        wrong_session = self.owned(active)
+        wrong_session[1] = OTHER_SESSION
+        wrong_worker = self.owned(active)
+        wrong_worker[3] = "f" * 32
+        for flags in (wrong_session, wrong_worker):
+            self.recovery_refuses("record", "pilot", "validation", "session B premature write",
+                                  *flags, expected=4)
+        claim_b = ["claim", "pilot", "--owner", active["owner"], "--pid", str(child_b.pid),
+                   "--session-id", OTHER_SESSION, "--expected-generation", "1",
+                   "--expected-revision", str(active["revision"])]
+        self.recovery_refuses(*claim_b, expected=4)
+        self.recovery_refuses("transition", "pilot", "Ready", *self.operator(active), expected=4)
+        acknowledgement = "Cooperative handoff acknowledged; work preserved in private checkpoint"
+        acknowledged = self.invoke("record", "pilot", "validation", acknowledgement, *self.owned(active))
+        # Each step observes anew; session/worker expectations still belong to A.
+        fresh = self.invoke("show", "pilot")
+        self.assertEqual(fresh, acknowledged)
+        blocked = self.invoke("transition", "pilot", "Blocked", *self.owned(fresh))
+        self.assertIsNone(child_a.poll())  # Releasing ownership does not stop its process.
+        self.assertIsNone(blocked["worker"])
+        self.assertEqual(blocked["cooperative_binding"], active["cooperative_binding"])
+        self.assertEqual(blocked["leases"], dict(active["leases"], global_slot=None, implementation_lane=None))
+        self.assertEqual(list((self.state / "slots").iterdir()), [])
+        self.assertEqual(list((self.state / "implementation").iterdir()), [])
+        claim_b[-1] = str(blocked["revision"])
+        self.recovery_refuses(*claim_b, expected=4)  # Blocked is not claimable.
+        self.stop_child(child_a)  # Independent operator prerequisite, outside the state CLI.
+        self.assertIsNotNone(child_a.returncode)
+        self.assertEqual(self.core_module.process_identity(child_a.pid), ("absent", None))
+        fresh = self.invoke("show", "pilot")
+        ready = self.invoke("transition", "pilot", "Ready", *self.operator(fresh))
+        fresh = self.invoke("show", "pilot")
+        self.assertEqual(fresh, ready)
+        self.assertIsNone(child_b.poll())  # B's already-live PID is a valid new worker.
+        second = self.claim(session=OTHER_SESSION, generation=fresh["cooperative_binding"]["generation"],
+                            revision=fresh["revision"], pid=child_b.pid)
+        self.assertEqual(second["owner"], active["owner"])
+        self.assertEqual(second["worker"]["pid"], child_b.pid)
+        self.assertEqual(second["cooperative_binding"], {"session_id": OTHER_SESSION, "generation": 2})
+        self.assertNotEqual(second["worker"]["worker_id"], active["worker"]["worker_id"])
+        self.assertEqual(second["validation"], [acknowledgement])
+        for command in (("record", "pilot", "validation", "stale A"),
+                        ("update-head", "pilot", HEAD), ("transition", "pilot", "Blocked")):
+            self.recovery_refuses(*command, *self.owned(acknowledged), expected=4)
+            stale_identity = self.owned(second)
+            stale_identity[1], stale_identity[3] = SESSION, active["worker"]["worker_id"]
+            self.recovery_refuses(*command, *stale_identity, expected=4)
+        recorded = self.invoke("record", "pilot", "validation", "session B resumed", *self.owned(second))
+        resumed = self.invoke("transition", "pilot", "Implementing", *self.owned(recorded))
+        for group, index in (("slots", resumed["leases"]["global_slot"]),
+                             ("implementation", resumed["leases"]["implementation_lane"])):
+            owner = self.state / group / f"{index}.lock/owner.json"
+            self.assertEqual(json.loads(owner.read_text()), resumed["worker"])
+
+    def test_handoff_lost_responses_observe_before_retry_and_preserve_conflicts(self):
+        initial = self.create()
+        child_a, child_b = self.live_child(), self.live_child()
+        claimed = self.claim(revision=initial["revision"], pid=child_a.pid)
+        acknowledgement = "Cooperative handoff acknowledged; private checkpoint retained"
+        record_args = ["record", "pilot", "validation", acknowledgement, *self.owned(claimed)]
+        self.invoke(*record_args)  # Successful durable action; caller loses its response.
+        observed = self.invoke("show", "pilot")
+        self.assertEqual(observed["validation"], [acknowledgement])
+        self.assertEqual(observed["revision"], claimed["revision"] + 1)
+        self.recovery_refuses(*record_args, expected=4)
+        release_args = ["transition", "pilot", "Blocked", *self.owned(observed)]
+        self.invoke(*release_args)
+        observed = self.invoke("show", "pilot")
+        self.assertEqual(observed["state"], "Blocked")
+        self.assertIsNone(observed["worker"])
+        self.recovery_refuses(*release_args, expected=4)
+        self.stop_child(child_a)
+        self.assertEqual(self.core_module.process_identity(child_a.pid), ("absent", None))
+        observed = self.invoke("show", "pilot")
+        ready_args = ["transition", "pilot", "Ready", *self.operator(observed)]
+        self.invoke(*ready_args)
+        ready = self.invoke("show", "pilot")
+        self.assertEqual(ready["state"], "Ready")
+        self.recovery_refuses(*ready_args, expected=4)
+        claim_args = ["claim", "pilot", "--owner", claimed["owner"], "--pid", str(child_b.pid),
+                      "--session-id", OTHER_SESSION, "--expected-generation",
+                      str(ready["cooperative_binding"]["generation"]), "--expected-revision", str(ready["revision"])]
+        self.invoke(*claim_args)
+        second = self.invoke("show", "pilot")
+        self.assertEqual(second["cooperative_binding"], {"session_id": OTHER_SESSION, "generation": 2})
+        self.assertEqual(second["worker"]["pid"], child_b.pid)
+        self.recovery_refuses(*claim_args, expected=4)
+        # A different successful action advances revision: observation does not
+        # authorize blindly rebasing an earlier request onto that newer revision.
+        stale = self.owned(second)
+        current = self.invoke("record", "pilot", "validation", "session B checkpoint", *stale)
+        self.recovery_refuses("record", "pilot", "validation", "unobserved competing request", *stale, expected=4)
+        self.assertEqual(self.invoke("show", "pilot"), current)
+        self.assertNotIn("unobserved competing request", current["validation"])
+
+    def test_released_live_worker_ready_guard_cannot_prove_stop(self):
+        self.create()
+        child = self.live_child()
+        claimed = self.claim(pid=child.pid)
+        blocked = self.invoke("transition", "pilot", "Blocked", *self.owned(claimed))
+        self.assertIsNone(child.poll())
+        self.assertIsNone(blocked["worker"])
+        # Deliberate negative-policy fixture: the operator prerequisite is NOT
+        # implemented by the inactive-state guard. Never use this as a recipe.
+        ready = self.invoke("transition", "pilot", "Ready", *self.operator(blocked))
+        self.assertEqual(ready["state"], "Ready")
+        self.assertIsNone(child.poll())
+
+    def test_settled_recovery_receipt_survives_ready_and_new_session_claim(self):
+        interrupted = self.interrupted_worker()
+        settled = self.assert_recovered(interrupted, self.invoke(*self.recovery(interrupted)))
+        receipt = copy.deepcopy(settled["transition_recovery"])
+        fresh = self.invoke("show", "pilot")
+        ready = self.invoke("transition", "pilot", "Ready", *self.operator(fresh))
+        self.assertEqual(ready["transition_recovery"], receipt)
+        child_b = self.live_child()
+        fresh = self.invoke("show", "pilot")
+        second = self.claim(session=OTHER_SESSION, generation=fresh["cooperative_binding"]["generation"],
+                            revision=fresh["revision"], pid=child_b.pid)
+        self.assertEqual(second["cooperative_binding"]["generation"], receipt["generation"] + 1)
+        self.assertEqual(second["transition_recovery"], receipt)
+        self.assertEqual(second["worker"]["pid"], child_b.pid)
+        self.assertEqual(self.invoke("show", "pilot"), second)
+        result = self.invoke("record", "pilot", "validation", "session B after recovery", *self.owned(second))
+        self.assertEqual(result["transition_recovery"], receipt)
 
     def test_every_owned_mutator_requires_all_flags_before_effects(self):
         self.create()

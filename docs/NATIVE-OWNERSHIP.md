@@ -65,6 +65,118 @@ legacy recovery can mutate an earlier task. Interrupted bound transitions remain
 preserved and block ordinary mutations/admission. Explicit recovery of one selected
 task is available through the guarded command below.
 
+### Acknowledged same-account, two-session handoff
+
+Use this core-only procedure for an admitted task with a cooperating owner A and
+an intended successor B. Both may use the same account and `--owner` label, but
+must use distinct opaque session labels and distinct actual worker processes.
+The label does not make B the owner of A's retained worker. This procedure uses
+existing `record validation`, `Blocked`, operator `Ready`, and `claim` actions;
+the acknowledgement is ordinary validation prose, not a new field or an enforced
+handoff protocol. The operator must confirm that both sessions acknowledged the
+checkpoint and ownership change privately before proceeding.
+
+**Private local inputs:** select the physical authority explicitly as described
+below. In the examples, `TASK`, `OWNER`, `SESSION_A`, `SESSION_B`, `WORKER_A`,
+`PID_A`, `PID_B`, `GEN`, and `REV` are locally supplied comparison inputs.
+`PID_A`/`PID_B` name actual live workers, not a shell PID substituted for a worker.
+Preserve A's process handle/start identity privately before release. Keep session
+labels opaque and free of personal data. Keep raw `show` output, these inputs,
+process evidence, and checkpoint contents out of public logs, commits, and PR
+attachments; publish only case names and outcomes. `ACK` is concise acknowledgement
+prose referring to an access-restricted local checkpoint, without embedding its
+private identifiers, paths, or sensitive contents. Disable shell tracing and use
+private local output handling for every command below.
+
+1. **Observe A's current claim.** Privately run
+   `"$SKILL_DIR/run.sh" state show "$TASK"`. Confirm a stable active task, no
+   interrupted intent or pending recovery, and complete retained reservations.
+   A verifies the retained session and worker ID against its own original claim;
+   take `GEN` and `REV` from this fresh observation. If opting in from an admitted
+   schema-2 `Ready` task first, A uses the explicit claim form above with generation
+   0, the freshly observed revision, its opaque session label, and actual live PID.
+   B must not copy A's identity flags to act as A. B's own session label is distinct;
+   an attempt to claim while A is active is refused, even with the same owner label.
+
+2. **A records the agreed checkpoint.** After both sessions privately acknowledge
+   the preserved work and handoff plan, A executes:
+
+   ```sh
+   "$SKILL_DIR/run.sh" state record "$TASK" validation "$ACK" \
+     --expected-session-id "$SESSION_A" --expected-worker-id "$WORKER_A" \
+     --expected-generation "$GEN" --expected-revision "$REV"
+   ```
+
+   Observe `show` again, confirm the acknowledgement and unchanged A binding, and
+   refresh `GEN`/`REV`. Every next step requires a fresh observation; never predict
+   revision arithmetic or reuse the previous command's revision.
+
+3. **A releases ownership through `Blocked`.** Using that fresh revision:
+
+   ```sh
+   "$SKILL_DIR/run.sh" state transition "$TASK" Blocked \
+     --expected-session-id "$SESSION_A" --expected-worker-id "$WORKER_A" \
+     --expected-generation "$GEN" --expected-revision "$REV"
+   ```
+
+   Privately observe stable `Blocked`, `worker = null`, released global slot and
+   implementation lane, retained scope and generation, and preserved checkpoint.
+   B still cannot claim from `Blocked`.
+
+4. **Independently stop and reap A before preparing `Ready`.** Release does not
+   terminate A's worker: it may still be alive after step 3. Stop further A writes,
+   preserve dirty work and unsettled evidence, and use the trusted local supervisor
+   to stop and reap the actual worker and any task-writing descendants. Verify
+   termination using the privately retained process identity; a reused PID,
+   unknown status, or missing evidence is not proof of termination. Leave the task
+   `Blocked` until this is established. The inactive operator guard sees
+   `worker = null`; it does **not** retain or check the former process's liveness.
+   Consequently the CLI can accept `Ready` while that former process lives.
+   Stop-and-reap is an operator prerequisite, not a guarantee provided by fencing.
+
+5. **The operator explicitly prepares `Ready`.** Observe `show` anew and refresh
+   `GEN`/`REV`. After independently verifying step 4 and admission/dependency gates:
+
+   ```sh
+   "$SKILL_DIR/run.sh" state transition "$TASK" Ready --operator-action \
+     --operator-reason 'Acknowledged checkpoint preserved; former worker stopped and reaped' \
+     --expected-generation "$GEN" --expected-revision "$REV"
+   ```
+
+   The flags record an explicit operator declaration and rationale. They do not
+   authenticate an operator or independently establish the truth of that rationale.
+
+6. **B explicitly claims the freshly observed `Ready` task.** Observe `show`
+   again, verify stable inactive `Ready`, and refresh `GEN`/`REV`:
+
+   ```sh
+   "$SKILL_DIR/run.sh" state claim "$TASK" --owner "$OWNER" --pid "$PID_B" \
+     --session-id "$SESSION_B" --expected-generation "$GEN" --expected-revision "$REV"
+   ```
+
+   B's distinct actual process may already have been alive while A was active;
+   ownership starts with this successful claim. Confirm a new worker ID, B's
+   session label, generation incremented by one, and consistent reservations.
+   B privately retains the new identity and uses fresh revisions for subsequent
+   guarded actions. A's old generation, session, and worker expectations are stale.
+
+**Lost response or conflict:** observe the private current snapshot before any
+retry. A matching durable acknowledgement, stable `Blocked`, stable `Ready`, or
+B claim with B's intended binding/process means that step completed; continue
+only after its remaining prerequisites. Retrying the original command with its
+old revision is refused without changing retained state. A changed revision with
+different evidence is a conflict to reconcile with the owner/operator, not
+permission to substitute fresh counters and replay an unreviewed action. An
+interrupted intent or pending receipt requires the explicit recovery procedure
+below. A settled receipt remains intact through `Ready` and the next generation's
+claim; if that claim fails receipt validation, preserve the snapshot and report
+the defect rather than deleting, rewriting, or bypassing receipt fields.
+
+These comparisons fence cooperative mistakes, not a same-user adversary: another
+session of the account can copy all current IDs and counters, declare operator
+action, and pass the guards. Neither the acknowledgement prose nor observing state
+grants authenticated authority. This sequence never supplies force takeover.
+
 ### Explicit interrupted-transition recovery
 
 ```sh
@@ -176,8 +288,15 @@ transition/recovery boundaries using fixture-local monkeypatches and exceptions,
 with real claimed children terminated and reaped to establish absence. They cover
 durable intent, partial cleanup, pending retry, refusal preservation (including
 directory metadata), and unsupported crash boundaries; no production crash hooks
-are added. Run the fixture, `make check`, and the
-strict hook only in an independently isolated validation environment.
+are added. Four additional cases cover two distinct real live worker children
+with the same owner label, acknowledged release and independent stop/reap,
+pre-release and stale-owner refusals, lost-response observations and preserved
+revision conflicts, the inactive guard's inability to prove a released worker
+stopped, and a settled receipt surviving a new session's claim. The children are
+process-liveness fixtures, not native session collectors or coding agents; the
+distinct opaque labels are cooperative declarations. Run the fixture,
+`make check`, and the strict hook only in an independently isolated validation
+environment.
 
 The offline previous-schema-3 compatibility case embeds the actual pinned
 `aeaa68ce` schema/extension-validation excerpt. It checks pending and settled
