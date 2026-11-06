@@ -169,6 +169,38 @@ make check
 `make check` uses ShellCheck when it is already installed. It does not download
 tools.
 
+### Core CI tools on Linux
+
+`tools/install-ci-tools.sh /absolute/path/to/ci-tools` installs exactly six
+core tools: Ruff, Pyright, Bandit, ShellCheck, actionlint, and zizmor. Run it
+only inside an independently justified workspace sandbox. It downloads pinned
+artifacts and requires a **glibc-based Linux x86_64 or ARM64 (`uname -m` =
+`aarch64`) environment**, **Python 3.12 with venv/pip support**, Node.js/npm,
+Bash, curl, sha256sum, tar with gzip/xz support, and standard file utilities.
+macOS, other architectures, and musl-based Linux are not supported. The platform
+case rejects unrecognized OS/architecture pairs before destination or temporary
+directory writes; it does not detect the libc. The Python version check also
+precedes those writes. Add the absolute destination's `bin/` to `PATH` afterward.
+
+Native archives are SHA-256 checked before extraction. Bandit uses separate
+seven-package hash locks for x86_64 and aarch64; only the Python 3.12 manylinux
+PyYAML wheel hash differs. Pyright uses the existing npm lock with install
+scripts disabled. Temporary downloads are private and cleaned on exit, but
+failure may leave an incomplete destination; installation is not atomic.
+
+The ARM64 archive pins were supplied from independently obtained upstream GitHub
+asset digests; the PyYAML 6.0.3 CPython 3.12 manylinux aarch64 wheel pin was
+supplied from PyPI JSON. Offline fixtures check the selected URLs, pins, lock,
+ordering, rejection and failure behavior with synthetic command stubs; they do
+not download or execute upstream tools, verify upstream availability, or qualify
+native ARM64 execution. Run `python3 -I -B tests/ci-tool-installer-test.py` inside
+the sandbox (also included in `make test` and `make check`).
+
+This is not a full strict-tool bootstrap: `pre-commit`, Gitleaks, and Trivy are
+separate prerequisites for `make strict-check` / `pre-commit run --all-files`.
+Their required versions, along with the core tools, are recorded in
+`tools/precommit-versions.json`.
+
 Repository administrators must complete and verify
 [`docs/REPOSITORY-SETUP.md`](docs/REPOSITORY-SETUP.md) after bootstrap.
 Maintainers troubleshooting GitHub Actions log downloads on managed macOS hosts
