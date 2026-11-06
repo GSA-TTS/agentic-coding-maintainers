@@ -230,6 +230,19 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
 
 ## Review and rework
 
+Use [Actionable review output](REVIEW-OUTPUT.md) for human-facing review bodies:
+unresolved, severity-ordered findings with verified file:line, trigger, impact,
+and a concise fix; retain only material evidence/limits plus brief required AI
+attribution and exact-head binding. Never invent unavailable line citations or
+present UNVERIFIED required coverage as clean. Omit passing-check inventories,
+resolved recaps, and administrative chatter from that outward body only.
+Internal orchestrator handoffs still retain complete fixed-head/base bindings,
+acceptance and obligation coverage, evidence, limitations, dispositions, status,
+and next action. Presentation does not change permissions or acceptance gates.
+Install byte-identical profile copies and the packaged guidance, then quit and
+restart OpenCode; profiles must carry the essential rules without requiring a
+runtime read of the linked document.
+
 1. Implementation owner returns exact SHA, files, validation, and residual risk.
    After committing, bind the actual assigned worktree head and invalidate stale
    review evidence:

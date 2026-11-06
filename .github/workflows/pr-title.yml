@@ -1,0 +1,33 @@
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # Metadata only: no checkout, token, dependencies, or title interpolation.
+      - name: Validate event title
+        shell: python3 -I -B {0}
+        run: |
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          title = event["pull_request"]["title"]
+          pattern = r"(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\([a-zA-Z0-9][a-zA-Z0-9._/-]*\))?!?: [^\s\x00-\x1f\x7f][^\r\n\x00-\x1f\x7f]*"
+          if not isinstance(title, str) or re.fullmatch(pattern, title) is None or title != title.rstrip():
+              raise SystemExit("Use type(scope)!: description; scope and ! are optional. See CONTRIBUTING.md.")
+          print("Conventional PR title: PASS")

@@ -1,5 +1,5 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-96976cb9799fb5752e8ca901c6a38a89136fce469069e25fa903dae7a117ab2c  ./PROVENANCE.md
+817f7b18c9b2bfad9ae2cfe4eec3d0f025dd3bd52b735a3486f37a27fb149984  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 8017c4e84ef573f63732aa0b660298794a70429ec74bb109c7dc18be23bb5300  ./bin/candidate-binding.py
@@ -34,11 +34,12 @@ bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTI
 2cc85ad8018eddaec39479868728e052e45840c5528a8d2048debc1e638a776b  ./docs/FOREGROUND-DELIVERY.md
 3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
 ba8d134ae3a0dba93249f97823032760a745aacf0b251a8e87a0ce1e53228382  ./docs/MAINTAINER-SERVICE.md
-64e20c78c8068c690b424d7ff3ad9dead0482ec3b5d52c25186c9c6d368e547d  ./docs/OPERATOR-GUIDE.md
+5a912caa5864f7689cffbc762dfda906f939e77ce951222068e52b7a07e8e02e  ./docs/OPERATOR-GUIDE.md
 a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-REPAIR.md
 353a1e25f31e484253ccaceedfa72f5c6284156f9f9c0f380a664961b7a11a74  ./docs/REVIEW-ACCEPTANCE.md
 5da200894e5cd4544a00795f59cb559b86976607e011b10a8d8a6ef7537c0696  ./docs/REVIEW-COLLECTION.md
 8884a29fa04fe2f428a1093788b4bcf90c48644ed8b100d08880dd303943de7d  ./docs/REVIEW-HANDOFF.md
+2114d7f7b51286c9ddf0d67d99f2f5d03a4bbf6f3a73cfdfdd16060f57db62bb  ./docs/REVIEW-OUTPUT.md
 2cd48d3f3fed2084fbe987070df1945ac0a99339bc0ba554e66afa23ccde5f60  ./docs/REVIEW-PROTOCOL.md
 0fc15db361f2069459611cc86a15c01ad5dd389d0b32a16ca8dc584834f29acd  ./docs/REVIEW-RUNNER.md
 46ca78d776b005747c12907657e3b27eb7adc97edc82a2ca8ba46819827e6d05  ./examples/commands/orchestrate-start.md
@@ -47,9 +48,9 @@ a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-R
 ea1ae94761114ef7093d73eac418f4d0a0c8ac4c3dc7b11a52f9472e6496e1fc  ./profiles/opencode-v1/backlog-project-monitor.md
 5416f17ef86250d461cf353d2226b6c2ff524fa24453ad4e4d4713e50a2dc3ca  ./profiles/opencode-v1/implementation-worker.md
 ccbc526524b51c39728052cbe65391fa3e89d23f5e598b61b109cd1fdd281328  ./profiles/opencode-v1/orchestration-qa.md
-e7f90569dd687d1e874ba8ca450318cb428d0e15192f36611a29aea2916a9d84  ./profiles/opencode-v1/pr-review-coordinator.md
-a260ff60ae4a6b66c83f79f4cfb2be81781eef06918fd88a41b42803733b4aa2  ./profiles/opencode-v1/qa-reviewer.md
-636adbe9ffaf013d25cabcc6fc19fbc217a6082babd8ff2b2bac5c415ba04609  ./profiles/opencode-v1/security-reviewer.md
+a508a8d2a58dc6b123140b342da10d7d9d58dca68c49993fb6e89d4ad6c26acb  ./profiles/opencode-v1/pr-review-coordinator.md
+d7d452edc6a4072bca8ffffcbaaefcaa9cc89150312c1bea6f84f9df9c4f79dd  ./profiles/opencode-v1/qa-reviewer.md
+12bad142b7fcd20b4a4f3563bff8b2181697335802918b86224a1c7716421db5  ./profiles/opencode-v1/security-reviewer.md
 d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 10c4282def67c1f8fe05af3b5d5e1e27b10548f7531d44c667ce70cab16ab607  ./tests/candidate-binding-test.py
 507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py

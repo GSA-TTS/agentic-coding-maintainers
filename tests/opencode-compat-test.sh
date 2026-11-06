@@ -33,6 +33,35 @@ for skill in ("cross-repo-epic", "workspace-orchestrator"):
     assert re.search(r"OpenCode 1\.19\+ and 2\.0\+", top["compatibility"])
     assert metadata and all(isinstance(value, str) and value for value in metadata.values())
 print("skill frontmatter: PASS")
+
+# Static packaging and authored-example checks only, not LLM compliance.
+# Installed profile byte parity is covered by operating-surface-test.sh.
+skill = root / ".agents/skills/workspace-orchestrator"
+guide = skill / "docs/REVIEW-OUTPUT.md"
+assert guide.is_file(), "review output guidance must ship with the skill"
+for source in [
+    skill / "profiles/opencode-v1" / f"{name}.md"
+    for name in ("qa-reviewer", "security-reviewer", "pr-review-coordinator")
+]:
+    paths = re.findall(r"repository-root `([^`]+)`", source.read_text(encoding="utf-8"))
+    assert any((root / path).resolve() == guide.resolve() for path in paths), source.name
+links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", (skill / "docs/OPERATOR-GUIDE.md").read_text())
+assert any((skill / "docs" / link).resolve() == guide.resolve() for link in links)
+
+examples = re.findall(r"```text\n(.*?)\n```", guide.read_text(encoding="utf-8"), re.S)
+assert len(examples) == 3, "expected defect, no-findings, and unverified examples"
+defect, clean, unverified = examples
+for example in examples:
+    assert re.search(r"AI-assisted .*head [0-9a-f]{40}\.", example), "missing head/attribution"
+assert re.match(r"Should-fix — [^\s:]+:[1-9][0-9]* — ", defect), "missing finding location"
+assert "UNVERIFIED" in defect, "defect example must retain material uncertainty"
+assert not re.search(r"^(Blocker|Should-fix|Nit)\b", clean, re.M), "clean example has a finding"
+assert clean.splitlines()[0] == "No actionable findings."
+assert unverified.startswith("UNVERIFIED — ")
+assert not re.search(r"\bclean\b|no actionable findings", unverified, re.I), (
+    "unverified example must not claim a clean review"
+)
+print("review output packaging and synthetic examples: PASS (static; no model compliance claim)")
 PY
 
 if [[ -z "$V1" || -z "$V2" ]]; then
