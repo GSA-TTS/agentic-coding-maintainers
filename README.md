@@ -84,6 +84,19 @@ live here; check their contents, not only their filenames.
 
 ## Development
 
+### Releases and deployment direction
+
+The first intended source release is **v0.1.0**. The initial `version.txt` value
+`0.0.0` is a bootstrap sentinel, not a published release. Release generation is
+operator-gated and uses Release Please with `GITHUB_TOKEN`; bot PRs need human
+close/reopen to start normal CI when current-head checks are missing. See
+[the release lifecycle](docs/RELEASING.md) and [changelog](CHANGELOG.md).
+
+The deployment target is the full maintainer workspace **and orchestrator inside
+an MSB VM**, with real rootless inner-OCI execution. OpenCode is the first
+reference harness, then Pi. This groundwork does not qualify those deployments
+or claim a stable 1.0 contract. See [the acceptance plan and support matrix](docs/MSB-WORKSPACE-PLAN.md).
+
 ### Run maintainer work from this repository
 
 The skills are self-contained. For this engagement, copy
