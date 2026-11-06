@@ -21,6 +21,32 @@ OTHER_SESSION = "b" * 32
 HEAD = "1" * 40
 
 
+def previous_schema3_extension_excerpt(raw, *, allow_bound=False):
+    """Actual validate_record excerpt, not a complete previous-core reader.
+
+    Source: aeaa68ce36ab515d76640205326be0e4df8142ad,
+    .agents/skills/workspace-orchestrator/bin/orchestrator-state.py:292-295,
+    307-319. Copied verbatim schema/extension checks and required-field set;
+    omitted migration and missing-field checks. No Git history needed at runtime.
+    """
+    BOUND_SCHEMA = 3
+    UnknownError = ValueError
+    if type(raw.get("schema_version")) is not int:
+        raise UnknownError("task schema is invalid")
+    if raw.get("schema_version") == BOUND_SCHEMA and not allow_bound:
+        raise UnknownError("cooperative schema 3 is unsupported by this controller")
+    required = {
+        "schema_version", "task_id", "state", "scope", "scope_key", "kind",
+        "owner", "repo", "branch", "worktree", "base_sha", "owned_paths",
+        "tracker_type", "tracker_number", "head_sha", "reviewed_sha",
+        "restricted_paths", "acceptance_criteria", "dependencies", "reviewers",
+        "findings", "validation", "next_action", "worker", "leases",
+        "transition_intent", "rework_count", "revision", "created_at", "updated_at",
+    }
+    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions"}:
+        raise UnknownError("cooperative core-only task has unsupported retained extensions")
+
+
 class CooperativeBindingTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="cooperative-binding-")
@@ -105,6 +131,419 @@ class CooperativeBindingTest(unittest.TestCase):
 
     def task_path(self, task="pilot"):
         return self.state / "tasks" / task / "task.json"
+
+    def interruption(self, record, target, boundary="intent"):
+        """Intercept real fixture-local writes/releases after a durable boundary."""
+        core = self.core_module
+        write, release = core.write_task, core.release_dir
+
+        def trace_write(root, value, **kwargs):
+            write(root, value, **kwargs)
+            if boundary == "intent" and value["transition_intent"] == target:
+                raise RuntimeError("fixture interrupted after durable intent")
+
+        def trace_release(path, token):
+            release(path, token)
+            if path.parent.name == boundary:
+                raise RuntimeError("fixture interrupted after exact release")
+
+        args = core.parser().parse_args(["transition", record["task_id"], target, *self.owned(record)])
+        with (mock.patch.dict(os.environ, self.env, clear=True),
+              mock.patch.object(core, "write_task", side_effect=trace_write),
+              mock.patch.object(core, "release_dir", side_effect=trace_release),
+              self.assertRaisesRegex(RuntimeError, "fixture interrupted")):
+            core.command_transition(args, self.state)
+        return self.invoke("show", record["task_id"])
+
+    def interrupted_worker(self, source="Implementing", target="Blocked", boundary="intent"):
+        self.create()
+        child = self.live_child()
+        record = self.claim(pid=child.pid)
+        if source != "Claimed":
+            record = self.invoke("transition", "pilot", source, *self.owned(record))
+        record = self.interruption(record, target, boundary)
+        self.stop_child(child)
+        self.assertEqual(self.core_module.process_identity(child.pid), ("absent", None))
+        return record
+
+    def recovery(self, record):
+        return ["reconcile", "--recover", record["task_id"], *self.operator(record)]
+
+    def directory_snapshot(self):
+        # Coordinator-lock parent timestamps reflect taking the guard, not task
+        # mutation. Every task/reservation directory identity and mode is kept.
+        return {str(path.relative_to(self.state)): (path.lstat().st_ino, path.lstat().st_mode,
+                                                   path.lstat().st_mtime_ns)
+                for group in ("tasks", "scopes", "slots", "implementation")
+                for path in (self.state / group).rglob("*") if path.is_dir()}
+
+    def recovery_refuses(self, *args, expected=3):
+        directories = self.directory_snapshot()
+        self.refuses_unchanged(*args, expected=expected)
+        self.assertEqual(self.directory_snapshot(), directories)
+
+    def assert_recovered(self, old, result):
+        new = result["changed"][0]
+        self.assertEqual(new["state"], "Blocked")
+        self.assertIsNone(new["worker"])
+        self.assertIsNone(new["transition_intent"])
+        self.assertEqual(new["cooperative_binding"], old["cooperative_binding"])
+        for field in ("findings", "head_sha", "reviewed_sha", "rework_count", "validation", "reviewers"):
+            self.assertEqual(new[field], old[field])
+        self.assertEqual(new["leases"], dict(old["leases"], global_slot=None, implementation_lane=None))
+        self.assertEqual(new["transition_recovery"]["phase"], "settled")
+        self.assertEqual(list((self.state / "slots").iterdir()), [])
+        self.assertEqual(list((self.state / "implementation").iterdir()), [])
+        return new
+
+    def test_recovery_complete_intent_preserves_unrelated_task_and_scope(self):
+        self.create("unrelated", kind="monitor")
+        record = self.interrupted_worker()
+        unrelated = self.task_path("unrelated").read_bytes()
+        scope = self.state / "scopes" / f"{record['scope_key']}.lock"
+        before = (scope.stat().st_ino, scope.stat().st_mode, scope.stat().st_mtime_ns,
+                  (scope / "owner.json").read_bytes())
+        settled = self.assert_recovered(record, self.invoke(*self.recovery(record)))
+        self.assertEqual(settled["revision"], record["revision"] + 2)
+        self.assertEqual(self.task_path("unrelated").read_bytes(), unrelated)
+        self.assertEqual((scope.stat().st_ino, scope.stat().st_mode, scope.stat().st_mtime_ns,
+                          (scope / "owner.json").read_bytes()), before)
+        self.recovery_refuses(*self.recovery(settled))
+        self.recovery_refuses("reconcile")
+
+    def test_recovery_partial_slot_cleanup_and_rework_no_double_increment(self):
+        record = self.interrupted_worker(source="Reviewing", target="Rework", boundary="slots")
+        self.assertEqual(record["rework_count"], 1)
+        new = self.assert_recovered(record, self.invoke(*self.recovery(record)))
+        self.assertEqual(new["rework_count"], 1)
+
+    def test_recovery_partial_lane_release_from_implementing(self):
+        record = self.interrupted_worker(target="Reviewing", boundary="implementation")
+        self.assert_recovered(record, self.invoke(*self.recovery(record)))
+
+    def pending_before_cleanup(self, record):
+        core = self.core_module
+        with (mock.patch.dict(os.environ, self.env, clear=True),
+              mock.patch.object(core, "release_capacity", side_effect=RuntimeError("fixture before cleanup")),
+              self.assertRaisesRegex(RuntimeError, "before cleanup")):
+            core.command_reconcile(core.parser().parse_args(self.recovery(record)), self.state)
+        return self.invoke("show", "pilot")
+
+    def test_recovery_original_full_release_lane_first_refuses(self):
+        record = self.interrupted_worker()
+        lane = self.state / "implementation" / f"{record['leases']['implementation_lane']}.lock"
+        (lane / "owner.json").unlink()
+        lane.rmdir()
+        self.recovery_refuses(*self.recovery(record))
+        self.assertNotIn("transition_recovery", json.loads(self.task_path().read_text()))
+
+    def test_recovery_pending_truthful_both_present_lane_first_refuses(self):
+        record = self.interrupted_worker(target="Reviewing")
+        pending = self.pending_before_cleanup(record)
+        self.assertEqual(pending["transition_recovery"]["capacity_observed"],
+                         {"slots": True, "implementation": True})
+        lane = self.state / "implementation" / f"{pending['leases']['implementation_lane']}.lock"
+        (lane / "owner.json").unlink()
+        lane.rmdir()
+        self.recovery_refuses(*self.recovery(pending))
+        forged = copy.deepcopy(pending)
+        forged["transition_recovery"]["capacity_observed"]["implementation"] = False
+        self.persist_fixture(self.task_path(), forged)
+        self.recovery_refuses(*self.recovery(pending))
+
+    def test_recovery_pending_forged_full_release_observation_refuses(self):
+        record = self.interrupted_worker()
+        pending = self.pending_before_cleanup(record)
+        forged = copy.deepcopy(pending)
+        receipt = forged["transition_recovery"]
+        receipt["capacity_observed"]["implementation"] = False
+        # Even a recomputed correlation cannot make lane-first original full
+        # release reachable. This is not a claim of tamper-proof storage.
+        receipt["correlation_sha256"] = self.core_module.recovery_digest(
+            {key: value for key, value in receipt.items() if key not in {"phase", "correlation_sha256"}})
+        self.persist_fixture(self.task_path(), forged)
+        self.recovery_refuses(*self.recovery(pending))
+
+    def test_recovery_pending_original_reviewing_lane_absent_accepted(self):
+        record = self.interrupted_worker(target="Reviewing", boundary="implementation")
+        pending = self.pending_before_cleanup(record)
+        self.assertEqual(pending["transition_recovery"]["capacity_observed"],
+                         {"slots": True, "implementation": False})
+        self.assertTrue((self.state / "slots" / f"{record['leases']['global_slot']}.lock").exists())
+        lane = self.state / "implementation" / f"{record['leases']['implementation_lane']}.lock"
+        lane.mkdir(mode=0o700)
+        self.persist_fixture(lane / "owner.json", record["worker"])
+        self.recovery_refuses(*self.recovery(pending))
+        (lane / "owner.json").unlink()
+        lane.rmdir()
+        self.assert_recovered(record, self.invoke(*self.recovery(pending)))
+
+    def test_previous_schema3_extension_excerpt_refuses_pending_and_settled_receipts(self):
+        record = self.interrupted_worker()
+        before = self.snapshot()
+        previous_schema3_extension_excerpt(record, allow_bound=True)
+        self.assertEqual(self.snapshot(), before)
+        pending = self.pending_before_cleanup(record)
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "unsupported retained extensions"):
+            previous_schema3_extension_excerpt(pending, allow_bound=True)
+        self.assertEqual(self.snapshot(), before)
+        settled = self.assert_recovered(record, self.invoke(*self.recovery(pending)))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "unsupported retained extensions"):
+            previous_schema3_extension_excerpt(settled, allow_bound=True)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_recovery_implementing_intent_with_durable_lane(self):
+        record = self.interrupted_worker(source="Claimed", target="Implementing")
+        self.assertIsNotNone(record["leases"]["implementation_lane"])
+        self.assert_recovered(record, self.invoke(*self.recovery(record)))
+
+    def test_recovery_pending_receipt_precedes_cleanup_and_retry(self):
+        record = self.interrupted_worker(source="Claimed", target="Implementing")
+        core = self.core_module
+        release = core.release_dir
+
+        def trace_release(path, token):
+            persisted = json.loads(self.task_path().read_text())
+            self.assertEqual(persisted["transition_recovery"]["phase"], "pending")
+            release(path, token)
+            if path.parent.name == "slots":
+                raise RuntimeError("fixture pending cleanup interruption")
+
+        args = core.parser().parse_args(self.recovery(record))
+        with (mock.patch.dict(os.environ, self.env, clear=True),
+              mock.patch.object(core, "release_dir", side_effect=trace_release),
+              self.assertRaisesRegex(RuntimeError, "pending cleanup")):
+            core.command_reconcile(args, self.state)
+        pending = self.invoke("show", "pilot")
+        self.assertEqual(pending["revision"], record["revision"] + 1)
+        self.recovery_refuses(*self.recovery(record), expected=4)
+        for command in (("record", "pilot", "validation", "pending"),
+                        ("update-head", "pilot", HEAD), ("transition", "pilot", "Blocked")):
+            self.recovery_refuses(*command, *self.owned(pending))
+        self.recovery_refuses("claim", "pilot", "--owner", "fixture")
+        self.recovery_refuses("create", "extra", "--scope", "extra", "--kind", "monitor")
+        final = self.assert_recovered(record, self.invoke(*self.recovery(pending)))
+        self.assertEqual(final["revision"], record["revision"] + 2)
+
+    def test_recovery_pending_snapshot_identity_changes_refuse_before_release(self):
+        record = self.interrupted_worker()
+        core = self.core_module
+        args = core.parser().parse_args(self.recovery(record))
+        with (mock.patch.dict(os.environ, self.env, clear=True),
+              mock.patch.object(core, "release_capacity", side_effect=RuntimeError("fixture before cleanup")),
+              self.assertRaisesRegex(RuntimeError, "before cleanup")):
+            core.command_reconcile(args, self.state)
+        pending = self.invoke("show", "pilot")
+        changed_reason = self.recovery(pending)
+        changed_reason[changed_reason.index("--operator-reason") + 1] = "different rationale"
+        self.recovery_refuses(*changed_reason, expected=4)
+        for field, value in (("owner", "changed"), ("token", "f" * 32), ("generation", 2),
+                             ("process_start", "changed"), ("worker_id", "f" * 32)):
+            lane = self.state / "implementation" / f"{pending['leases']['implementation_lane']}.lock/owner.json"
+            original = json.loads(lane.read_text())
+            self.persist_fixture(lane, dict(original, **{field: value}))
+            self.recovery_refuses(*self.recovery(pending))
+            self.persist_fixture(lane, original)
+        for field, value in (("source", "Claimed"), ("intent", "Reviewing"), ("generation", 2),
+                             ("base_revision", 0), ("pending_revision", True), ("extra", 1)):
+            changed = copy.deepcopy(pending)
+            changed["transition_recovery"][field] = value
+            self.persist_fixture(self.task_path(), changed)
+            self.recovery_refuses(*self.recovery(pending))
+        self.persist_fixture(self.task_path(), pending)
+        for field, value in (("worker_id", "f" * 32), ("process_start", "changed"), ("token", "f" * 32)):
+            changed = copy.deepcopy(pending)
+            changed["worker"][field] = value
+            self.persist_fixture(self.task_path(), changed)
+            self.recovery_refuses(*self.recovery(pending))
+        self.persist_fixture(self.task_path(), pending)
+        changed = copy.deepcopy(pending)
+        changed["next_action"] = "changed retained snapshot"
+        self.persist_fixture(self.task_path(), changed)
+        self.recovery_refuses(*self.recovery(pending))
+        self.persist_fixture(self.task_path(), pending)
+        self.assert_recovered(record, self.invoke(*self.recovery(pending)))
+
+    def test_recovery_pending_all_capacity_released_before_final_write(self):
+        record = self.interrupted_worker(source="Claimed", target="Implementing")
+        core = self.core_module
+        atomic = core.atomic_json
+
+        def trace_atomic(path, value):
+            if value.get("transition_recovery", {}).get("phase") == "settled":
+                raise RuntimeError("fixture before final write")
+            atomic(path, value)
+
+        args = core.parser().parse_args(self.recovery(record))
+        with (mock.patch.dict(os.environ, self.env, clear=True),
+              mock.patch.object(core, "atomic_json", side_effect=trace_atomic),
+              self.assertRaisesRegex(RuntimeError, "before final write")):
+            core.command_reconcile(args, self.state)
+        pending = self.invoke("show", "pilot")
+        self.assertEqual(list((self.state / "slots").iterdir()), [])
+        self.assertEqual(list((self.state / "implementation").iterdir()), [])
+        empty = self.state / "slots" / f"{pending['leases']['global_slot']}.lock"
+        empty.mkdir(mode=0o700)
+        self.recovery_refuses(*self.recovery(pending))
+        empty.rmdir()
+        self.assert_recovered(record, self.invoke(*self.recovery(pending)))
+
+    def test_recovery_inputs_live_foreign_reused_and_unknown_process_refuse(self):
+        self.create()
+        child = self.live_child()
+        claimed = self.claim(pid=child.pid)
+        record = self.interruption(claimed, "Blocked")
+        self.recovery_refuses(*self.recovery(record))
+        for suffix, expected in (([], 3), (["--operator-action"], 3),
+                                 (["--operator-action", "--operator-reason", "fixture"], 3),
+                                 ([*self.operator(record), "--expected-revision", "0"], 4),
+                                 ([*self.operator(record), "--expected-generation", "0"], 4)):
+            self.recovery_refuses("reconcile", "--recover", "pilot", *suffix, expected=expected)
+        self.recovery_refuses("reconcile", "pilot", "--recover", "pilot", *self.operator(record), expected=2)
+        self.recovery_refuses("reconcile", "--rec", "pilot", *self.operator(record), expected=2)
+        self.recovery_refuses("reconcile", *self.operator(record), expected=2)
+        for status, start in (("alive", "reused process"), ("unknown", None)):
+            with (mock.patch.dict(os.environ, self.env, clear=True),
+                  mock.patch.object(self.core_module, "process_identity", return_value=(status, start)),
+                  self.assertRaises(self.core_module.UnknownError)):
+                before, directories = self.snapshot(), self.directory_snapshot()
+                self.core_module.command_reconcile(self.core_module.parser().parse_args(self.recovery(record)), self.state)
+            self.assertEqual(self.snapshot(), before)
+            self.assertEqual(self.directory_snapshot(), directories)
+        foreign = copy.deepcopy(record)
+        foreign["worker"]["hostname"] = "fixture-foreign-host"
+        self.persist_fixture(self.task_path(), foreign)
+        self.recovery_refuses(*self.recovery(foreign))
+        self.persist_fixture(self.task_path(), record)
+        self.stop_child(child)
+        self.assert_recovered(record, self.invoke(*self.recovery(record)))
+
+    def test_recovery_missing_scope_empty_duplicate_and_changed_metadata_refuse(self):
+        record = self.interrupted_worker()
+        for group, index in (("scopes", record["scope_key"]), ("slots", record["leases"]["global_slot"]),
+                             ("implementation", record["leases"]["implementation_lane"])):
+            lock = self.state / group / f"{index}.lock"
+            owner = lock / "owner.json"
+            original = json.loads(owner.read_text())
+            self.persist_fixture(owner, dict(original, token="f" * 32))
+            self.recovery_refuses(*self.recovery(record))
+            self.persist_fixture(owner, original)
+            owner.unlink()
+            self.recovery_refuses(*self.recovery(record))
+            lock.rmdir()
+            if group == "scopes":
+                self.recovery_refuses(*self.recovery(record))
+            lock.mkdir(mode=0o700)
+            self.persist_fixture(owner, original)
+        duplicate = self.state / "slots/5.lock"
+        duplicate.mkdir(mode=0o700)
+        self.persist_fixture(duplicate / "owner.json", record["worker"])
+        self.recovery_refuses(*self.recovery(record))
+        (duplicate / "owner.json").unlink()
+        duplicate.rmdir()
+        owner = self.state / "slots" / f"{record['leases']['global_slot']}.lock/owner.json"
+        original = owner.read_bytes()
+        owner.write_text('{"task_id":"pilot",' + original.decode().lstrip()[1:], encoding="utf-8")
+        self.recovery_refuses(*self.recovery(record))
+        owner.write_bytes(original)
+        self.assert_recovered(record, self.invoke(*self.recovery(record)))
+
+    def test_recovery_nonreleasing_missing_lane_and_terminal_scope_refuse(self):
+        record = self.interrupted_worker(source="Claimed", target="Implementing")
+        slot = self.state / "slots" / f"{record['leases']['global_slot']}.lock"
+        owner = json.loads((slot / "owner.json").read_text())
+        (slot / "owner.json").unlink()
+        slot.rmdir()
+        self.recovery_refuses(*self.recovery(record))
+        slot.mkdir(mode=0o700)
+        self.persist_fixture(slot / "owner.json", owner)
+        lane = self.state / "implementation" / f"{record['leases']['implementation_lane']}.lock"
+        (lane / "owner.json").unlink()
+        lane.rmdir()
+        self.recovery_refuses(*self.recovery(record))
+
+    def test_recovery_actual_lane_acquisition_before_intent_refuses(self):
+        self.create()
+        child = self.live_child()
+        record = self.claim(pid=child.pid)
+        core = self.core_module
+        args = core.parser().parse_args(["transition", "pilot", "Implementing", *self.owned(record)])
+        with (mock.patch.dict(os.environ, self.env, clear=True),
+              mock.patch.object(core, "write_task", side_effect=RuntimeError("fixture before intent")),
+              self.assertRaisesRegex(RuntimeError, "before intent")):
+            core.command_transition(args, self.state)
+        self.stop_child(child)
+        self.assertEqual(core.process_identity(child.pid), ("absent", None))
+        self.assertEqual(self.invoke("show", "pilot"), record)
+        self.assertEqual(len(list((self.state / "implementation").iterdir())), 1)
+        self.recovery_refuses(*self.recovery(record))
+
+    def test_recovery_actual_terminal_scope_cleanup_refuses(self):
+        record = self.interrupted_worker(target="Cancelled", boundary="scopes")
+        self.assertFalse((self.state / "scopes" / f"{record['scope_key']}.lock").exists())
+        self.recovery_refuses(*self.recovery(record))
+
+    def test_recovery_actual_inactive_parent_intent(self):
+        self.create()
+        claimed = self.claim()
+        blocked = self.invoke("transition", "pilot", "Blocked", *self.owned(claimed))
+        core = self.core_module
+        write = core.write_task
+
+        def trace_write(root, value, **kwargs):
+            write(root, value, **kwargs)
+            if value["transition_intent"]:
+                raise RuntimeError("fixture inactive intent")
+
+        args = core.parser().parse_args(["transition", "pilot", "Ready", *self.operator(blocked)])
+        with (mock.patch.dict(os.environ, self.env, clear=True),
+              mock.patch.object(core, "write_task", side_effect=trace_write),
+              self.assertRaisesRegex(RuntimeError, "inactive intent")):
+            core.command_transition(args, self.state)
+        record = self.invoke("show", "pilot")
+        self.assertIsNone(record["worker"])
+        self.assert_recovered(record, self.invoke(*self.recovery(record)))
+
+    def test_recovery_legacy_and_stable_active_worker_none_remain_unsupported(self):
+        self.create()
+        legacy = self.invoke("claim", "pilot", "--owner", "fixture", "--pid", str(os.getpid()))
+        self.recovery_refuses("reconcile", "--recover", "pilot", "--operator-action",
+                              "--operator-reason", "fixture", "--expected-generation", "0",
+                              "--expected-revision", str(legacy["revision"]))
+        self.invoke("transition", "pilot", "Blocked")
+        self.invoke("transition", "pilot", "Ready")
+        bound = self.claim(revision=self.invoke("show", "pilot")["revision"])
+        malformed = copy.deepcopy(bound)
+        malformed["worker"] = None
+        self.persist_fixture(self.task_path(), malformed)
+        self.recovery_refuses(*self.recovery(bound))
+        with self.assertRaises(self.core_module.UnknownError):
+            self.core_module.validate_record(malformed, allow_bound=True)
+
+    def test_recovery_prepared_size_and_unknown_runtime_guard_before_effects(self):
+        record = self.interrupted_worker()
+        core = self.core_module
+        args = core.parser().parse_args(self.recovery(record))
+        for guard in ("require_execution_stopped", "require_repair_settled"):
+            before, directories = self.snapshot(), self.directory_snapshot()
+            with (mock.patch.dict(os.environ, self.env, clear=True),
+                  mock.patch.object(core, guard, side_effect=core.UnknownError("fixture unknown runtime")),
+                  self.assertRaises(core.UnknownError)):
+                core.command_reconcile(args, self.state)
+            self.assertEqual(self.snapshot(), before)
+            self.assertEqual(self.directory_snapshot(), directories)
+        enlarged = copy.deepcopy(record)
+        for field in ("validation", "findings", "reviewers", "dependencies", "acceptance_criteria"):
+            enlarged[field] = ["x" * 1000] * 190
+        # Fill the normal record to the byte limit; a recovery receipt cannot fit.
+        while len(core.serialized_json(enlarged)) < 999_500:
+            remaining = 999_500 - len(core.serialized_json(enlarged))
+            enlarged["restricted_paths"].append("x" * min(1000, remaining))
+        core.validate_record(enlarged, allow_bound=True)
+        self.task_path().write_bytes(core.serialized_json(enlarged))
+        self.recovery_refuses(*self.recovery(record), expected=2)
 
     def test_actual_claim_record_release_reclaim_and_stale_generation(self):
         initial = self.create()
