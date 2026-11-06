@@ -19,3 +19,20 @@ The source author and accountable contributor explicitly authorized this copied
 material and the listed destination adaptations for release under this
 repository's CC0-1.0 dedication. This statement does not change the license of
 other content in the source repository.
+
+## Canonical adaptation: cooperative lifecycle binding pilot
+
+Bounded issue #116 pilot based on canonical maintainer revision `00091f99`
+(approved 2026-11-05): opt-in schema-3 cooperative task/worker session and retained
+generation, explicit lock-held lifecycle comparisons, complete capacity metadata
+checks, and fail-closed reconciliation. Schema 2 remains default; schema-1
+migration and the imported source history above are preserved. Public core
+readers/writers reject bound tasks unless explicitly opted in by the core CLI.
+This is declared local correlation, not native authentication. The standalone
+monitor now refuses schema 3 before poll configuration/state effects, and execution
+observation refuses before definition/runtime work and runtime-config creation.
+Full bound domain dispatch and interrupted-bound-intent recovery remain pending.
+The canonical
+repository adds `tests/cooperative-session-binding-test.py` and registers it in
+`Makefile`; copied-skill consumers must separately carry/run that fixture when
+validating this pilot. `CANONICAL-SHA256SUMS` binds the adapted skill assets.
