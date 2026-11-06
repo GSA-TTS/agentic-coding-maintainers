@@ -1,9 +1,9 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-f212a425bf912e78a29b830c4f4072b95f78ecf0ce9570b1cd2f5de1b77d527a  ./PROVENANCE.md
+817f7b18c9b2bfad9ae2cfe4eec3d0f025dd3bd52b735a3486f37a27fb149984  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 8017c4e84ef573f63732aa0b660298794a70429ec74bb109c7dc18be23bb5300  ./bin/candidate-binding.py
-643fa7fd788e03f5657e89d048b2af5208b774ca4474859257b41864ed0e61c6  ./bin/execution-observe.py
+c5d6a343f20765c2ac73c4447fce1968fa96bb9c84d19d869603454d6ced7143  ./bin/execution-observe.py
 9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
 d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foreground-admission.py
 96968c4758a2c51af1a0ac836f0ed41a69ad423a4a9633a69a8f30177327e61a  ./bin/foreground-adopt.py
@@ -11,9 +11,9 @@ e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foregrou
 55df01c80de182298ab9d6e7026f50755058396bb21bb3c5e39940439970fab8  ./bin/foreground-repair.py
 8a57114282fb1afe9e6135bbae31f46c70e0fdaa32b084da2c71ec5cf3194fcc  ./bin/foreground-review.py
 978f11baea2e36e52246c1ba0636071b18db711a0ef9ba4c43b27f385efe05b6  ./bin/monitor-journal.py
-2e02f151fa3e4f9474569af032ef7797a54efa5155c426acd3890b4fdff405ae  ./bin/orchestrator-monitor.py
+da6efdd36dd0f16f9a4de3a88ade80add80d94c50ec16863e2210869c557129a  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
-fc33eb5ca2deeb394d660891b3026437de113ac53f605bc54241c991dc5ef67a  ./bin/orchestrator-state.py
+bc7a046d9ddfb5ed14f75d290793919ee624bf896af86fbc67f3df709481f473  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 758f61822f30af9c1d0b8013fcd8e98c2c8d1d48bb4500dd722580cb9d8942fe  ./bin/repair-apply.py
 66c78fbc691bf58a8d0f78aa83eb3b968c3eb4b0e08e90e2c7dfcd27fc1afeed  ./bin/repair-proposal.py
@@ -34,7 +34,7 @@ bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTI
 2cc85ad8018eddaec39479868728e052e45840c5528a8d2048debc1e638a776b  ./docs/FOREGROUND-DELIVERY.md
 3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
 ba8d134ae3a0dba93249f97823032760a745aacf0b251a8e87a0ce1e53228382  ./docs/MAINTAINER-SERVICE.md
-d94fcc8cf90709f45c8e5acd7264990ec06159c3a346340f983c91d7417d9e5d  ./docs/OPERATOR-GUIDE.md
+5a912caa5864f7689cffbc762dfda906f939e77ce951222068e52b7a07e8e02e  ./docs/OPERATOR-GUIDE.md
 a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-REPAIR.md
 353a1e25f31e484253ccaceedfa72f5c6284156f9f9c0f380a664961b7a11a74  ./docs/REVIEW-ACCEPTANCE.md
 5da200894e5cd4544a00795f59cb559b86976607e011b10a8d8a6ef7537c0696  ./docs/REVIEW-COLLECTION.md

@@ -1,9 +1,116 @@
-# Native ownership: retained-state preflight and proposed contract
+# Native ownership: retained-state preflight and cooperative pilot
 
 Issue #116, first slice. **Implemented:** a read-only check of actual retained
 schema-2 task, global-slot, and scope records. **Proposed:** native ownership and
 authenticated-caller enforcement. Existing coordinator task JSON remains the
 authority; there is no new claim store, capture envelope, or native API bridge.
+
+## Opt-in core lifecycle pilot (schema 3)
+
+Issue #116 now includes a bounded cooperative binding pilot in the core state
+CLI. New tasks still default to schema 2, and prototype schema-1 migration is
+retained. An inactive `Ready` task opts in only through an explicit claim:
+
+```sh
+"$SKILL_DIR/run.sh" state claim selected-task --owner pilot-owner --pid <owner-pid> \
+  --session-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --expected-generation 0 --expected-revision <observed-revision>
+```
+
+The fictional session label is an operator-provided ASCII token of 1–128
+characters (`[A-Za-z0-9][A-Za-z0-9._-]*`); UUID hex is convenient. Use opaque
+labels without personal data. Labels are private correlation inputs, not native
+session identity or authenticated authority. The task becomes schema 3 with
+`cooperative_binding = {session_id, generation}` at generation 1. The worker and
+its complete global-slot/implementation-lane metadata carry the same session and
+generation. Counts use exact integers bounded by `2^63-1`. Scope metadata must
+also agree exactly with the existing task scope and token.
+Opt-in validates this complete prospective shape and scope metadata before
+reserving capacity. Schema 3 accepts base task fields, cooperative binding, and
+the core legacy-finding disposition ledger only; retained domain/unknown
+extensions are unsupported and cannot be silently carried into the pilot.
+
+`record`, `update-head`, `transition`, and `resolve-finding` on active bound tasks
+require all four explicit `--expected-session-id`, `--expected-worker-id`,
+`--expected-generation`, and `--expected-revision` flags. Comparisons and complete
+reservation checks run under the coordinator lock before task/reservation writes.
+Missing comparisons yield exit 3; a complete mismatch yields exit 4. Values are
+never defaulted from the current record. Copied current values can still pass:
+this is cooperative fencing against accidental cross-session/stale writes, not
+authentication against another process of the same account.
+
+Release retains the binding and generation. Inactive mutation requires
+`--operator-action --operator-reason <rationale>` plus explicit generation and
+revision. This is a recorded declaration, not authenticated operator identity.
+An active operator action is limited to cancellation when the retained worker
+belongs to this host and `ps` verifies that its PID is absent. Alive, reused, or
+unmeasurable PIDs cannot grant takeover. Existing execution/repair stop gates
+still apply. For a routine pilot handoff, the current owner transitions to
+`Blocked`, the operator makes a guarded transition to `Ready`, and a new explicit
+claim increments the retained generation. Bound claims require inactive `Ready`;
+they cannot claim directly from `Rework`.
+
+Core `show`/`list` explicitly accept schema 3 and retain their existing raw,
+private JSON output. Observations confer no authority. Keep their output and
+command arguments out of public evidence. Public `read_task`, `validate_record`,
+`write_task`, and `command_list` defaults reject schema 3 so existing controllers
+using those entry points cannot dispatch or silently discard its binding.
+Previous schema-2-only core readers also reject schema 3. The existing native
+preflight intentionally remains schema-2-only and reports schema 3 unsupported.
+
+Automatic reconciliation refuses with exit 3 whenever any bound task is present
+in the authority, including selected-task calls. All tasks are preflighted before
+legacy recovery can mutate an earlier task. Interrupted bound transitions remain
+preserved and block mutations/admission; automatic and guarded interrupted-intent
+recovery are pending a separately reviewed design.
+
+**Core-CLI-only boundary:** standalone monitor polling accepts only schema 1 or 2.
+It rejects schema 3 before loading configuration or creating its monitor directory,
+poll lock, checkpoint, failure record, or SQLite store. Durable polling repeats
+the guard before opening the store. Execution observation rejects schema 3 before
+reading the execution definition or inspecting the runtime binary, and repeats
+the rejecting read under the coordinator lock before runtime-config creation.
+Other existing state-aware controllers retain the public reader's rejecting
+default. These guards refuse unsupported tasks; they do not enable foreground,
+monitor, domain, or execution dispatch for the pilot. Full production session
+binding, native authentication, and the GitHub bridge remain pending. This pilot
+does not close issue #116. Isolated runtime validation remains required.
+
+### Migration, stopping the pilot, and rollback
+
+Opt-in is per task. Keep ordinary tasks on schema 2 unless the operator intends
+to use the core-only lifecycle. There is no bulk migration. Older core readers
+cannot use schema-3 tasks, and replacing the CLI with an older version does not
+make those records compatible.
+
+To stop the pilot, stop admitting bound claims. Ask the retained owner to release
+its task through a guarded transition to `Blocked`; if that owner has exited,
+independently verify termination and use the guarded absent-worker cancellation
+path when applicable. Preserve dirty worktrees and all unsettled evidence.
+An interrupted transition stays blocked pending separately reviewed recovery.
+
+Keep the original authority state intact. Export a complete private backup of
+task records, reservations, and referenced evidence through operator-approved
+backup tooling; keep it access-restricted and out of commits, logs, and review
+attachments. Core `show`/`list` output is private observation, not a complete
+backup of the authority or its artifacts.
+
+Rollback means stopping use and quarantining the affected authority from legacy
+automation, not rewriting task JSON. Do not remove the binding, lower its
+generation, downgrade schema 3 to schema 2, delete leases, or move individual
+records away to let reconcile proceed. Retain the guarded CLI for inspected
+lifecycle actions, or keep the entire backed-up authority quarantined until a
+reviewed migration/recovery tool exists. Any fresh legacy authority must have
+separately admitted work and no overlapping active owners, branches, or worktrees.
+
+`tests/cooperative-session-binding-test.py` copies the installed core into an
+independent temporary fixture and invokes its actual CLI for claim, mutation,
+release, re-claim, malformed/mismatched binding and reservations, stale callers,
+reader compatibility, and reconciliation preservation. Git probes in its
+update-head case use a fixture executable. Standalone monitor cases prove refusal
+without poll files or forge dispatch, and execution-observation cases prove that
+definition/config/runtime work is not reached. Run the fixture, `make check`, and the
+strict hook only in an independently isolated validation environment.
 
 ## Select the correct authority explicitly
 
@@ -195,7 +302,8 @@ native session/task-claim identifiers. No native session collector exists here.
 The existing repository string is not immutable forge identity; binding a forge
 host, immutable repository identity, issue, and native session to the retained
 task/worker requires separate design and review. Native attempt-generation and
-authenticated-caller checks are not implemented or invented in task JSON.
+authenticated-caller checks remain proposed. The schema-3 pilot's cooperative
+generation is a separate declared local comparison, not a native generation.
 Same-account sessions must not inherit each other's ownership merely by knowing
 the same worker ID. Revision and eventually generation must be checked at the
 action boundary; elapsed time or purported expiry must never grant takeover.
