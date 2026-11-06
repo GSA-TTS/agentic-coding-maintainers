@@ -19,3 +19,13 @@ The source author and accountable contributor explicitly authorized this copied
 material and the listed destination adaptations for release under this
 repository's CC0-1.0 dedication. This statement does not change the license of
 other content in the source repository.
+
+## Actionable review output adaptation
+
+Issue 111 adaptation on canonical base `f21052d`: adds packaged human-facing
+review guidance and synthetic example/wiring assertions while preserving the
+complete internal fixed-head, evidence, acceptance, and UNVERIFIED handoff
+contract. Output guidance grants no new permissions or publication authority.
+The original import revision and `SOURCE-SHA256SUMS` remain unchanged. This base
+identifies the starting revision, not a new canonical revision for these edits;
+`CANONICAL-SHA256SUMS` must be regenerated for the completed skill assets.
