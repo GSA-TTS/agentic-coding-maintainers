@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.1.0...v0.2.0) (2026-11-07)
+
+
+### Features
+
+* **orchestration:** pilot cooperative session-bound lifecycle ([#128](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/128)) ([aeaa68c](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/aeaa68ce36ab515d76640205326be0e4df8142ad))
+* **orchestration:** recover interrupted bound tasks explicitly ([#133](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/133)) ([6a63c14](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/6a63c14c40d9770826c7d2687c400811f2957901))
+* **tools:** support pinned Linux ARM64 CI tool installation ([#131](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/131)) ([90a4861](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/90a4861e59a9b5b8ef122253238bdc6f977117ba))
+
+
+### Bug Fixes
+
+* **cleanup:** preserve rename safety on overlayfs ([#134](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/134)) ([568125c](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/568125c3d33572eb64d681b857439d81c10adbe7))
+
 ## 0.1.0 (2026-11-06)
 
 
