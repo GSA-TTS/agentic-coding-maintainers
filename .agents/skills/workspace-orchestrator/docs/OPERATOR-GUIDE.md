@@ -80,6 +80,110 @@ reconciled worker can release its slot while its PR awaits human approval.
 
 ## Worktrees
 
+### Core-only cooperative binding pilot
+
+Schema 2 remains the default. An inactive `Ready` task can opt into schema 3
+with `state claim ... --session-id <opaque-ASCII-token> --expected-generation 0
+--expected-revision <observed-revision>`. Tokens are 1–128 ASCII characters
+matching `[A-Za-z0-9][A-Za-z0-9._-]*`; use private UUID-style labels without
+personal data. Retained `cooperative_binding` generation starts at 1, and the
+worker/global-slot/implementation-lane records agree exactly on session and
+generation. This is cooperative correlation and stale-write fencing, not native
+caller authentication or remote authority.
+Opt-in checks complete prospective state and exact scope metadata before
+capacity reservation. Retained domain or unknown extensions are unsupported in
+schema 3; only base fields, cooperative binding, core legacy-finding
+dispositions, and the private transition-recovery receipt are accepted.
+
+For bound active tasks, every `record`, `update-head`, `transition`, and
+`resolve-finding` invocation supplies `--expected-session-id`,
+`--expected-worker-id`, `--expected-generation`, and `--expected-revision`.
+Use explicit observations; the CLI never fills these comparisons from state.
+Missing flags yield UNVERIFIED (3), and complete mismatches are refused (4).
+All comparisons and reservation checks occur under the lifecycle lock.
+
+To release and re-claim, the owner makes a guarded transition to `Blocked`.
+The retained generation survives worker release. An inactive operator transition
+to `Ready` requires `--operator-action --operator-reason <rationale>` and explicit
+generation/revision. A subsequent explicit session claim increments generation;
+schema-3 claim from `Rework` is unsupported. Operator declarations cannot bypass
+an active owner: only cancellation of a same-host worker whose PID is verified
+absent is permitted. Execution-stop and repair gates still apply.
+
+Core `show`/`list` support pilot observations but emit private raw state and confer
+no authority. Public core readers/writers default to rejecting schema 3, as do
+older schema-2 core readers and the existing native preflight. Reconcile refuses
+the entire authority before recovery writes if any bound task exists. Interrupted
+bound intents are preserved and block ordinary mutations. To recover one supported
+interrupted task explicitly:
+
+```bash
+"$SKILL_DIR/run.sh" state reconcile --recover selected-task --operator-action \
+  --expected-revision <current-revision> --expected-generation <current-generation> \
+  --operator-reason 'Preserved interrupted work; checkpoint for operator review'
+```
+
+The only settlement is `Blocked`. This operator declaration is not authentication.
+Use exact flags; positional selection cannot accompany `--recover`. Recovery
+requires a legal durable intent, exact retained scope, complete worker/capacity
+metadata, consistent reverse associations, and actual same-host worker absence
+when the source is active. Unknown runtime or another unsettled task refuses.
+Existing execution/repair guards apply. Missing capacity is justified only by an
+original releasing intent or a durable pending receipt. Both pending/final record
+shapes and byte budgets are preflighted before effects. A private pending receipt
+is persisted before cleanup; retry supplies the current revision and original
+rationale and rechecks immutable-correlation snapshots and remaining owners.
+Pending recovery blocks ordinary mutation/admission. Settlement preserves scope,
+generation, findings, head, review/validation evidence and existing rework count;
+it does not replay the original target or increment rework again.
+
+Full capacity cleanup is slot-first then lane, for original release and pending
+recovery. The pending receipt binds actual initial capacity-presence observations.
+Retry refuses capacity reappearance and lane-absent/slot-present cleanup when
+both were initially present. A lane already absent from the original
+`Implementing → Reviewing` lane-only release remains legitimate, including on
+pending retry; an intent label alone cannot grant that exception.
+
+After any pending or settled receipt is persisted, a receipt-aware core is
+required. The previous schema-3 core at canonical base `aeaa68ce` rejects
+`transition_recovery` as an unsupported extension. An older core cannot operate
+this authority even after settlement. Never strip the receipt for compatibility;
+retain the supporting core or quarantine state pending reviewed migration.
+
+Recovery does not cover every crash. Missing terminal scope, empty reservation
+remnants, or a lane acquired before durable intent are unsupported. No reservation
+is recreated. Changed identity, duplicate/reverse conflicts, live/reused/foreign
+or unknown processes refuse before cleanup. Stale coordinator-lock recovery is
+separate; automatic reconciliation and bound domain activation remain unchanged.
+Receipt digests are local consistency checks, not tamper-proof attestations.
+
+Keep this pilot on core lifecycle commands. Standalone monitor polling rejects
+schema 3 before configuration loading and monitor-directory/poll-lock/store
+creation; durable polling also guards before opening its store. Execution
+observation rejects bound tasks before definition/runtime work and rechecks
+under the coordinator lock before creating its runtime config. Other state-aware
+controllers use the rejecting public core reader. These are refusal guards;
+foreground/domain/monitor execution for bound tasks remains unsupported. Full
+production binding and a native/GitHub bridge remain pending.
+
+Migration is per-task opt-in, with no bulk conversion. To stop the pilot, stop
+new bound claims, have the current owner make a guarded release to `Blocked`,
+and preserve dirty worktrees and unsettled evidence. If the owner exited, use
+only the guarded cancellation path after independently verifying termination.
+Use explicit recovery for supported interrupted intents; preserve unsupported
+interruptions for operator investigation.
+
+For rollback, preserve the original authority and use operator-approved tooling
+to export a complete, access-restricted private backup including reservations
+and referenced artifacts. Quarantine the affected authority from legacy
+automation. Do not downgrade schema 3, strip bindings, lower generations, delete
+leases, or remove selected records to unblock reconcile. Older readers remain
+unsupported. Retain the guarded CLI or wait for reviewed migration tooling;
+fresh legacy work requires separate admission without overlapping active work.
+Private `show`/`list` output is not a complete backup or public evidence. The
+canonical maintainer repository's `docs/NATIVE-OWNERSHIP.md` documents the
+contract, stop procedure, and offline fixture.
+
 Use one branch and one worktree per implementation task. Do not force-check out
 the same branch in multiple worktrees. Review a fixed SHA in a separate detached
 checkout or `git archive` tree. Record the path and base SHA before dispatch.
@@ -167,6 +271,19 @@ alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
 `User aborted the command` buried in output.
 
 ## Review and rework
+
+Use [Actionable review output](REVIEW-OUTPUT.md) for human-facing review bodies:
+unresolved, severity-ordered findings with verified file:line, trigger, impact,
+and a concise fix; retain only material evidence/limits plus brief required AI
+attribution and exact-head binding. Never invent unavailable line citations or
+present UNVERIFIED required coverage as clean. Omit passing-check inventories,
+resolved recaps, and administrative chatter from that outward body only.
+Internal orchestrator handoffs still retain complete fixed-head/base bindings,
+acceptance and obligation coverage, evidence, limitations, dispositions, status,
+and next action. Presentation does not change permissions or acceptance gates.
+Install byte-identical profile copies and the packaged guidance, then quit and
+restart OpenCode; profiles must carry the essential rules without requiring a
+runtime read of the linked document.
 
 1. Implementation owner returns exact SHA, files, validation, and residual risk.
    After committing, bind the actual assigned worktree head and invalidate stale

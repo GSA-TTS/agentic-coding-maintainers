@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -22,6 +23,9 @@ EXIT_INPUT = 2
 EXIT_UNKNOWN = 3
 EXIT_BUSY = 4
 SCHEMA = 2
+BOUND_SCHEMA = 3
+MAX_GENERATION = (1 << 63) - 1
+SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", re.ASCII)
 MAX_WORKERS = 6
 MAX_IMPLEMENTATION = 2
 TASK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -270,11 +274,19 @@ def atomic_json(path: Path, data: dict[str, Any]) -> None:
             os.unlink(tmp)
 
 
-def read_json(path: Path, label: str) -> dict[str, Any]:
+def read_json(path: Path, label: str, *, strict: bool = False) -> dict[str, Any]:
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
             raise ValueError("not a bounded regular file")
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object if strict else None)
     except Exception as exc:
         raise UnknownError(f"{label} unreadable or malformed: {exc}") from exc
     if not isinstance(raw, dict):
@@ -282,10 +294,14 @@ def read_json(path: Path, label: str) -> dict[str, Any]:
     return raw
 
 
-def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[str, Any]:
+def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_bound: bool = False) -> dict[str, Any]:
     # Schema 1 was emitted by the first in-session prototype before tracker/head
     # binding and transition intents were added. It is persisted host state, so
     # make the upgrade explicit and lossless instead of requiring a reset.
+    if type(raw.get("schema_version")) is not int:
+        raise UnknownError("task schema is invalid")
+    if raw.get("schema_version") == BOUND_SCHEMA and not allow_bound:
+        raise UnknownError("cooperative schema 3 is unsupported by this controller")
     if raw.get("schema_version") == 1:
         raw = dict(raw)
         raw.update({
@@ -308,7 +324,9 @@ def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[st
     missing = required - raw.keys()
     if missing:
         raise UnknownError(f"task record missing fields: {', '.join(sorted(missing))}")
-    if raw["schema_version"] != SCHEMA or type(raw["revision"]) is not int or raw["revision"] < 0:
+    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions", "transition_recovery"}:
+        raise UnknownError("cooperative core-only task has unsupported retained extensions")
+    if raw["schema_version"] not in {SCHEMA, BOUND_SCHEMA} or type(raw["revision"]) is not int or raw["revision"] < 0:
         raise UnknownError("task schema or revision is invalid")
     validate_task_id(str(raw["task_id"]))
     if expected and raw["task_id"] != expected:
@@ -354,6 +372,8 @@ def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[st
                 raise UnknownError(f"task worker {field} is invalid")
         if worker["task_id"] != raw["task_id"]:
             raise UnknownError("task worker id does not match task")
+    validate_cooperative_binding(raw)
+    validate_transition_recovery(raw)
     if "candidate_binding" in raw:
         path = Path(__file__).resolve().with_name("candidate-binding.py")
         spec = importlib.util.spec_from_file_location("installed_candidate_binding", path)
@@ -369,6 +389,140 @@ def validate_record(raw: dict[str, Any], expected: str | None = None) -> dict[st
     if has_review_reservations(raw):
         review_reservation_module().validate_links(raw)
     return raw
+
+
+def validate_cooperative_binding(record: dict[str, Any]) -> None:
+    worker = record["worker"]
+    if record["schema_version"] != BOUND_SCHEMA:
+        if "cooperative_binding" in record or (worker is not None and {"session_id", "generation"} & worker.keys()):
+            raise UnknownError("cooperative binding requires schema 3")
+        return
+    binding = record.get("cooperative_binding")
+    if not isinstance(binding, dict) or set(binding) != {"session_id", "generation"}:
+        raise UnknownError("cooperative binding shape is invalid")
+    if not isinstance(binding["session_id"], str) or not SESSION_RE.fullmatch(binding["session_id"]):
+        raise UnknownError("cooperative session label is invalid")
+    generation = binding["generation"]
+    if type(generation) is not int or not 1 <= generation <= min(MAX_GENERATION, record["revision"]):
+        raise UnknownError("cooperative generation is invalid")
+    if record["revision"] > MAX_GENERATION:
+        raise UnknownError("cooperative revision exceeds comparison limit")
+    if set(record["leases"]) != {"global_slot", "implementation_lane", "scope_token"}:
+        raise UnknownError("cooperative leases shape is invalid")
+    if worker is not None:
+        if set(worker) != {"task_id", "owner", "pid", "process_start", "worker_id", "token", "hostname", "created_at", "session_id", "generation"}:
+            raise UnknownError("cooperative worker shape is invalid")
+        if (worker["owner"] != record["owner"] or worker["session_id"] != binding["session_id"]
+                or type(worker["generation"]) is not int or worker["generation"] != generation):
+            raise UnknownError("cooperative worker binding disagrees with task")
+        for field in ("owner", "process_start", "hostname", "created_at"):
+            if not isinstance(worker[field], str) or not worker[field] or len(worker[field]) > 2000:
+                raise UnknownError("cooperative worker metadata is invalid")
+    if record["state"] in ACTIVE:
+        if worker is None or record["leases"]["global_slot"] is None:
+            raise UnknownError("cooperative active task lacks ownership")
+    elif worker is not None or any(record["leases"][key] is not None for key in ("global_slot", "implementation_lane")):
+        raise UnknownError("cooperative inactive task retains ownership")
+
+
+def recovery_digest(value: dict[str, Any]) -> str:
+    return hashlib.sha256(serialized_json(value)).hexdigest()
+
+
+def interrupted_shape(record: dict[str, Any]) -> None:
+    source, target = record["state"], record["transition_intent"]
+    if not isinstance(target, str) or target not in TRANSITIONS[source]:
+        raise UnknownError("recovery requires a legal durable transition intent")
+    lane = record["leases"]["implementation_lane"]
+    needs_lane = source == "Implementing" or target == "Implementing"
+    if needs_lane and record["kind"] != "implementation":
+        raise UnknownError("interrupted implementation intent has wrong task kind")
+    if (lane is not None) != needs_lane:
+        raise UnknownError("interrupted task lane snapshot is not reachable")
+
+
+def original_capacity_observation(record: dict[str, Any], observed: dict[str, bool]) -> None:
+    if (not isinstance(observed, dict) or set(observed) != {"slots", "implementation"}
+            or any(type(value) is not bool for value in observed.values())):
+        raise UnknownError("recovery capacity observation shape is invalid")
+    for group, field in (("slots", "global_slot"), ("implementation", "implementation_lane")):
+        if record["leases"][field] is None:
+            if observed[group]:
+                raise UnknownError("recovery observation names unrecorded capacity")
+        elif not observed[group]:
+            releases = record["transition_intent"] not in ACTIVE or (
+                group == "implementation" and record["transition_intent"] == "Reviewing")
+            if not releases:
+                raise UnknownError("missing capacity is not justified by durable intent")
+    # Original full release uses release_capacity: slot first, then lane.
+    # Reviewing alone uses release_implementation_lane and retains the slot.
+    if (record["leases"]["global_slot"] is not None
+            and record["leases"]["implementation_lane"] is not None
+            and record["transition_intent"] not in ACTIVE
+            and observed["slots"] and not observed["implementation"]):
+        raise UnknownError("original capacity release order is unreachable")
+
+
+def validate_transition_recovery(record: dict[str, Any]) -> None:
+    receipt = record.get("transition_recovery")
+    if "transition_recovery" not in record:
+        return
+    fields = {"phase", "source", "intent", "generation", "base_revision", "pending_revision",
+              "worker", "leases", "capacity_observed", "operator_reason", "task_sha256", "correlation_sha256"}
+    if (record["schema_version"] != BOUND_SCHEMA or not isinstance(receipt, dict)
+            or set(receipt) != fields or not isinstance(receipt["phase"], str)
+            or receipt["phase"] not in {"pending", "settled"}
+            or not isinstance(receipt["source"], str) or receipt["source"] not in STATES
+            or not isinstance(receipt["intent"], str) or receipt["intent"] not in STATES):
+        raise UnknownError("transition recovery receipt shape is invalid")
+    for key in ("generation", "base_revision", "pending_revision"):
+        if type(receipt[key]) is not int or not 1 <= receipt[key] <= MAX_GENERATION:
+            raise UnknownError("transition recovery receipt counter is invalid")
+    if receipt["pending_revision"] != receipt["base_revision"] + 1:
+        raise UnknownError("transition recovery revision binding is invalid")
+    reason = receipt["operator_reason"]
+    if (not isinstance(reason, str) or not reason or reason != reason.strip()
+            or len(reason) > 500 or any(ord(c) < 32 for c in reason)):
+        raise UnknownError("transition recovery rationale is invalid")
+    for key in ("task_sha256", "correlation_sha256"):
+        if not isinstance(receipt[key], str) or not re.fullmatch(r"[0-9a-f]{64}", receipt[key]):
+            raise UnknownError("transition recovery digest is invalid")
+    correlation = {key: value for key, value in receipt.items() if key not in {"phase", "correlation_sha256"}}
+    if receipt["correlation_sha256"] != recovery_digest(correlation):
+        raise UnknownError("transition recovery correlation changed")
+    # Validate the old worker/parent combination without weakening stable active
+    # worker=None checks. Settled history can survive a later guarded re-claim.
+    snapshot = copy.deepcopy(record)
+    snapshot.pop("transition_recovery")
+    snapshot.pop("legacy_finding_dispositions", None)
+    snapshot.update(state=receipt["source"], transition_intent=receipt["intent"],
+                    worker=receipt["worker"], leases=receipt["leases"], revision=receipt["base_revision"])
+    worker = receipt["worker"]
+    snapshot["cooperative_binding"] = {"session_id": worker.get("session_id") if isinstance(worker, dict) else record["cooperative_binding"]["session_id"],
+                                       "generation": receipt["generation"]}
+    if isinstance(worker, dict):
+        snapshot["owner"] = worker.get("owner")
+    validate_record(snapshot, record["task_id"], allow_bound=True)
+    interrupted_shape(snapshot)
+    original_capacity_observation(snapshot, receipt["capacity_observed"])
+    if receipt["phase"] == "pending":
+        if (record["revision"] != receipt["pending_revision"]
+                or record["cooperative_binding"]["generation"] != receipt["generation"]
+                or any(record[key] != receipt[field] for key, field in
+                       (("state", "source"), ("transition_intent", "intent"), ("worker", "worker"), ("leases", "leases")))):
+            raise UnknownError("pending recovery snapshot changed")
+        retained = {key: value for key, value in record.items() if key not in {"transition_recovery", "revision", "updated_at"}}
+        if recovery_digest(retained) != receipt["task_sha256"]:
+            raise UnknownError("pending recovery task correlation changed")
+    elif (record["revision"] <= receipt["pending_revision"]
+          or record["cooperative_binding"]["generation"] < receipt["generation"]
+          or record["leases"]["scope_token"] != receipt["leases"]["scope_token"]):
+        raise UnknownError("settled recovery revision is invalid")
+    elif record["revision"] == receipt["pending_revision"] + 1 and (
+            record["state"] != "Blocked" or record["transition_intent"] is not None
+            or record["worker"] is not None or record["next_action"] != reason
+            or record["cooperative_binding"]["generation"] != receipt["generation"]):
+        raise UnknownError("initial recovery settlement is not Blocked")
 
 
 def validate_legacy_dispositions(record: dict[str, Any]) -> None:
@@ -458,17 +612,17 @@ class CoordinatorLock:
         os.rmdir(self.path)
 
 
-def read_task(root: Path, task_id: str) -> dict[str, Any]:
+def read_task(root: Path, task_id: str, *, allow_bound: bool = False) -> dict[str, Any]:
     path = task_path(root, task_id)
     if not path.exists():
         raise UnknownError(f"task {task_id!r} record is missing")
-    return validate_record(read_json(path, f"task {task_id}"), task_id)
+    return validate_record(read_json(path, f"task {task_id}"), task_id, allow_bound=allow_bound)
 
 
-def write_task(root: Path, record: dict[str, Any]) -> None:
+def write_task(root: Path, record: dict[str, Any], *, allow_bound: bool = False) -> None:
     record["revision"] += 1
     record["updated_at"] = now()
-    validate_record(record, record["task_id"])
+    validate_record(record, record["task_id"], allow_bound=allow_bound)
     atomic_json(task_path(root, record["task_id"]), record)
 
 
@@ -595,11 +749,11 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         raise InputError("issue/pr tracker number must be positive")
     scope_dir = root / "scopes" / f"{scope_key(scope)}.lock"
     with CoordinatorLock(root):
-        validate_admission_reservations(root)
+        validate_admission_reservations(root, allow_bound=True)
         if task_path(root, task_id).exists():
             raise BusyError(f"task {task_id!r} already exists")
         incoming_paths = owned_paths + restricted_paths
-        for existing in command_list(root):
+        for existing in command_list(root, allow_bound=True):
             if existing["state"] in TERMINAL:
                 continue
             if worktree and existing["worktree"] == worktree:
@@ -708,8 +862,29 @@ def require_repair_settled(record: dict[str, Any], new_review: bool = False, roo
 
 def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     with CoordinatorLock(root):
-        validate_admission_reservations(root)
-        record = read_task(root, args.task_id)
+        validate_admission_reservations(root, allow_bound=True)
+        record = read_task(root, args.task_id, allow_bound=True)
+        bound = record["schema_version"] == BOUND_SCHEMA
+        session = getattr(args, "session_id", None)
+        if bound or session is not None:
+            if record["state"] != "Ready" or record["worker"] is not None:
+                raise BusyError("cooperative claim requires inactive Ready state")
+            if not isinstance(session, str) or not SESSION_RE.fullmatch(session):
+                raise UnknownError("cooperative claim requires an explicit ASCII session token")
+            generation = record["cooperative_binding"]["generation"] if bound else 0
+            require_expected_counters(args, record, generation)
+            if generation == MAX_GENERATION or record["revision"] >= MAX_GENERATION:
+                raise BusyError("cooperative generation/revision limit reached")
+            record["schema_version"] = BOUND_SCHEMA
+            record["cooperative_binding"] = {"session_id": session, "generation": generation + 1}
+            # Legacy admission compares only scope task/token. Validate the full
+            # prospective bound record and exact scope metadata before reserving
+            # capacity; otherwise opt-in could persist an unusable bound claim.
+            prospective = dict(record, revision=record["revision"] + 1)
+            validate_record(prospective, record["task_id"], allow_bound=True)
+            verify_reservations(root, prospective)
+        elif any(getattr(args, key, None) is not None for key in ("expected_generation", "expected_revision")):
+            raise InputError("claim expectations require an explicit session token")
         if record["state"] not in {"Ready", "Rework"}:
             raise BusyError(f"task is not claimable from state {record['state']!r}")
         require_execution_stopped(record)
@@ -720,6 +895,8 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             raise BusyError("prepared repair belongs to original owner")
         owner = safe_scope(args.owner)
         worker = worker_metadata(record["task_id"], owner, args.pid)
+        if record["schema_version"] == BOUND_SCHEMA:
+            worker.update(record["cooperative_binding"])
         slot = reserve_first(root, "slots", MAX_WORKERS, worker)
         try:
             if os.environ.get("ORCHESTRATOR_TEST_MODE") == "1" and os.environ.get("ORCHESTRATOR_TEST_FAIL_CLAIM_WRITE") == "1":
@@ -731,13 +908,63 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             record["worker"] = worker
             record["leases"]["global_slot"] = slot
             record["leases"]["implementation_lane"] = None
-            write_task(root, record)
+            write_task(root, record, allow_bound=True)
         except AmbiguousWriteError:
             raise
         except Exception:
             release_dir(root / "slots" / f"{slot}.lock", worker["token"])
             raise
     return record
+
+
+def require_expected_counters(args: argparse.Namespace, record: dict[str, Any], generation: int) -> None:
+    for field in ("expected_generation", "expected_revision"):
+        value = getattr(args, field, None)
+        if type(value) is not int or not 0 <= value <= MAX_GENERATION:
+            raise UnknownError("cooperative action requires explicit bounded generation and revision")
+    if args.expected_generation != generation or args.expected_revision != record["revision"]:
+        raise BusyError("cooperative generation/revision mismatch")
+
+
+def require_cooperative_mutation(args: argparse.Namespace, root: Path, record: dict[str, Any]) -> None:
+    """Invocation comparison under the caller's coordinator lock; not authentication."""
+    if record["schema_version"] != BOUND_SCHEMA:
+        if (getattr(args, "operator_action", False) or any(getattr(args, key, None) is not None
+                for key in ("expected_session_id", "expected_worker_id", "expected_generation"))):
+            raise InputError("cooperative mutation flags require schema 3")
+        return
+    if record["transition_intent"] or record.get("transition_recovery", {}).get("phase") == "pending":
+        raise UnknownError("cooperative interrupted transition requires explicit recovery")
+    if record["revision"] >= MAX_GENERATION - (2 if args.command == "transition" else 1):
+        raise BusyError("cooperative revision limit reached")
+    verify_reservations(root, record)
+    require_expected_counters(args, record, record["cooperative_binding"]["generation"])
+    worker = record["worker"]
+    if getattr(args, "operator_reason", None) is not None and not getattr(args, "operator_action", False):
+        raise InputError("operator rationale requires explicit operator action")
+    if getattr(args, "operator_action", False):
+        rationale = getattr(args, "operator_reason", None)
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise UnknownError("cooperative operator action requires explicit rationale")
+        safe_scope(rationale)
+        if any(getattr(args, key, None) is not None for key in ("expected_session_id", "expected_worker_id")):
+            raise InputError("operator action cannot also declare worker ownership")
+        if worker is not None:
+            if args.command != "transition" or args.state != "Cancelled":
+                raise BusyError("active cooperative operator action is limited to absent-worker cancellation")
+            if worker["hostname"] != socket.gethostname() or process_identity(worker["pid"])[0] != "absent":
+                raise UnknownError("cooperative worker absence is not verified")
+        record["next_action"] = rationale
+        return
+    if worker is None:
+        raise UnknownError("inactive cooperative mutation requires explicit operator action")
+    session = getattr(args, "expected_session_id", None)
+    worker_id = getattr(args, "expected_worker_id", None)
+    if (not isinstance(session, str) or not SESSION_RE.fullmatch(session)
+            or not isinstance(worker_id, str) or not re.fullmatch(r"[0-9a-f]{32}", worker_id)):
+        raise UnknownError("cooperative mutation requires explicit session and worker identity")
+    if session != worker["session_id"] or worker_id != worker["worker_id"]:
+        raise BusyError("cooperative session/worker mismatch")
 
 
 def release_capacity(root: Path, record: dict[str, Any]) -> None:
@@ -769,7 +996,8 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if args.state == "Unknown" or args.state not in STATES:
         raise InputError("target state is invalid; Unknown is derived only")
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id)
+        record = read_task(root, args.task_id, allow_bound=True)
+        require_cooperative_mutation(args, root, record)
         verify_reservations(root, record)
         if args.state not in TRANSITIONS[record["state"]]:
             raise InputError(f"transition {record['state']!r} -> {args.state!r} is not allowed")
@@ -811,7 +1039,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             lane = reserve_first(root, "implementation", MAX_IMPLEMENTATION, record["worker"])
             record["leases"]["implementation_lane"] = lane
         record["transition_intent"] = args.state
-        write_task(root, record)
+        write_task(root, record, allow_bound=True)
         if args.reason:
             record["next_action"] = args.reason
         if args.state == "Reviewing":
@@ -825,7 +1053,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             )
         record["state"] = args.state
         record["transition_intent"] = None
-        write_task(root, record)
+        write_task(root, record, allow_bound=True)
     return record
 
 
@@ -879,7 +1107,8 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     }[args.category]
     value = safe_scope(args.value)
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id)
+        record = read_task(root, args.task_id, allow_bound=True)
+        require_cooperative_mutation(args, root, record)
         require_review_reservation_settled(record, root)
         if record["state"] in TERMINAL:
             raise BusyError("terminal task evidence is immutable")
@@ -897,7 +1126,7 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if not re.fullmatch(r"[0-9a-f]{40}", args.reviewed_sha):
                 raise InputError("reviewed SHA must be full lowercase 40-hex")
             record["reviewed_sha"] = args.reviewed_sha
-        write_task(root, record)
+        write_task(root, record, allow_bound=True)
     return record
 
 
@@ -908,7 +1137,8 @@ def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, A
             or not re.fullmatch(r"[0-9a-f]{40}", args.head_sha)):
         raise InputError("resolution requires a nonnegative index/revision and full lowercase digests")
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id)
+        record = read_task(root, args.task_id, allow_bound=True)
+        require_cooperative_mutation(args, root, record)
         verify_reservations(root, record)
         if record["transition_intent"]:
             raise UnknownError("reconcile unfinished transition before resolving findings")
@@ -949,7 +1179,7 @@ def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, A
         })
         if args.disposition == "persists":
             revoke_legacy_readiness(record)
-        write_task(root, record)
+        write_task(root, record, allow_bound=True)
     return record
 
 
@@ -957,7 +1187,8 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{40}", args.head_sha):
         raise InputError("head SHA must be full lowercase 40-hex")
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id)
+        record = read_task(root, args.task_id, allow_bound=True)
+        require_cooperative_mutation(args, root, record)
         require_repair_settled(record, root=root)
         if record["kind"] != "implementation" or record["state"] not in {"Implementing", "Rework", "Claimed"}:
             raise BusyError("head can be updated only for an active/rework implementation task")
@@ -987,8 +1218,9 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         record["reviewed_sha"] = ""
         record["reviewers"] = []
         record["validation"] = []
-        record["next_action"] = args.next_action or "independent review at updated head"
-        write_task(root, record)
+        record["next_action"] = args.next_action or (
+            record["next_action"] if getattr(args, "operator_action", False) else "independent review at updated head")
+        write_task(root, record, allow_bound=True)
     return record
 
 
@@ -1022,9 +1254,18 @@ def verify_reservations(root: Path, record: dict[str, Any]) -> None:
         owner = reservation_owner(root, group, index)
         if owner.get("task_id") != record["task_id"] or owner.get("token") != token:
             raise UnknownError(f"task {record['task_id']} does not own its {group} reservation")
+        if record["schema_version"] == BOUND_SCHEMA:
+            if group == "scopes":
+                expected_owner = {"schema_version": SCHEMA, "task_id": record["task_id"], "scope": record["scope"], "token": token}
+            else:
+                expected_owner = worker
+            exact_types = (type(owner.get("schema_version")) is int if group == "scopes" else
+                           type(owner.get("generation")) is int and type(owner.get("pid")) is int)
+            if owner != expected_owner or not exact_types:
+                raise UnknownError("cooperative reservation metadata disagrees with task")
 
 
-def validate_admission_reservations(root: Path) -> None:
+def validate_admission_reservations(root: Path, *, allow_bound: bool = False) -> None:
     """Refuse new work if either side of any reservation is unmeasured.
 
     Run under CoordinatorLock before create/claim. Readable JSON alone does
@@ -1034,7 +1275,7 @@ def validate_admission_reservations(root: Path) -> None:
     """
     records: dict[str, dict[str, Any]] = {}
     for path in (root / "tasks").glob("*/task.json"):
-        record = validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name)
+        record = validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name, allow_bound=allow_bound)
         if record["transition_intent"]:
             raise UnknownError(f"task {record['task_id']} has an unfinished transition; reconcile first")
         records[record["task_id"]] = record
@@ -1063,6 +1304,8 @@ def validate_admission_reservations(root: Path) -> None:
 
 
 def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
+    if record["schema_version"] == BOUND_SCHEMA:
+        raise UnknownError("cooperative interrupted transition recovery is unsupported")
     target = record["transition_intent"]
     if not target:
         return record
@@ -1113,6 +1356,8 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    if record["schema_version"] == BOUND_SCHEMA:
+        raise UnknownError("cooperative task requires guarded operator lifecycle; automatic reconciliation is unsupported")
     if has_review_reservations(record):
         review_reservation_module().validate_integrity(record, root)
     if record["transition_intent"]:
@@ -1146,10 +1391,126 @@ def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], b
     return record, True
 
 
+def recovery_reservations(root: Path, selected: dict[str, Any], pending: bool) -> dict[str, bool]:
+    """Preflight both directions before the first recovery write or release."""
+    records = {}
+    for path in sorted((root / "tasks").glob("*/task.json")):
+        record = validate_record(read_json(path, "recovery task", strict=True), path.parent.name, allow_bound=True)
+        records[record["task_id"]] = record
+        if record["task_id"] != selected["task_id"]:
+            if record["transition_intent"] or record.get("transition_recovery", {}).get("phase") == "pending":
+                raise UnknownError("another task has unsettled ownership")
+            verify_reservations(root, record)
+    expected = {"scopes": selected["scope_key"], "slots": selected["leases"]["global_slot"],
+                "implementation": selected["leases"]["implementation_lane"]}
+    seen = set()
+    for group in expected:
+        for lock in sorted((root / group).iterdir()):
+            if (lock.is_symlink() or not lock.is_dir() or lock.stat().st_uid != os.getuid()
+                    or lock.stat().st_mode & 0o022 or {path.name for path in lock.iterdir()} != {"owner.json"}):
+                raise UnknownError("recovery reservation directory is ambiguous")
+            owner = read_json(lock / "owner.json", "recovery reservation", strict=True)
+            task_id = owner.get("task_id")
+            record = records.get(task_id) if isinstance(task_id, str) else None
+            if record is None:
+                raise UnknownError("recovery reservation has no task")
+            index = record["scope_key"] if group == "scopes" else record["leases"]["global_slot" if group == "slots" else "implementation_lane"]
+            if index is None or lock.name != f"{index}.lock":
+                raise UnknownError("reverse recovery reservation association disagrees")
+            if group == "scopes":
+                metadata = {"schema_version": SCHEMA, "task_id": task_id, "scope": record["scope"], "token": record["leases"]["scope_token"]}
+                exact_types = type(owner.get("schema_version")) is int
+                valid = record["state"] not in TERMINAL
+            else:
+                metadata = record["worker"]
+                exact_types = type(owner.get("pid")) is int
+                if record["schema_version"] == BOUND_SCHEMA:
+                    exact_types = exact_types and type(owner.get("generation")) is int
+                valid = record["state"] in ACTIVE and (group == "slots" or record["kind"] == "implementation")
+            if not valid or not exact_types or owner != metadata:
+                raise UnknownError("complete recovery reservation ownership changed")
+            if task_id == selected["task_id"]:
+                seen.add(group)
+    if "scopes" not in seen:
+        raise UnknownError("recovery requires the exact retained scope")
+    observed = {group: group in seen for group in ("slots", "implementation")}
+    if not pending:
+        original_capacity_observation(selected, observed)
+    else:
+        original = selected["transition_recovery"]["capacity_observed"]
+        if any(observed[group] and not original[group] for group in observed):
+            raise UnknownError("capacity absent at recovery start has reappeared")
+        # Pending cleanup also releases slot first. A lane already absent in
+        # the original Reviewing transition is the sole retained-slot exception.
+        if observed["slots"] and original["implementation"] and not observed["implementation"]:
+            raise UnknownError("pending recovery capacity release order is unreachable")
+    return observed
+
+
+def command_recover(args: argparse.Namespace, root: Path) -> list[dict[str, Any]]:
+    if not args.operator_action:
+        raise UnknownError("recovery requires explicit operator action")
+    if not isinstance(args.operator_reason, str) or args.operator_reason != safe_scope(args.operator_reason):
+        raise UnknownError("recovery requires explicit single-line operator rationale")
+    with CoordinatorLock(root):
+        path = task_path(root, args.recover)
+        record = validate_record(read_json(path, "recovery task", strict=True), args.recover, allow_bound=True)
+        if record["schema_version"] != BOUND_SCHEMA:
+            raise UnknownError("explicit recovery requires schema 3")
+        require_expected_counters(args, record, record["cooperative_binding"]["generation"])
+        interrupted_shape(record)
+        worker = record["worker"]
+        if worker is not None and (worker["hostname"] != socket.gethostname() or process_identity(worker["pid"])[0] != "absent"):
+            raise UnknownError("recovery worker absence is not verified")
+        require_execution_stopped(record)
+        require_repair_settled(record, root=root)
+        pending = record.get("transition_recovery", {}).get("phase") == "pending"
+        observed = recovery_reservations(root, record, pending)
+        if record["revision"] > MAX_GENERATION - (1 if pending else 2):
+            raise BusyError("recovery revision limit reached")
+        prepared = copy.deepcopy(record)
+        if pending:
+            if args.operator_reason != record["transition_recovery"]["operator_reason"]:
+                raise BusyError("pending recovery rationale changed")
+        else:
+            receipt = {"phase": "pending", "source": record["state"], "intent": record["transition_intent"],
+                       "generation": record["cooperative_binding"]["generation"], "base_revision": record["revision"],
+                       "pending_revision": record["revision"] + 1, "worker": copy.deepcopy(worker),
+                       "leases": copy.deepcopy(record["leases"]), "capacity_observed": observed,
+                       "operator_reason": args.operator_reason,
+                       "task_sha256": recovery_digest({key: value for key, value in record.items()
+                                                        if key not in {"transition_recovery", "revision", "updated_at"}})}
+            receipt["correlation_sha256"] = recovery_digest({key: value for key, value in receipt.items() if key != "phase"})
+            prepared["transition_recovery"] = receipt
+            prepared["revision"] += 1
+            prepared["updated_at"] = now()
+        final = copy.deepcopy(prepared)
+        final.update(state="Blocked", transition_intent=None, worker=None, next_action=args.operator_reason,
+                     revision=prepared["revision"] + 1, updated_at=now())
+        final["leases"].update(global_slot=None, implementation_lane=None)
+        final["transition_recovery"]["phase"] = "settled"
+        # Both exact prospective writes must be readable and fit before effects.
+        for prospective in (prepared, final):
+            validate_record(prospective, args.recover, allow_bound=True)
+            serialized_json(prospective)
+        if not pending:
+            atomic_json(path, prepared)
+        release_capacity(root, copy.deepcopy(prepared))
+        atomic_json(path, final)
+    return [final]
+
+
 def command_reconcile(args: argparse.Namespace, root: Path) -> list[dict[str, Any]]:
+    if getattr(args, "recover", None) is not None:
+        return command_recover(args, root)
     changed = []
     with CoordinatorLock(root):
         paths = [task_path(root, args.task_id)] if args.task_id else sorted((root / "tasks").glob("*/task.json"))
+        # Preflight the entire authority, even for selected-task recovery: never
+        # mutate an earlier legacy task before discovering bound state later.
+        for record in command_list(root, allow_bound=True):
+            if record["schema_version"] == BOUND_SCHEMA:
+                raise UnknownError("cooperative state present; automatic reconciliation is unsupported")
         records: dict[str, dict[str, Any]] = {}
         for path in paths:
             if not path.exists():
@@ -1185,10 +1546,10 @@ def command_reconcile(args: argparse.Namespace, root: Path) -> list[dict[str, An
     return changed
 
 
-def command_list(root: Path) -> list[dict[str, Any]]:
+def command_list(root: Path, *, allow_bound: bool = False) -> list[dict[str, Any]]:
     records = []
     for path in sorted((root / "tasks").glob("*/task.json")):
-        records.append(validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name))
+        records.append(validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name, allow_bound=allow_bound))
     return records
 
 
@@ -1215,6 +1576,9 @@ def parser() -> argparse.ArgumentParser:
     claim.add_argument("task_id")
     claim.add_argument("--owner", required=True)
     claim.add_argument("--pid", type=int, default=os.getppid())
+    claim.add_argument("--session-id")
+    claim.add_argument("--expected-generation", type=int)
+    claim.add_argument("--expected-revision", type=int)
     transition = sub.add_parser("transition")
     transition.add_argument("task_id")
     transition.add_argument("state")
@@ -1222,8 +1586,14 @@ def parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show")
     show.add_argument("task_id")
     sub.add_parser("list")
-    reconcile = sub.add_parser("reconcile")
-    reconcile.add_argument("task_id", nargs="?")
+    reconcile = sub.add_parser("reconcile", allow_abbrev=False)
+    selection = reconcile.add_mutually_exclusive_group()
+    selection.add_argument("task_id", nargs="?")
+    selection.add_argument("--recover")
+    reconcile.add_argument("--operator-action", action="store_true")
+    reconcile.add_argument("--operator-reason")
+    reconcile.add_argument("--expected-generation", type=int)
+    reconcile.add_argument("--expected-revision", type=int)
     update = sub.add_parser("update-head")
     update.add_argument("task_id")
     update.add_argument("head_sha")
@@ -1243,6 +1613,14 @@ def parser() -> argparse.ArgumentParser:
     resolve.add_argument("--reviewer", required=True)
     resolve.add_argument("--evidence", required=True)
     resolve.add_argument("--expected-revision", type=int, required=True)
+    for command in (transition, update, record, resolve):
+        command.add_argument("--expected-session-id")
+        command.add_argument("--expected-worker-id")
+        command.add_argument("--expected-generation", type=int)
+        if command is not resolve:
+            command.add_argument("--expected-revision", type=int)
+        command.add_argument("--operator-action", action="store_true")
+        command.add_argument("--operator-reason")
     return p
 
 
@@ -1253,7 +1631,11 @@ def emit(value: Any) -> None:
 def main() -> int:
     try:
         args = parser().parse_args()
-        root = state_root()
+        recovering = args.command == "reconcile" and args.recover is not None
+        if args.command == "reconcile" and not recovering and (args.operator_action or any(
+                getattr(args, field) is not None for field in ("operator_reason", "expected_generation", "expected_revision"))):
+            raise InputError("explicit recovery flags require --recover TASK")
+        root = state_root(create=not recovering)
         if args.command == "create":
             emit(command_create(args, root))
         elif args.command == "claim":
@@ -1261,9 +1643,9 @@ def main() -> int:
         elif args.command == "transition":
             emit(command_transition(args, root))
         elif args.command == "show":
-            emit(read_task(root, args.task_id))
+            emit(read_task(root, args.task_id, allow_bound=True))
         elif args.command == "list":
-            emit(command_list(root))
+            emit(command_list(root, allow_bound=True))
         elif args.command == "reconcile":
             emit({"state": "CURRENT", "changed": command_reconcile(args, root)})
         elif args.command == "record":

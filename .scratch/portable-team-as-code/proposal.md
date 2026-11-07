@@ -166,6 +166,13 @@ without conflating task assignment, runtime liveness and knowledge freshness.
 
 ## 6. Memory and migration remain first-class
 
+**Proposed trust/disclosure gates:** retrieved text and commands remain untrusted
+data. Promotion, verification and migration never confer instruction authority
+or permission to execute. Publication/export checks authorized audience and
+sensitivity, including retained Git history, superseded material and archives.
+Unknown sensitivity blocks sharing pending authorized review. These are contract
+requirements, not scanner implementation or claims of performed checks.
+
 The [memory contract](issues/06-team-memory.md) preserves team/seat/task knowledge
 and selectively promotes occupant scratch. A small index guides orientation.
 Records carry sources, applicability and verification dates; corrections link
@@ -186,6 +193,22 @@ for the first demo; do not advertise compatibility without a separately scoped
 mapping and qualification. Its declarations can include behavior that is inert.
 
 ## 7. Accepted demonstration and evidence
+
+### Fit with the full MSB workspace plan
+
+The [current MSB full-workspace plan](https://github.com/GSA-TTS/agentic-coding-maintainers/blob/d2ec85d7d8e86b3e5906740139d1277b114ff4bc/docs/MSB-WORKSPACE-PLAN.md)
+places the full coordinator/workspace inside the outer VM. Under that deployment,
+the portable coordinator and optional Paseo binding also live inside the VM;
+the host provisions the VM and approved credential/egress bindings. Controller
+policy, admission state and accepted evidence stay protected from candidate
+files/tools. Candidate builds/tests run in narrower disposable inner execution,
+not the controller environment. Qualify OpenCode first, then Pi through its actual
+adapter/permission paths; one harness's results do not establish parity.
+
+The small cooperative demonstration below is separately scoped. It does not
+implement or qualify full MSB deployment, controller protection or Pi support.
+Those retain the plan's own evidence and activation gates; this research PR
+authorizes neither deployment nor implementation.
 
 Three seats repair one documentation link in a synthetic repository. A decision,
 failed approach and stale check result make continuity observable. Run identical

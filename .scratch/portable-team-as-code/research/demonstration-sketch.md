@@ -96,11 +96,12 @@ Runtime profile: Paseo                  Knowledge revision: k8
 
 Seat          Occupant       Execution          Work
 Coordinator   C / gen 1      idle               Coordinate repair
-Builder       B / gen 2      unknown            Repair link [WRITES BLOCKED]
+Builder       B / gen 2      idle               Repair link [WRITES BLOCKED]
 Reviewer      R / gen 1      idle               Review repair
 
 Attention
-  Builder: predecessor stop unverified — orientation allowed
+  Builder: predecessor A / gen 1 / attempt A1 stop UNKNOWN
+           B / gen 2 is idle; orientation allowed, conflicting writes blocked
   Reviewer: correction k8 published — last reviewed k7
   Builder: reassess repair pending — 2 wake requests combined
 

@@ -104,6 +104,21 @@ execution must establish that the behavior works.
 
 ## Answer
 
+### Proposed trust and disclosure gates — PR review correction, 2026-11-07
+
+Retrieved text, commands and examples remain untrusted data even when sourced,
+verified or promoted to shared knowledge. Promotion never grants instruction
+authority or permission to execute; execution independently requires the caller's
+authorized task and tool policy.
+
+Before publication, knowledge-bearing notification or export, check authorized
+audience and sensitivity, including retained Git history, superseded entries,
+transcript excerpts and archives. Provenance and factual verification do not
+authorize disclosure. Unknown sensitivity blocks sharing pending authorized
+review. Private retention and audience-approved sharing are separate outcomes.
+These are proposed contract gates requested in PR review, not scanner
+implementation or claims that the checks have run.
+
 Resolved through the user's explicit acceptance of memory Q1–Q7. Authored
 knowledge provides continuity across conversations, with team, seat and task
 scopes plus selectively preserved occupant scratch. Sourced provisional findings,

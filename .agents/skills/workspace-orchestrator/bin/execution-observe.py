@@ -369,6 +369,10 @@ def main() -> int:
         if not sys.flags.isolated or not sys.dont_write_bytecode or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", args.operation_id):
             raise Unverified("isolated interpreter and bounded operation ID required")
         c, coordinator, runner = dependency("review-collect"), dependency("orchestrator-state"), dependency("review-run")
+        root = coordinator.state_root(create=False)
+        # Reject unsupported cooperative state before definition/runtime work.
+        # Re-read under the lifecycle lock before creating any runtime config.
+        coordinator.read_task(root, args.task_id)
         raw = c.read_bytes(args.definition, 200_000)
         if digest(raw) != args.definition_sha256:
             raise Unverified("definition digest mismatch")
@@ -376,19 +380,18 @@ def main() -> int:
         validate_definition(definition)
         if runner.binary_digest(Path(definition["docker_binary"])) != definition["docker_sha256"]:
             raise Unverified("installed runtime binary mismatch")
-        root = coordinator.state_root(create=False)
-        config = root / "execution-docker-config"
-        c.no_links(config)
-        config.mkdir(mode=0o700, exist_ok=True)
-        if any(config.iterdir()):
-            raise Unverified("runtime config must be private and empty")
-        if config.stat().st_uid != os.getuid() or config.stat().st_mode & 0o077:
-            raise Unverified("runtime config permissions invalid")
-        prefix, env = route(definition, config)
         request = {"operation_id": args.operation_id, "definition_sha256": args.definition_sha256,
                    "expected_revision": args.expected_revision}
         with coordinator.CoordinatorLock(root):
             record = coordinator.read_task(root, args.task_id)
+            config = root / "execution-docker-config"
+            c.no_links(config)
+            config.mkdir(mode=0o700, exist_ok=True)
+            if any(config.iterdir()):
+                raise Unverified("runtime config must be private and empty")
+            if config.stat().st_uid != os.getuid() or config.stat().st_mode & 0o077:
+                raise Unverified("runtime config permissions invalid")
+            prefix, env = route(definition, config)
             if args.definition.resolve().is_relative_to(Path(record["worktree"]).resolve()):
                 raise Unverified("approved definition must be outside candidate checkout")
             attempts = record.get("execution_observations", {})

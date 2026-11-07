@@ -12,11 +12,10 @@ AI-authored research evidence for
 [Compare minimal local operation with the Paseo experience](../issues/02-minimal-and-paseo-bindings.md),
 a child of [Portable team-as-code](../map.md).
 
-Placement note: this file is written at its preapproved path
+Historical worker-placement note: this file was written at its preapproved path
 `.scratch/portable-team-as-code/research/minimal-and-paseo-bindings.md` inside
-the researcher's own workspace. The two relative links above resolve once the
-file sits beside the primary's untracked tracker in Maintainers; they do not
-resolve inside this worktree, which holds no copy of the map or tickets.
+the researcher's own workspace, where tracker links were unavailable. This
+publication copy is integrated beside the map and tickets; those links now resolve.
 
 Research only. Nothing here was executed as a candidate runtime: no OpenRig
 daemon, rig, cron entry, schedule, or demonstration agent was started. All
@@ -317,6 +316,12 @@ daemon, not against two daemons over one `$PASEO_HOME`. A minimal runtime using
 | OpenRig | Two different mechanisms, worth separating. Interrupted *runs*: next-due is recomputed from `last_evaluation_at` + cadence at startup, so the database alone determines the next fire (§4.3). Undelivered *wakes*: the retry ladder stores no counter — "the transitions ARE the ladder state. Attempts, rungs, suspension and exhaustion are all markers on the row's transition log, and every tick DERIVES its position from them — a daemon restart can neither forget a ladder (silent park returns) nor restart its counts (cap violated by repetition)" ([queue-wake-ladder.ts:28-31](https://github.com/mvschwarz/openrig/blob/bd39da9872afc39cbe0c8e839a322b4cb8955cbe/packages/daemon/src/domain/queue-wake-ladder.ts#L28-L31)), with configurable bounds defaulting to 300 s and a cap of 3 ([same:76-79](https://github.com/mvschwarz/openrig/blob/bd39da9872afc39cbe0c8e839a322b4cb8955cbe/packages/daemon/src/domain/queue-wake-ladder.ts#L76-L79)). |
 
 ### 4.3 Missed wakes
+
+Scheduler bookkeeping in §4.2 is distinct from execution/effect reconciliation.
+A failed schedule record, archive invocation or recomputed due time does not prove
+prior work stopped or external effects settled. Those claims need separate
+attempt-bound evidence; without it G6b is UNVERIFIED and dependent work must not
+infer safe resumption.
 
 | | Observed |
 | --- | --- |
@@ -619,7 +624,8 @@ host-probed rows are distinguished in §9 rather than in the cell.
 | G3 | One tick never overlaps itself | **Proposed** (`flock` precedent exists in kits) | **Observed**, per-daemon in-memory + serialized store claim | Same | **Observed**, single in-flight tick, sequential jobs |
 | G4 | Missed wakes are skipped, not replayed | **Proposed** (follows from a stateless command) | **Observed**, cursor advanced past `now` | Same | **Observed**, "recovery does not replay every elapsed cycle" |
 | G5 | A wake into a busy occupant has a defined outcome | **Proposed** — must be chosen | **Observed**: refused + recorded `failed`; consumes a `maxRuns` slot | Unchanged for scheduler wakes (same `schedule/service.js`); 2s coalescing applies only to interactive/notification sends | **Observed**: joins the turn by default; `--wait-for-idle` discards |
-| G6 | Interrupted runs are reconciled on restart | **Not offered** | **Observed**: marked `failed` with a named reason; workspace archived | Same, plus opt-in agent resume | **Observed** for the scheduler: next-due recomputed from `last_evaluation_at` + cadence (§4.3). Interrupted-run bookkeeping as such was not inspected. |
+| G6a | Scheduler bookkeeping recovers on restart | **Proposed** — pending-purpose recovery needs qualification | **Observed in source**: run marked `failed` and workspace archive invoked | Same; opt-in agent resume is separate | **Observed in source**: next-due recomputed from `last_evaluation_at` + cadence; interrupted-run bookkeeping not inspected |
+| G6b | Prior execution stopped and external effects reconciled before dependent work resumes | **UNVERIFIED** — no live qualification | **UNVERIFIED** — failed scheduler record/archive invocation does not prove stop or effect settlement | **UNVERIFIED** — resume capability does not establish stop or effect settlement | **UNVERIFIED** — due-time recomputation/wake history does not establish execution/effect reconciliation |
 | G7 | Notification delivery survives a restart | **Not offered** | **Not offered** — in-process `WeakMap`; lost on restart | **Observed** — durable JSON store, recovered at boot, bounded retry | **Observed** for the queue wake ladder (retry interval 300 s and cap 3 by default, ladder position derived from the row's transition log; see §4.2) |
 | G8 | Undeliverable/uncertain notification is reported as unknown, not as success | **Proposed** | Partially: errors logged, not surfaced to the caller | **Observed** — terminal `host unreachable` with "status … is unknown" | **Observed** — "ends unconfirmed and is not automatically sent again" |
 | G9 | Event stream can be replayed after a gap | **Not applicable** (files are the state) | **Not offered** — no cursor, no replay | Same | Not inspected for the SSE stream |
@@ -908,6 +914,6 @@ must not substitute one for the other.
    ([rig-spec.md:1259-1261](https://github.com/mvschwarz/openrig/blob/bd39da9872afc39cbe0c8e839a322b4cb8955cbe/docs/reference/rig-spec.md#L1259-L1261)).
    Any design borrowing that vocabulary is borrowing a declaration, not a
    behavior.
-7. **No human decision in `../map.md` or any ticket is resolved by this file**,
-   and nothing here was integrated into the map, the tickets, or the admission
-   record — the primary Wayfinder owns those.
+7. **Historical worker handoff:** the researcher did not resolve human decisions
+   or edit the primary tracker. The publication copy has since been integrated;
+   current decisions and ownership are recorded in the linked map/tickets.

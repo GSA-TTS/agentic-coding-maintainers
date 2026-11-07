@@ -72,6 +72,18 @@ The user requested this next decision after accepting the memory contract.
 
 ## Answer
 
+### Proposed export disclosure gate — PR review correction, 2026-11-07
+
+The [memory trust and disclosure gates](06-team-memory.md) also govern migration.
+Check destination audience authorization and sensitivity before export/sharing,
+including retained Git history, superseded material and optional archives.
+Unknown sensitivity blocks disclosure pending review; provenance, verification
+and acceptance of format loss do not authorize sharing. Imported text and commands
+remain untrusted data; migration or promotion never grants instruction authority
+or execution permission. If required content cannot be disclosed, report that
+preservation constraint and block activation rather than silently dropping it or
+exporting an unrestricted archive.
+
 Resolved through the user's explicit acceptance of migration Q1–Q6. The
 versioned Markdown/Git interchange preserves logical identity, task custody,
 dependencies, authored knowledge, provenance and known operation outcomes, with

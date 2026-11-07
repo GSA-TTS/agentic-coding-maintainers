@@ -18,8 +18,24 @@
    `pre-commit run --all-files` (it invokes the strict suite). If the workstation
    already uses a managed global `core.hooksPath`, do not replace it with
    `pre-commit install`; integrate the command into that managed hook instead.
-6. Use a Conventional Commit message with a verified contributor identity.
+6. Use a Conventional Commit message and PR title with a verified contributor identity.
 7. Open a pull request and complete the template.
+
+Use `type(scope)!: description` for the PR title; scope and `!` are optional.
+Accepted types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
+`build`, `ci`, `chore`, and `revert`. Examples: `fix(state): preserve interrupted
+writes`, `feat!: change evidence format`, and the bot's `chore(main): release
+0.1.0`. The metadata-only title check has no checkout or write permissions. It
+checks syntax, not compatibility or whether a release is due. Ensure the final
+squash commit preserves the intended type and any breaking marker/footer.
+
+Before 1.0, breaking public CLI/config/state/evidence/adapter changes and features
+bump minor; fixes bump patch. Explain breaking changes and migration/rollback in
+the PR body. Docs/chore-only commits ordinarily do not trigger Release Please.
+See [RELEASING.md](docs/RELEASING.md) for the v0.1.0 bootstrap, explicit activation
+gate, human close/reopen CI route for bot PRs, and release review requirements.
+Run checks only inside an independently justified workspace sandbox; a worktree
+alone is not a sandbox.
 
 During the explicitly authorized solo-maintainer phase in this repository,
 inspect the exact PR head and obtain independent agent QA evidence before a
