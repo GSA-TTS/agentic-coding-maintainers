@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.2.0...v0.3.0) (2026-11-07)
+
+
+### Features
+
+* **orchestration:** prepare and inspect offline GitHub claims ([#136](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/136)) ([aeeca7a](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/aeeca7af4a65f90581f5df76b453920876ab1e50))
+
 ## [0.2.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.1.0...v0.2.0) (2026-11-07)
 
 
