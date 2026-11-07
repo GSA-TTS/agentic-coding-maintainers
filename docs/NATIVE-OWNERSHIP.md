@@ -1,9 +1,11 @@
 # Native ownership: retained-state preflight and cooperative pilot
 
-Issue #116, first slice. **Implemented:** a read-only check of actual retained
-schema-2 task, global-slot, and scope records. **Proposed:** native ownership and
-authenticated-caller enforcement. Existing coordinator task JSON remains the
-authority; there is no new claim store, capture envelope, or native API bridge.
+Issue #116, retained-state preflight and cooperative pilot. **Implemented:** a
+read-only check of actual retained schema-2 and opt-in schema-3 task,
+global-slot, implementation-lane (for schema-3 `Implementing` tasks), and scope
+records. **Proposed:** native ownership and authenticated-caller enforcement.
+Existing coordinator task JSON remains the authority; there is no new claim
+store, capture envelope, or native API bridge.
 
 ## Opt-in core lifecycle pilot (schema 3)
 
@@ -56,8 +58,12 @@ private JSON output. Observations confer no authority. Keep their output and
 command arguments out of public evidence. Public `read_task`, `validate_record`,
 `write_task`, and `command_list` defaults reject schema 3 so existing controllers
 using those entry points cannot dispatch or silently discard its binding.
-Previous schema-2-only core readers also reject schema 3. The existing native
-preflight intentionally remains schema-2-only and reports schema 3 unsupported.
+Previous schema-2-only core readers also reject schema 3. The static preflight
+in `scripts/check-native-ownership.py` now inspects both schema-2 tasks (3 files,
+rejecting bound expectation flags) and opt-in schema-3 bound tasks when both
+`--expected-session-id` and `--expected-generation` are supplied (including the
+implementation-lane reservation when `state == "Implementing"`, plus allowed
+schema-3 `legacy_finding_dispositions` and settled `transition_recovery`).
 
 Automatic reconciliation refuses with exit 3 whenever any bound task is present
 in the authority, including selected-task calls. All tasks are preflighted before
@@ -316,6 +322,22 @@ python3 -I -B scripts/check-native-ownership.py \
   --expected-repo example/project
 ```
 
+For an opt-in schema-3 cooperative session-bound task, pass both
+`--expected-session-id` and `--expected-generation`:
+
+```sh
+python3 -I -B scripts/check-native-ownership.py \
+  --authority-root /physical/coordinator-workspace \
+  --invoking-root /physical/coordinator-workspace \
+  --task-id selected-task \
+  --expected-revision 7 \
+  --expected-worker-id 11111111111111111111111111111111 \
+  --expected-session-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --expected-generation 2 \
+  --expected-branch feat/selected-task \
+  --expected-repo example/project
+```
+
 The values above are fictional. Roots name the **workspace containing
 `.orchestrator`**, not `.orchestrator` itself. `--invoking-root` means the
 explicitly chosen state authority for the invocation, not the current checkout.
@@ -400,20 +422,37 @@ the validator must supply a real shared-Git primary rather than fabricate one.
 `--task-id` uses the existing flat 1–80 character task-ID syntax.
 `--expected-revision` is a nonnegative canonical decimal integer at most
 `2^63-1`; `--expected-worker-id` is the retained private lowercase 32-hex worker
-ID. Optional branch and repository arguments compare exact existing strings;
-there is no forge lookup, ref resolution, normalization, or invented immutable
-repository ID. Worker IDs are private comparison inputs, **not secrets that
+ID. Optional `--expected-session-id` (1–128 ASCII characters matching
+`[A-Za-z0-9][A-Za-z0-9._-]*`) and `--expected-generation` (positive canonical
+decimal integer in `1..2^63-1`) must be supplied together for schema-3 tasks and
+omitted for schema-2 tasks. Supplying only one of the pair is an argument error
+(`INVALID_ARGUMENTS`); supplying both for a schema-2 task yields
+`UNVERIFIED` (`UNEXPECTED_BOUND_EXPECTATIONS`); omitting them for a schema-3
+task yields `UNVERIFIED` (`MISSING_BOUND_EXPECTATIONS`). Optional branch and
+repository arguments compare exact existing strings; there is no forge lookup,
+ref resolution, normalization, or invented immutable repository ID. Worker IDs
+and session labels are private comparison inputs, **not secrets that
 authenticate a caller**. Another session of the same account can copy them.
 Keep arguments and host process/terminal logs private; never paste private state
 into review evidence.
 
 ## Implemented check
 
-Only these three files are read, with paths derived from the selected task:
+For schema 2 (and schema 3 in `Claimed` or `Reviewing`), these three files are
+read, with paths derived from the selected task:
 
 1. `.orchestrator/tasks/<task-id>/task.json`
 2. `.orchestrator/scopes/<scope_key>.lock/owner.json`
 3. `.orchestrator/slots/<global_slot>.lock/owner.json`
+
+For a schema-3 task in `Implementing`, the preflight requires
+`kind == "implementation"`, a non-null `leases.implementation_lane`, and also
+reads a fourth file:
+
+4. `.orchestrator/implementation/<implementation_lane>.lock/owner.json`
+
+For schema-3 tasks in `Claimed` or `Reviewing`, `leases.implementation_lane`
+must be `null`.
 
 All ancestors are opened with `O_NOFOLLOW`, directory descriptors remain open
 during comparison, and state directories must be current-user owned and private
@@ -428,7 +467,9 @@ directory; privacy checks begin at `.orchestrator`.
 The actual field sets and lease formats are taken from `validate_record`,
 `command_create`, `worker_metadata`, and `command_claim` in
 `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py`. This bounded
-reader accepts the base schema-2 shape with all normal required keys. It does
+reader accepts the base schema-2 shape and the opt-in schema-3 shape
+(`cooperative_binding = {session_id, generation}` plus optional
+`legacy_finding_dispositions` and `transition_recovery`). It does
 not upgrade prototype schema 1. Unknown schema versions or additional fields
 (including richer optional coordinator protocol extensions) yield `UNVERIFIED`.
 It is not a substitute for the coordinator's full validators.
@@ -444,23 +485,33 @@ hashes, scope hash, slot/lane ranges, worker metadata, and lease token shapes
 are validated. Finite counts are additionally bounded to signed 64-bit range.
 
 The task must be `Claimed`, `Implementing`, or `Reviewing`, with no transition
-intent, a worker, and a global slot. Idle/terminal/transitioning state or missing
-worker/slot yields `UNVERIFIED`. Complete evidence is compared for:
+intent, no pending `transition_recovery`, a worker, and a global slot.
+Idle/terminal/transitioning state or missing worker/slot yields `UNVERIFIED`.
+A settled `transition_recovery` receipt is validated (including its embedded
+interrupted snapshot and correlation digests) and allowed when the task has
+subsequently been reclaimed into a later active generation
+(`cooperative_binding.generation > receipt.generation` and
+`revision >= receipt.pending_revision + 3`). Complete evidence is
+compared for:
 
 - selected task ID, expected revision, and expected worker ID;
 - retained worker task ID and owner versus the task;
+- for schema 3, expected session ID and generation versus `cooperative_binding`,
+  worker metadata, global slot, and (when `Implementing`) implementation lane;
 - optional exact repository and linked branch expectations;
-- the complete global-slot worker record versus the task worker;
+- the complete global-slot (and schema-3 `Implementing` lane) worker record
+  versus the task worker;
 - scope task ID, scope text, and token versus the task's scope reservation.
 
-The implementation-lane index is type/range validated in task metadata, but its
-reservation file is not read, to keep this slice at three files. Other slots,
-scope overlaps, review reservations, process liveness, configuration, acceptance
-criteria, remote issue/PR status, and Git worktree/head identity are not checked.
-No timestamps grant freshness or takeover. File descriptor metadata is checked
-again after reads to detect observed changes; concurrent replacement, directory
-movement, coherent replay, and mutation immediately after inspection are not
-excluded. There is no transactional snapshot or action-boundary fencing.
+For schema 2, the implementation-lane index is type/range validated in task
+metadata, but its reservation file is not read, preserving the three-file
+projection. Other slots, scope overlaps, review reservations, process liveness,
+configuration, acceptance criteria, remote issue/PR status, and Git
+worktree/head identity are not checked. No timestamps grant freshness or
+takeover. File descriptor metadata is checked again after reads to detect
+observed changes; concurrent replacement, directory movement, coherent replay,
+and mutation immediately after inspection are not excluded. There is no
+transactional snapshot or action-boundary fencing.
 
 ## Output and interpretation
 
@@ -477,9 +528,9 @@ absolute path, PID, hostname, exception text, or input argument is rendered.
 
 | Status | Exit | Meaning |
 | --- | --- | --- |
-| `STATIC_MATCH` | 0 | Selected retained worker, task expectations, global slot, and scope agree. |
-| `CONFLICT` | 4 | Distinct physical roots, or complete metadata exposes an explicit ID/revision/owner/branch/repository/lease mismatch. |
-| `UNVERIFIED` | 3 | Missing/unsafe/malformed/unsupported state or incomplete/inactive/transitioning evidence. |
+| `STATIC_MATCH` | 0 | Selected retained worker, task expectations (including schema-3 session/generation), global slot, optional schema-3 implementation lane, and scope agree. |
+| `CONFLICT` | 4 | Distinct physical roots, or complete metadata exposes an explicit ID/revision/owner/session/generation/branch/repository/lease mismatch. |
+| `UNVERIFIED` | 3 | Missing/unsafe/malformed/unsupported state, mismatched schema/bound-flag presence, or incomplete/inactive/transitioning evidence. |
 
 Diagnostics report one first failure. Unavailable or malformed lease evidence
 prevents a complete comparison, even if another mismatch is apparent. A missing
@@ -507,11 +558,11 @@ For a handoff or conflict, the orchestrator/operator should:
 3. Preserve dirty worktrees and unsettled evidence. Arbitrate ownership through
    the existing coordinator lifecycle and policy; do not edit JSON, steal a
    token, or use timestamps to silently replace a worker.
-4. After the authorized lifecycle handoff, obtain the new retained revision and
-   worker ID and re-run this static check. Apply existing acceptance and action
-   gates separately.
+4. After the authorized lifecycle handoff, obtain the new retained revision,
+   worker ID, and (for schema 3) session ID and generation, and re-run this
+   static check. Apply existing acceptance and action gates separately.
 
 Offline fixtures in `tests/check-native-ownership-test.py` construct actual
-schema-2 task and reservation shapes. They are registered only as a `make test`
-entry. Execute them and required repository checks in an independently justified
-isolated environment; a worktree alone is not a sandbox.
+schema-2 and schema-3 task and reservation shapes. They are registered only as
+a `make test` entry. Execute them and required repository checks in an
+independently justified isolated environment; a worktree alone is not a sandbox.
