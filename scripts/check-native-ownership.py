@@ -223,6 +223,8 @@ def validate_transition_recovery(task):
         return
     receipt = task["transition_recovery"]
     fields(receipt, RECOVERY_FIELDS)
+    for key in ("phase", "source", "intent"):
+        text(receipt[key])
     require(receipt["phase"] in {"pending", "settled"})
     require(receipt["source"] in STATES and receipt["intent"] in STATES)
     for key in ("generation", "base_revision", "pending_revision"):
@@ -254,6 +256,7 @@ def validate_transition_recovery(task):
     validate_interrupted_snapshot(snapshot, receipt["capacity_observed"])
     if receipt["phase"] == "pending":
         require(task["revision"] == receipt["pending_revision"]
+                and task["owner"] == snapshot["owner"]
                 and task["cooperative_binding"]["generation"] == receipt["generation"]
                 and all(task[k] == receipt[f] for k, f in (
                     ("state", "source"), ("transition_intent", "intent"),
@@ -268,6 +271,9 @@ def validate_transition_recovery(task):
             require(task["state"] == "Blocked" and task["transition_intent"] is None
                     and task["worker"] is None and task["next_action"] == receipt["operator_reason"]
                     and task["cooperative_binding"]["generation"] == receipt["generation"])
+        if task["state"] in ACTIVE or task["worker"] is not None:
+            require(task["cooperative_binding"]["generation"] > receipt["generation"]
+                    and task["revision"] >= receipt["pending_revision"] + 3)
 
 
 def validate_legacy_dispositions(task):
@@ -288,6 +294,7 @@ def validate_legacy_dispositions(task):
         integer(revision, max(1, previous_revision + 1), task["revision"])
         require(item["finding_sha256"] == hashlib.sha256(task["findings"][index].encode("utf-8")).hexdigest())
         matches(item["head_sha"], HEX40)
+        text(item["disposition"])
         require(item["disposition"] in {"fixed", "refuted", "persists"})
         prior = latest.get((epoch, index))
         if prior is not None:

@@ -489,7 +489,9 @@ intent, no pending `transition_recovery`, a worker, and a global slot.
 Idle/terminal/transitioning state or missing worker/slot yields `UNVERIFIED`.
 A settled `transition_recovery` receipt is validated (including its embedded
 interrupted snapshot and correlation digests) and allowed when the task has
-subsequently been reclaimed into an active generation. Complete evidence is
+subsequently been reclaimed into a later active generation
+(`cooperative_binding.generation > receipt.generation` and
+`revision >= receipt.pending_revision + 3`). Complete evidence is
 compared for:
 
 - selected task ID, expected revision, and expected worker ID;

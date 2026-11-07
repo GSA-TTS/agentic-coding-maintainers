@@ -487,6 +487,26 @@ class OwnershipTest(unittest.TestCase):
         bad_disp["legacy_finding_dispositions"]["history"][0]["finding_sha256"] = "0" * 64
         self.write(self.task_path, bad_disp)
         self.assertEqual(self.invoke_bound(), (3, "UNVERIFIED", "INVALID_METADATA"))
+        # Unhashable JSON values in receipt or disposition enum fields return INVALID_METADATA, not STORE_UNAVAILABLE.
+        for field in ("phase", "source", "intent"):
+            unhashable = copy.deepcopy(settled)
+            unhashable["transition_recovery"][field] = []
+            self.write(self.task_path, unhashable)
+            self.assertEqual(self.invoke_bound(), (3, "UNVERIFIED", "INVALID_METADATA"))
+        bad_disp_type = copy.deepcopy(settled)
+        bad_disp_type["legacy_finding_dispositions"]["history"][0]["disposition"] = {}
+        self.write(self.task_path, bad_disp_type)
+        self.assertEqual(self.invoke_bound(), (3, "UNVERIFIED", "INVALID_METADATA"))
+        # Active task with settled receipt at the SAME generation (generation == receipt.generation) is rejected.
+        same_gen_active = attach_recovery_receipt(
+            bound_task_fixture(state="Implementing", generation=1, revision=7), phase="settled"
+        )
+        self.task = same_gen_active
+        self.persist(include_lane=True)
+        self.assertEqual(
+            self.invoke_bound({"expected-generation": "1"}),
+            (3, "UNVERIFIED", "INVALID_METADATA"),
+        )
 
 
 if __name__ == "__main__":
