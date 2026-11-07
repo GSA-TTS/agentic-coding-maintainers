@@ -1,9 +1,11 @@
-# Proposed public GitHub claim codec
+# Proposed public GitHub claim codec and read-only observer
 
-Issue #117's first slice defines a shared comment format and an offline observer.
-It is a proposal, not a live ownership or admission protocol. It does not read
-coordinator metadata, verify assignments/current-user identity, or grant authority.
-The commands use no network, subprocesses, or file writes; stdout is the result.
+Issue #117's codec slice defines a shared comment format and offline reconciliation;
+the separate GET-only observer below adds bounded live comment traversal.
+These are a proposal, not a live ownership or admission protocol. Neither reads
+coordinator metadata, verifies assignments, or grants authority. Only the live
+observer looks up the authenticated current-user identity.
+The codec commands use no network, subprocesses, or file writes; stdout is the result.
 Only GitHub.com issue comments are supported. No GitLab quick actions are supported.
 
 ## Prepare for explicit public review
@@ -143,6 +145,103 @@ an input refusal.
 
 ## Input bounds and integration boundary
 
+### Live GET-only observation
+
+The separate observer traverses visible issue comments using the actual REST
+transport. Run it only in an independently justified isolated environment with
+normal `gh` credentials for the intended GitHub.com account:
+
+```sh
+python3 -I -B scripts/observe-github-claims.py --repo acme/widgets --issue 117
+```
+
+It first reads `GET /user` to identify the authenticated account and
+`GET /repos/acme/widgets` to bind the repository's numeric immutable ID and exact
+name/URL. It then reads the issue identity, every comments page, and the issue
+again. A pull request through an Issues endpoint is refused. Closed and locked
+issues are observed with explicit flags; neither flag changes authority. With
+one comments page this is five GET calls (identity lookups plus issue, comments,
+issue reread). There are no mutation methods or flags, arbitrary URL option,
+preparation inputs, journal integration, or automatic publication.
+
+Requests explicitly use `gh api --hostname github.com --method GET --include`,
+raw-body media and API version `2022-11-28`. `GH_HOST` is pinned to `github.com`;
+inherited `GIT_*`, `GITHUB_HOST`, debugging and pager overrides are removed.
+Normal authentication/configuration variables remain available. Proxy overrides
+are refused. Credentials identify the current account, not a task assignment,
+operator/session authority, or approval to act.
+
+`gh` may follow HTTP redirects internally before `--include` returns the final
+response. The observer rejects a final non-200 status or final `Location` header
+and validates the final repository/issue identity fields and stable issue ID.
+It does **not** prevent, observe, or attest intermediate redirects, credential
+forwarding, or a fully secure authentication/host-routing chain. A followed
+redirect ending in 200 with valid identities can be observed. Future use requiring
+remote effects needs separately reviewed transport hardening that controls and
+verifies redirects and credential routing before any authority is granted.
+
+All calls share a 60-second deadline and a 512 KiB combined stdout/stderr budget.
+Timeout/overflow kills the subprocess group, including pipe-holding children,
+with bounded reaping. At most ten pages of 100 comments and 1,000 total comments
+are accepted. Final HTTP metadata must report 200 with no `Location` header;
+duplicate HTTP headers/JSON fields and malformed bodies are refused. Every Link relation,
+including non-followed `first`, `prev` and `last`, must reference exactly the
+named GitHub.com comments endpoint or its canonical numeric path
+`/repositories/{verified_repository_id}/issues/{requested_issue_number}/comments`,
+with only `per_page=100` and a bounded page. The numeric ID comes exclusively
+from the verified repository GET response; foreign repository/issue paths are refused.
+`next` must be the consecutive page. Foreign/trailing/ambiguous links and an
+advertised later last page without a successor are refused. A full terminal
+page is valid when Link has no successor. The observer constructs its own next
+request on the fixed named endpoint rather than executing a returned URI, even
+when the validated Link uses the numeric path.
+
+Every comment, including ordinary discussion and bots, contributes to the count
+and is checked for unique ID, exact issue URL, valid author/body/timestamps and
+strict creation-time/ID order. Claim parsing and canonical rendering reuse
+`native-claim.py`; reserved malformed, mixed or future-version markers refuse the
+observation. Claims with foreign issue metadata, author mismatch, repeated
+operation IDs, differing payloads for one claim ID, or multiple distinct claims
+report conflict. The current-user boolean requires the marker actor, comment
+author login **and immutable author ID** to match the authenticated account;
+it grants no task authority. Removed markers and unobserved edit history cannot
+be recovered by this utility.
+
+| Observer result | Meaning | Exit |
+| --- | --- | --- |
+| `OBSERVED` | Valid visible traversal and consistent issue anchors, including zero claims/comments | 0 |
+| `CONFLICT` | Valid traversal with recognized claim conflicts | 4 |
+| `UNVERIFIED` | Identity, HTTP, pagination, codec, bounds or anchor/count validation failed | 3 |
+
+`remote_coverage: complete_pagination` is emitted only after Link exhaustion and
+an issue reread with identical ID, number, updated timestamp, comment count,
+state and lock flag; that count must equal observed unique comment IDs.
+This is measured visible traversal, **not an atomic snapshot**. Equal anchors
+can miss concurrent comment edits or compensating changes, permission changes,
+deleted history or invisible comments. An empty stable traversal does not prove
+global absence or authorize taking an issue. Every report says
+`atomic_snapshot: false`, `mutation_authorized: false`, and
+`absence_authorizing: false`. Exit 0 is observation success, not remote-effect
+readiness.
+
+Stdout is compact JSON containing only fixed status/reason codes, numeric
+repository/issue/comment IDs, counts, flags and recognized-claim summaries
+(exact-body SHA-256 and author/current-actor booleans). It emits no logins,
+repository names, branch/task/scope/claim/operation metadata, arbitrary comment
+bodies, unknown REST fields or raw subprocess diagnostics. Errors are sanitized
+JSON on stdout. There is no capture-file writer. IDs and hashes can still be
+correlatable: treat reports according to the source repository's sensitivity.
+The raw bodies exist only in bounded process memory for validation; these
+summaries cannot be passed to the raw-array codec as a capture or reconstructed
+into public claim text.
+
+The existing offline `reconcile` raw-array contract is unchanged and still reports
+`remote_coverage: unmeasured`. The observer does not upgrade a separately supplied
+file, attest a retained capture, or feed claim preparation. Future integration
+needs a separately reviewed provenance/privacy and authorization contract.
+
+### Offline capture bounds
+
 Capture input is strict UTF-8 JSON, at most 1,000,000 bytes, 2,000 comments and
 32 levels of nested values. Strings (including bodies) are at most 65,536 UTF-8
 bytes. Duplicate JSON keys, nonfinite constants, invalid Unicode and unsafe
@@ -151,15 +250,18 @@ in any component, hardlinked/nonregular files, and changed file stat/path identi
 during the bounded read are refused. These checks do not authenticate the file or
 turn the host workspace into a sandbox.
 
-Future work should connect this format to the existing coordinator intent journal,
+Future work may connect this format to the existing coordinator intent journal,
 with a separately reviewed trusted capture adapter retaining actual raw HTTP
 pagination and identity/provenance evidence. Public preparation must remain
 separate from private journal identifiers. This slice adds no outbox, mirror
 state, custom capture envelope, mutation adapter, or new admission state.
 
-The offline fixture suite is `tests/native-claim-test.py`, included in `make test`
+The offline fixture suites are `tests/native-claim-test.py` and
+`tests/observe-github-claims-test.py`, included in `make test`
 and therefore `make check`. Execute fixtures and repository checks only in an
 independently justified isolated environment. Representative REST fixtures use
-fictitious public values and never make GitHub requests.
+fictitious public values and never make GitHub requests. Observer fixtures provide
+a deterministic fake `gh` executable that validates exact GET arguments and
+sanitized environment before supplying adversarial HTTP responses.
 
 [rest]: https://docs.github.com/en/rest/issues/comments#list-issue-comments
