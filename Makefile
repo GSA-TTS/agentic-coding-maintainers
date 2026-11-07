@@ -55,6 +55,7 @@ test:
 	python3 -I -B tests/adapt-issues-capture-test.py
 	python3 -I -B tests/check-native-ownership-test.py
 	python3 -I -B tests/native-claim-test.py
+	python3 -I -B tests/observe-github-claims-test.py
 	bash tests/operating-surface-test.sh
 
 review-workspace-preflight-test:
