@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.3.0...v0.4.0) (2026-11-07)
+
+
+### Features
+
+* **orchestration:** observe bounded GitHub claim pagination ([#141](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/141)) ([93ae3fb](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/93ae3fb0d569ebeb66891ed6a36d5b2d8a326f17))
+* **orchestration:** support schema-3 bound ownership preflight ([#139](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/139)) ([f07e5f1](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/f07e5f1b8edf702fa94bf9a471e61dd93ca05412))
+
 ## [0.3.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.2.0...v0.3.0) (2026-11-07)
 
 
