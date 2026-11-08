@@ -430,6 +430,115 @@ The existing offline `reconcile` raw-array contract is unchanged and still repor
 file, attest a retained capture, or feed claim preparation. Future integration
 needs a separately reviewed provenance/privacy and authorization contract.
 
+### Correlate one pending intent with fresh visible comments
+
+`scripts/observe-claim-intent.py` composes the existing preparation/preflight and
+schema-3 journal validation APIs with the live GET-only observer. Run only in an
+independently justified isolated environment:
+
+```sh
+python3 -I -B scripts/observe-claim-intent.py \
+  --authority-root /physical/workspace --invoking-root /physical/workspace \
+  --task-id local-task --expected-revision 2 \
+  --expected-worker-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --expected-session-id private-fixture-session --expected-generation 1 \
+  --repo acme/widgets --branch feat/native-claim --issue 117 \
+  --actor octocat --scope implementation \
+  --claim-id 0123456789abcdef0123456789abcdef \
+  --operation-id fedcba9876543210fedcba9876543210
+```
+
+Every preparation argument is required and single-occurrence. Optional
+`--store-id` adds a caller-supplied private incarnation fence: exactly 32 lowercase
+hexadecimal characters, matching the validated database's actual store ID. It is
+never printed. Omitting it selects the existing validated store at the explicit
+authority root; it does not establish continuity with an archived incarnation.
+Sixteen-character IDs, duplicate options and capture/summary-file options are
+refused. No directory, task state, database, acknowledgment or assignment is
+created or updated.
+
+Before any network call, physical authority/invoking roots must agree, the actual
+schema-3 preflight and preparation must match current fences, and the existing
+private journal must validate in full. The fixed parameterized query selects
+exactly one unique operation ID. Its validated canonical request must match the
+fresh preparation's exact claim/body/digest and the complete retained task
+fingerprint, incarnation, revision, worker, session and generation. A historical
+intent whose task has changed is refused before GET, even when its public text
+still matches. The recording CLI currently constructs its request inline; this
+reader reuses its imported preparation parser/API and journal validator and
+compares fields directly, rather than duplicating a request builder.
+
+The database is opened with the existing `open_store(..., writable=False)` API;
+there is no migration or intent/observation write. Recovery sidecars and a WAL
+database header are refused **before** opening SQLite, avoiding read-only WAL
+shared-memory creation. Unsafe paths, permissions, links, unknown rows, digests
+or schemas remain failures. Quiescing/recovering a journal is a separate operator
+action; this reader does not repair it.
+
+The selected row, database/sidecar fingerprints, physical root/directory identities,
+task and lease-file fingerprints are captured privately in memory before and
+after the network interval. The local SQLite connection and descriptors close
+before GET. No coordinator lock is acquired (its existing API creates a lock
+directory), so no global lock is held over network calls. The second local read
+revalidates current task/preparation and journal data; any changed or unavailable
+local evidence produces `UNVERIFIED / LOCAL_SNAPSHOT_CHANGED`, including when a
+remote conflict was observed. This is repeated retained consistency, not an
+atomic snapshot or protection against noncooperating writers.
+
+The internal observer receives only the just-validated expected body in memory.
+It compares the bounded raw comment's exact bytes/SHA-256 and full canonical
+marker, including claim/operation IDs and expected actor, during the fresh actual
+traversal. A visible match additionally requires author login and immutable ID to
+match the authenticated `GET /user` account. A same-login imposter ID, another
+author, competing claim or duplicate operation cannot become a match. A valid
+canonical claim with a changed payload, including the same operation ID, is a
+conflict. Every malformed/noncanonical body remains `UNVERIFIED`: prose mentions,
+quoted or partial markers, an operation ID outside the payload, and edits to the
+fixed human summary cannot establish attribution to the expected operation.
+Only the existing strict codec parses claims; there is no permissive attribution
+parser or substring-based conflict inference. Malformed captures/pages and
+incomplete traversal also remain unverified. Standalone observer summaries and
+caller-supplied files cannot be
+upgraded into an intent observation. Transport retains the existing shared
+60-second network deadline, 512 KiB combined-output budget and ten-page bound;
+one-page observation requires five GET calls. Local pre/post reads are outside
+that network deadline and SQLite retains its existing two-second busy timeout.
+
+| Intent observation | Meaning | Exit |
+| --- | --- | --- |
+| `VISIBLE_MATCH` | One exact pending body from the authenticated current actor, no observed competing claims, unchanged retained local evidence | 3 |
+| `UNVERIFIED / NO_MATCH_OBSERVED` | Valid fresh visible traversal without an exact claim; absence is not authorizing | 3 |
+| `CONFLICT` | Pre-network task/request/store mismatch, or observed valid canonical competing/different-payload/actor-mismatched claim | 4 |
+| `UNVERIFIED` | Malformed/noncanonical comment body, invalid/unavailable inputs or storage, stale/inactive task structure, transport failure, or changed local evidence | 3 |
+
+Output contains fixed statuses, numeric repository/issue/comment IDs, counts and
+flags, and only for a visible match its exact public-body digest. No body, login,
+public claim/operation metadata, private store/task/worker/session identifiers,
+task fingerprint, filesystem path or raw exception text is emitted.
+`current_task_authority` and `remote_operation_completion` always remain
+`UNVERIFIED`; `mutation_authorized`, `absence_authorizing` and `atomic_snapshot`
+remain false. `complete_pagination` has only the measured visible meaning above.
+
+A fresh visible match can help correlate an exact pending request after a
+hypothetical independently authorized publication or interrupted acknowledgment.
+It is not a publication receipt, proof of who performed a write, remote operation
+completion, admission, public-text approval, session authentication or authority
+to retry a write. The reader persists no remote outcome. Removed markers, deleted
+history, invisible comments and concurrent edits missed by equal issue anchors
+remain limitations. This integration supplies no live qualification evidence.
+
+`tests/observe-claim-intent-test.py` contains 17 test methods using actual schema-3
+task create/claim/transition and intent-recording CLIs with temporary guest-local
+storage and deterministic fake `gh` responses. Three additional internal-matcher
+methods in `tests/observe-github-claims-test.py` cover exact body/current-ID matching
+and conflict precedence, including malformed-body non-attribution. Fixtures
+exercise exit distinctions, stale-before-GET
+refusal, private output, unchanged storage, malformed pagination, timeout, issue
+changes and task/lease/journal changes across GET. These are offline fixtures,
+not genuine GitHub observations or proof of hostile-filesystem isolation. Both
+suites are registered in `make test`/`make check`; run them only in an independently
+justified isolated environment.
+
 ### Offline capture bounds
 
 Capture input is strict UTF-8 JSON, at most 1,000,000 bytes, 2,000 comments and
@@ -440,9 +549,9 @@ in any component, hardlinked/nonregular files, and changed file stat/path identi
 during the bounded read are refused. These checks do not authenticate the file or
 turn the host workspace into a sandbox.
 
-Future work may connect local publication intents to a separately reviewed
-trusted capture adapter retaining actual raw HTTP
-pagination and identity/provenance evidence. Public preparation must remain
+Future remote-effect work needs separately reviewed publication approval,
+identity/provenance and concurrency guarantees beyond the read-only intent
+correlation above. Public preparation must remain
 separate from private journal identifiers. Local persistence adds no mirror
 state, custom capture envelope, mutation adapter, or new admission state.
 

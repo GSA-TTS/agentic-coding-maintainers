@@ -116,10 +116,10 @@ class ObservationTests(unittest.TestCase):
         self.env_patch.start()
         self.addCleanup(self.env_patch.stop)
 
-    def run_observation(self, steps, deadline=3):
+    def run_observation(self, steps, deadline=3, **kwargs):
         self.fixture.write_text(json.dumps(steps))
         transport = observer.Transport(REPO, 117, time.monotonic() + deadline)
-        return observer.observe(REPO, 117, transport)
+        return observer.observe(REPO, 117, transport, **kwargs)
 
     def refused(self, steps, reason=None, deadline=3):
         with self.assertRaises(observer.Unverified) as caught:
@@ -389,6 +389,48 @@ class ObservationTests(unittest.TestCase):
                 observer.Transport(REPO, 117, time.monotonic() + 1)
         self.assertEqual(str(caught.exception), "PROXY_ROUTING_UNVERIFIED")
         self.assertFalse(self.calls.exists())
+
+    def test_internal_exact_body_match_is_current_immutable_actor_bound(self):
+        body = codec.render(CLAIM)
+        result = self.run_observation(steps_for([[comment(body=body)]]), expected_body=body)
+        self.assertEqual(result["exact_match_comment_id"], 1)
+        self.assertEqual(result["expected_body_sha256"], codec.digest(body))
+        self.assertNotIn(body, json.dumps(result))
+        for record in (comment(body=body, actor_id=99), comment(body=body, login="other"),
+                       comment(body=codec.render(dict(CLAIM, branch="changed")))):
+            self.calls.unlink()
+            result = self.run_observation(steps_for([[record]]), expected_body=body)
+            self.assertEqual(result["status"], "CONFLICT")
+            self.assertIsNone(result["exact_match_comment_id"])
+
+    def test_internal_malformed_body_is_not_attributed_by_operation_substring(self):
+        body = codec.render(CLAIM)
+        operation = CLAIM["operation_id"]
+        for malformed in (f"Discussion of native-claim operation {operation}.",
+                          "```text\n" + body + "```\n",
+                          '<!-- native-claim:v1 {"operation_id":"' + operation + '"',
+                          "<!-- native-claim:v1 {} -->\nOperation outside payload: " + operation,
+                          body + "edited",
+                          body.replace("Operator review", "Human review")):
+            with self.subTest(body=malformed):
+                if self.calls.exists():
+                    self.calls.unlink()
+                self.fixture.write_text(json.dumps(steps_for([[comment(body=malformed)]])))
+                transport = observer.Transport(REPO, 117, time.monotonic() + 3)
+                with self.assertRaises(observer.Unverified):
+                    observer.observe(REPO, 117, transport, expected_body=body)
+
+    def test_internal_match_absence_competition_and_duplicate_precedence(self):
+        body = codec.render(CLAIM)
+        for records, status, identifier in (([], "OBSERVED", None),
+                ([comment(body=body), comment(2, body)], "CONFLICT", None),
+                ([comment(body=body), comment(2, codec.render(dict(CLAIM, claim_id="2" * 32,
+                                                                  operation_id="3" * 32)))], "CONFLICT", None)):
+            if self.calls.exists():
+                self.calls.unlink()
+            result = self.run_observation(steps_for([records]), expected_body=body)
+            self.assertEqual(result["status"], status)
+            self.assertIs(result["exact_match_comment_id"], identifier)
 
     def test_cli_codes_and_sanitized_auth_error(self):
         for records, expected in (([], 0), ([comment(body=codec.render(CLAIM), login="other")], 4)):
