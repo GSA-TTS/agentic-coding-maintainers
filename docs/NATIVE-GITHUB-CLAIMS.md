@@ -2,8 +2,10 @@
 
 Issue #117's codec slice defines a shared comment format and offline reconciliation;
 the separate GET-only observer below adds bounded live comment traversal.
-These are a proposal, not a live ownership or admission protocol. Neither reads
-coordinator metadata, verifies assignments, or grants authority. Only the live
+These are a proposal, not a live ownership or admission protocol. The standalone
+codec and observer do not read coordinator metadata or verify assignments.
+The retained-task preparation wrapper below adds a local consistency comparison;
+none grants authority. Only the live
 observer looks up the authenticated current-user identity.
 The codec commands use no network, subprocesses, or file writes; stdout is the result.
 Only GitHub.com issue comments are supported. No GitLab quick actions are supported.
@@ -72,6 +74,96 @@ they are **not a privacy proof**. A syntactically valid branch, repository, logi
 or reference can still reveal sensitive information. Review every public field.
 The codec neither derives public values from arbitrary local paths nor reads
 private ownership records.
+
+## Prepare against an admitted retained task
+
+The separate read-only wrapper composes the actual schema-3 ownership preflight
+and existing codec. Run only in an independently justified isolated environment:
+
+```sh
+python3 -I -B scripts/prepare-task-claim.py \
+  --authority-root /physical/workspace --invoking-root /physical/workspace \
+  --task-id local-task --expected-revision 2 \
+  --expected-worker-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --expected-session-id private-fixture-session --expected-generation 1 \
+  --repo acme/widgets --branch feat/native-claim --issue 117 \
+  --actor octocat --scope implementation \
+  --claim-id 0123456789abcdef0123456789abcdef \
+  --operation-id fedcba9876543210fedcba9876543210
+```
+
+These are illustrative fixture inputs. Every option is required, explicit, and
+single-occurrence using the codec's `StoreOnce`; duplicate or malformed arguments
+produce fixed sanitized reason codes without echoing their values. Public repo,
+branch and issue mirror the raw stored task exactly, one for one: tracker type
+must be `issue`, tracker number must equal `--issue`, and task kind must equal
+the bounded `implementation` or `review` scope. `task_ref` is always `issue:N`
+for that same issue, never the private task label or arbitrary domain scope.
+The public actor is the user-entered expected login. This command performs no
+`GET /user`, does not verify the current actor, and never derives a login from
+the task's human owner label. Review that expected login independently.
+
+`check-native-ownership.py` actually exposes `inspect(args)` taking an
+argparse-style namespace, not an `ExpectedIdentity` class or public raw-task
+export. The wrapper calls that API unchanged and reuses `physical_root`,
+`directory`, `read_selected` and `fingerprint` for its additional metadata reads.
+The preflight validates the schema-3 worker/session/generation, scope reservation,
+global slot and, in `Implementing`, the implementation lane. Before preflight,
+after preflight, and after codec preparation, the wrapper observes equal task
+metadata, retained file fingerprints and selected physical-root identity. No
+state validator is copied, no core module is modified, and no coordinator lock
+or state write is taken. This remains a retained snapshot comparison, not an
+atomic transaction, process-liveness check, admission decision or authentication.
+A later change requires another comparison.
+
+Public claim and operation IDs are refused if equal to known retained private
+worker IDs, worker/global-slot lease tokens, scope tokens or session IDs,
+including surviving transition-recovery identifiers and explicit expectations.
+Known tokens are also excluded from the rendered comment. The wrapper does not
+hash private IDs into public identifiers or export a task-metadata digest.
+Unknown identifiers and sensitive but syntactically valid public values cannot
+be detected: this is **not a privacy proof**. All public fields still require
+operator review. The comment and receipt contain no private task label, session,
+PID, worker ID, lease token, owner label, path or arbitrary domain scope.
+
+| Wrapper result | Meaning | Exit |
+| --- | --- | --- |
+| `PREPARED_RETAINED_MATCH` | Canonical public proposal and consistent retained schema-3 evidence | 3 |
+| `CONFLICT` | Preflight conflict or differing tracker/public binding | 4 |
+| `UNVERIFIED` | Structural refusal, unsupported/idle/transitioning state, pending recovery, unsafe/missing record, changed metadata or private-ID reuse | 3 |
+
+Success preserves the codec's exact comment, exact-body SHA-256 and required
+public-review fields, adding only `bound_retained_snapshot: true`,
+`native_session_authentication: UNVERIFIED` and
+`current_actor_authentication: UNVERIFIED`. `mutation_authorized` remains false;
+`remote_coverage` remains unmeasured. Failures have no comment or body hash and
+report `bound_retained_snapshot: false`. Original preflight status/reason and
+structural exit distinctions are preserved. Schema 2 with these required bound
+expectations is refused, rather than upgraded. Exit 3 deliberately prevents
+preparation success from being mistaken for authority.
+
+### Journal integration plan and API limits
+
+The inspected `monitor-journal.py` stores private polls, sources, coverage,
+events and candidates; its optional `binding_acks` table records candidate
+binding acknowledgments. Its `open_store(..., writable=False)` is an observation
+reader, not a claim-publication intent API. The coordinator's
+`transition_intent` and `transition_recovery` describe local task transitions,
+not GitHub publication. This wrapper neither imports those mutation APIs nor
+creates an outbox, intent record, claim journal, snapshot file or acknowledgment.
+Stdout is a transient review proposal, not persisted intent or evidence of posting.
+
+A future separately reviewed integration needs a real publication-intent API,
+explicit public-text approval, independent current-actor/task authority and
+remote identity checks, concurrency/retry rules, and independently observed
+publication receipts. A retained match alone cannot supply those guarantees.
+
+`tests/prepare-task-claim-test.py` is included in `make test`/`make check`.
+Its schema-3 positive fixtures come from the actual copied core CLI's create,
+process-bound claim and transition operations in temporary guest-local storage;
+adversarial fixtures check raw task/lease changes and sanitized no-effect results.
+Execute that suite and repository checks only inside an independently justified
+isolated environment.
 
 ## Observe an actual REST comment capture
 
