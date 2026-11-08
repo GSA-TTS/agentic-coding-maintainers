@@ -10,6 +10,7 @@ import re
 import sqlite3
 import stat
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,14 @@ MAX_CANDIDATES = 10_000
 MAX_DB = 64_000_000
 SOURCE = re.compile(r"^(?:repo:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|project:[A-Za-z0-9_.-]+/[1-9][0-9]*)$")
 TABLES = {"meta", "polls", "sources", "coverage", "events", "candidates"}
+MAX_CLAIM_INTENTS = 1000
+MAX_INTENT_BYTES = 16_384
+
+
+class StoreConnection(sqlite3.Connection):
+    """Retain the physical file identity selected when SQLite opened the store."""
+
+    file_identity: tuple[int, int]
 
 
 class JournalError(Exception):
@@ -56,7 +65,22 @@ def open_store(root: Path, writable: bool = False) -> sqlite3.Connection:
     if not existed:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         os.close(fd)
-    connection = sqlite3.connect(path.as_uri() + ("?mode=rw" if writable else "?mode=ro"), uri=True, timeout=2)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > MAX_DB):
+            raise JournalError("unsafe selected database")
+        identity = (info.st_dev, info.st_ino)
+        connection = sqlite3.connect(path.as_uri() + ("?mode=rw" if writable else "?mode=ro"),
+                                     uri=True, timeout=2, factory=StoreConnection)
+        selected = path.lstat()
+        if identity != (selected.st_dev, selected.st_ino):
+            connection.close()
+            raise JournalError("database identity changed during open")
+        connection.file_identity = identity
+    finally:
+        os.close(fd)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA trusted_schema=OFF")
@@ -99,6 +123,9 @@ def open_store(root: Path, writable: bool = False) -> sqlite3.Connection:
             validate_store(connection)
         finally:
             connection.rollback()
+        selected = check_path(root).lstat()
+        if connection.file_identity != (selected.st_dev, selected.st_ino):
+            raise JournalError("database identity changed during validation")
         return connection
     except Exception:
         connection.close()
@@ -108,11 +135,14 @@ def open_store(root: Path, writable: bool = False) -> sqlite3.Connection:
 def validate_store(db: sqlite3.Connection) -> None:
     objects = db.execute("SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
     names = {row["name"] for row in objects}
-    if names not in (TABLES, TABLES | {"binding_acks"}) or any(row["type"] != "table" for row in objects):
+    versions = {1: TABLES, 2: TABLES | {"binding_acks"},
+                3: TABLES | {"binding_acks", "claim_intents"}}
+    if names not in versions.values() or any(row["type"] != "table" for row in objects):
         raise JournalError("unsupported journal schema")
     meta = db.execute("SELECT * FROM meta").fetchall()
-    if (len(meta) != 1 or meta[0]["version"] not in {1,2} or not re.fullmatch(r"[0-9a-f]{32}", meta[0]["store_id"])
-            or (meta[0]["version"] == 2) != ("binding_acks" in names)):
+    if (len(meta) != 1 or type(meta[0]["version"]) is not int or meta[0]["version"] not in versions
+            or not isinstance(meta[0]["store_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", meta[0]["store_id"])
+            or names != versions[meta[0]["version"]]):
         raise JournalError("unsupported journal version/identity")
     if "binding_acks" in names:
         columns = [row[1] for row in db.execute("PRAGMA table_info(binding_acks)")]
@@ -120,6 +150,22 @@ def validate_store(db: sqlite3.Connection) -> None:
             raise JournalError("unsupported acknowledgment schema")
         if db.execute("SELECT count(*) FROM binding_acks").fetchone()[0] > 10_000:
             raise JournalError("acknowledgment capacity exceeded")
+    if "claim_intents" in names:
+        columns = [tuple(row)[1:6] for row in db.execute("PRAGMA table_info(claim_intents)")]
+        if columns != [("operation_id", "TEXT", 1, None, 1), ("request", "TEXT", 1, None, 0),
+                       ("request_sha256", "TEXT", 1, None, 0)]:
+            raise JournalError("unsupported claim intent schema")
+        if db.execute("SELECT count(*) FROM claim_intents").fetchone()[0] > MAX_CLAIM_INTENTS:
+            raise JournalError("claim intent capacity exceeded")
+        seen = set()
+        for row in db.execute("SELECT * FROM claim_intents"):
+            request = decode_intent(row["request"])
+            validate_claim_intent(request)
+            if (row["operation_id"] != request["operation_id"] or row["operation_id"] in seen
+                    or request["store_id"] != meta[0]["store_id"]
+                    or row["request_sha256"] != fingerprint(request)):
+                raise JournalError("claim intent identity differs")
+            seen.add(row["operation_id"])
     if db.execute("PRAGMA quick_check").fetchone()[0] != "ok" or db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise JournalError("journal integrity check failed")
     for query, limit in (("SELECT count(*) FROM polls", MAX_POLLS), ("SELECT count(*) FROM events", MAX_EVENTS), ("SELECT count(*) FROM candidates", MAX_CANDIDATES)):
@@ -190,6 +236,153 @@ def validate_store(db: sqlite3.Connection) -> None:
         first = db.execute("SELECT min(seq) FROM events WHERE repo=? AND number=?", (candidate["repo"], candidate["number"])).fetchone()[0]
         if candidate["first_seq"] != first or candidate["last_seen_seq"] != last_seen.get((candidate["repo"],candidate["number"])):
             raise JournalError("candidate observation sequence mismatch")
+
+
+def decode_intent(raw: str) -> dict[str, Any]:
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise JournalError("duplicate claim intent field")
+            value[key] = item
+        return value
+
+    try:
+        if type(raw) is not str or len(raw.encode("utf-8")) > MAX_INTENT_BYTES:
+            raise JournalError("claim intent exceeds byte limit")
+        value = json.loads(raw, object_pairs_hook=unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(JournalError("invalid JSON constant")))
+        if type(value) is not dict or canonical(value) != raw:
+            raise JournalError("noncanonical claim intent")
+        return value
+    except (ValueError, UnicodeError, TypeError, RecursionError) as exc:
+        raise JournalError("malformed claim intent") from exc
+
+
+def validate_claim_intent(request: dict[str, Any]) -> None:
+    """Pure, packaged v1 publication-intent validation; no consumer imports or effects."""
+    def fields(value, keys):
+        if type(value) is not dict or set(value) != set(keys.split()):
+            raise JournalError("unsupported claim intent fields")
+
+    def token(value, pattern):
+        if type(value) is not str or re.fullmatch(pattern, value, re.ASCII) is None:
+            raise JournalError("invalid claim intent token")
+
+    def number(value, minimum=1):
+        if type(value) is not int or not minimum <= value <= 2**63 - 1:
+            raise JournalError("invalid claim intent integer")
+
+    def stamp(value):
+        token(value, r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z")
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise JournalError("invalid claim intent timestamp") from exc
+
+    fields(request, "schema_version action operation_id store_id claim comment comment_sha256 binding")
+    if type(request["schema_version"]) is not int or request["schema_version"] != 1 or request["action"] != "claim-publication":
+        raise JournalError("unsupported claim intent version/action")
+    token(request["operation_id"], r"[0-9a-f]{32}")
+    token(request["store_id"], r"[0-9a-f]{32}")
+    token(request["comment_sha256"], r"[0-9a-f]{64}")
+    claim = request["claim"]
+    fields(claim, "version action repo issue claim_id operation_id actor branch task_ref scope")
+    if type(claim["version"]) is not int or claim["version"] != 1 or claim["action"] != "claim":
+        raise JournalError("unsupported public claim")
+    login = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?"
+    token(claim["actor"], login)
+    token(claim["repo"], login + r"/[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+    owner, name = claim["repo"].split("/")
+    if "--" in owner or "--" in claim["actor"] or ".." in name or name.endswith("."):
+        raise JournalError("invalid public claim name")
+    number(claim["issue"])
+    token(claim["claim_id"], r"[0-9a-f]{32}")
+    if claim["operation_id"] != request["operation_id"]:
+        raise JournalError("public operation differs")
+    token(claim["branch"], r"[A-Za-z0-9][A-Za-z0-9/_-]{0,127}")
+    if claim["branch"].endswith("/") or "//" in claim["branch"]:
+        raise JournalError("invalid public branch")
+    if claim["task_ref"] != f'issue:{claim["issue"]}' or type(claim["scope"]) is not str or claim["scope"] not in {"implementation", "review"}:
+        raise JournalError("invalid public task reference")
+    # Keep this packaged wire contract exact; consumer fixtures compare it with
+    # native-claim.py's renderer. Monitor readers must not import consumer code.
+    body = ("Public coordination claim proposal (v1).\n"
+            "Operator review of every public field is required before posting.\n"
+            "This comment does not grant admission or mutation authority.\n\n"
+            "<!-- native-claim:v1 " + canonical(claim) + " -->\n")
+    if request["comment"] != body or hashlib.sha256(body.encode("utf-8")).hexdigest() != request["comment_sha256"]:
+        raise JournalError("claim intent public body differs")
+    binding = request["binding"]
+    fields(binding, "task_id created_at task_sha256 revision generation session_id worker")
+    token(binding["task_id"], r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+    stamp(binding["created_at"])
+    token(binding["task_sha256"], r"[0-9a-f]{64}")
+    number(binding["revision"])
+    number(binding["generation"])
+    token(binding["session_id"], r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+    worker = binding["worker"]
+    fields(worker, "task_id owner pid process_start worker_id token hostname created_at session_id generation")
+    for key in ("worker_id", "token"):
+        token(worker[key], r"[0-9a-f]{32}")
+    number(worker["pid"])
+    stamp(worker["created_at"])
+    for key in ("owner", "hostname", "process_start"):
+        value = worker[key]
+        if type(value) is not str or not 1 <= len(value) <= 500 or value != value.strip() or any(ord(c) < 32 for c in value):
+            raise JournalError("invalid private worker metadata")
+    if (type(worker["task_id"]) is not str or type(worker["session_id"]) is not str
+            or worker["task_id"] != binding["task_id"] or worker["session_id"] != binding["session_id"]
+            or type(worker["generation"]) is not int or worker["generation"] != binding["generation"]
+            or binding["generation"] > binding["revision"]):
+        raise JournalError("private claim binding differs")
+    private = {binding["session_id"], worker["worker_id"], worker["token"], request["store_id"]}
+    if any(value in body for value in private):
+        raise JournalError("private identity reused in public body")
+    if len(canonical(request).encode("utf-8")) > MAX_INTENT_BYTES:
+        raise JournalError("claim intent exceeds byte limit")
+
+
+def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guard=None) -> str:
+    """Caller holds coordinator lock and fresh ownership match; never poll business.
+
+    Only this explicit API upgrades the shared store. A committed row is pending
+    local intent, never task authority, readiness or a remote acknowledgment.
+    The caller must complete filesystem durability barriers before reporting it.
+    """
+    validate_claim_intent(request)
+    raw = canonical(request)
+    if db.in_transaction:
+        raise JournalError("claim intent requires independent transaction")
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        validate_store(db)
+        version, identity = db.execute("SELECT version,store_id FROM meta").fetchone()
+        if identity != request["store_id"]:
+            raise JournalError("claim intent store differs")
+        if guard is not None:
+            guard()
+        if version == 3:
+            prior = db.execute("SELECT request FROM claim_intents WHERE operation_id=?", (request["operation_id"],)).fetchone()
+            if prior:
+                if prior[0] != raw:
+                    raise JournalError("conflicting claim operation")
+                return "REPLAYED_PENDING"
+            if db.execute("SELECT count(*) FROM claim_intents").fetchone()[0] >= MAX_CLAIM_INTENTS:
+                raise JournalError("claim intent capacity reached")
+        if MAX_CLAIM_INTENTS < 1:
+            raise JournalError("claim intent capacity reached")
+        if version == 1:
+            db.execute("CREATE TABLE binding_acks (incarnation TEXT PRIMARY KEY, task_id TEXT NOT NULL, operation_id TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
+            db.execute("UPDATE meta SET version=2")
+        if version in {1, 2}:
+            db.execute("CREATE TABLE claim_intents (operation_id TEXT PRIMARY KEY NOT NULL, request TEXT NOT NULL, request_sha256 TEXT NOT NULL)")
+            db.execute("UPDATE meta SET version=3")
+        db.execute("INSERT INTO claim_intents VALUES(?,?,?)", (request["operation_id"], raw, fingerprint(request)))
+        validate_store(db)
+        if guard is not None:
+            guard()
+    return "INTENT_RECORDED"
 
 
 def begin(db: sqlite3.Connection, attempt: str, config: str, task: str, sources: list[str], started: str) -> int:

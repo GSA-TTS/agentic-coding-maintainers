@@ -81,3 +81,30 @@ contract. Output guidance grants no new permissions or publication authority.
 The original import revision and `SOURCE-SHA256SUMS` remain unchanged. This base
 identifies the starting revision, not a new canonical revision for these edits;
 `CANONICAL-SHA256SUMS` must be regenerated for the completed skill assets.
+
+## Bounded local public-claim intent persistence
+
+Canonical base `cb5323f6219f2c7787b487b4895b175b2f75479c`: shared monitor
+SQLite schema 3 adds bounded immutable `claim_intents` and always retains
+`binding_acks`. Only the explicit local intent API migrates existing versions;
+observation opens accept 3 without upgrading, and existing acknowledgment writes
+preserve 3. Candidate binding's missing-authoritative-task-receipt guard applies
+to both acknowledgment-bearing versions 2 and 3 before any task authority write.
+The consumer fixture exercises actual binding retries against restored task bytes
+around migration by a different actual issue-backed task, plus transaction-context
+commit failure and rollback of migration/intent without an acknowledgment.
+Packaged validation checks every intent's canonical request, exact
+public wire body/digest, private task/session/worker fences and store incarnation.
+Observation replay and intent APIs remain separate. Database identity checks
+surround open/validation; the consumer completes commit/replay fsync barriers.
+No task authority, remote effects, readiness, terminal replay or second outbox is
+introduced. Older schema guards reject 3; archive complete stores for rollback.
+
+The canonical consumer adds `scripts/journal-claim-intent.py` and
+`tests/journal-claim-intent-test.py`, composing the existing preparation and core
+coordinator lock. The packaged wire validator is intentionally independent of
+consumer scripts; the fixture compares it with the consumer's actual codec.
+Consumers must carry/run that fixture separately in an independently justified
+isolated environment. Original import history and `SOURCE-SHA256SUMS` remain
+unchanged. `CANONICAL-SHA256SUMS` binds the adapted sources and provenance;
+static inspection alone is not passing runtime validation.
