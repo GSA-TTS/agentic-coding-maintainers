@@ -142,21 +142,119 @@ structural exit distinctions are preserved. Schema 2 with these required bound
 expectations is refused, rather than upgraded. Exit 3 deliberately prevents
 preparation success from being mistaken for authority.
 
-### Journal integration plan and API limits
+### Explicit local publication intent
 
-The inspected `monitor-journal.py` stores private polls, sources, coverage,
-events and candidates; its optional `binding_acks` table records candidate
-binding acknowledgments. Its `open_store(..., writable=False)` is an observation
-reader, not a claim-publication intent API. The coordinator's
-`transition_intent` and `transition_recovery` describe local task transitions,
-not GitHub publication. This wrapper neither imports those mutation APIs nor
-creates an outbox, intent record, claim journal, snapshot file or acknowledgment.
-Stdout is a transient review proposal, not persisted intent or evidence of posting.
+`prepare-task-claim.py` remains read-only. The separate explicit command
+`scripts/journal-claim-intent.py` takes exactly the same required, single-occurrence
+arguments shown above and records local intent. Invoke it with `python3 -I -B`
+only in an independently justified isolated environment. No record flag is needed:
+selecting this command explicitly selects local persistence. It calls the actual
+unchanged `prepare-task-claim.py` parser and preparation API under the core
+`CoordinatorLock`. It uses existing safe physical-root/private-file helpers and
+strict schema-3 native binding validation, without initializing task state or
+changing `task.json` or its revision.
 
-A future separately reviewed integration needs a real publication-intent API,
-explicit public-text approval, independent current-actor/task authority and
+Persistence reuses `.orchestrator/monitor/history.sqlite3`, never a second outbox.
+Schema 3 adds only `claim_intents` alongside the existing observation tables and
+`binding_acks`. Only `record_claim_intent` performs the transactional 1 → 2 → 3
+upgrade, with individual DDL statements inside `BEGIN IMMEDIATE`; it never uses
+`executescript` for migration. Monitor read/write opens accept version 3 but do
+not upgrade existing stores automatically. Binding acknowledgment's existing
+version-1-only upgrade preserves version 3. Local intents neither enter poll
+events nor change observation generations, coverage or candidate projections.
+Candidate binding refuses a version-2 or version-3 journal acknowledgment when
+the authoritative task receipt is absent, before any tentative task write. A
+restored prebinding task cannot acquire authority by retrying the same or a
+different binding operation after an unrelated local intent migrates the store.
+
+The exact immutable private request is:
+
+```text
+schema_version: integer 1
+action: "claim-publication"
+operation_id: public lowercase hex32 (unique throughout this store)
+store_id: private existing journal incarnation
+claim: exact existing native-claim v1 object
+comment: exact codec-rendered public UTF-8 body, including final newline
+comment_sha256: SHA-256 of those exact body bytes
+binding:
+  task_id, created_at: retained task identity/incarnation
+  task_sha256: SHA-256 of canonical complete retained task JSON
+  revision, generation, session_id: exact cooperative fences
+  worker: complete retained schema-3 worker snapshot
+```
+
+There are no assignment phases, dispatcher, terminal replay operation, remote
+acknowledgment, public-review receipt or readiness field. Task authority remains
+in the existing task record; journal presence never grants authority or readiness.
+Ownership checks are static retained consistency, not process authentication or
+an authenticated current GitHub actor. The private task fingerprint and journal
+incarnation are never emitted as public receipts.
+
+Every retained intent is validated before observation or intent use: exact
+fields/types/version/action, canonical JSON without duplicate keys or nonfinite
+constants, exact public wire body/digest, private binding, request digest and store
+identity. The table permits at most 1,000 permanent entries, with a 16,384-byte
+canonical request ceiling and the existing 64,000,000-byte database ceiling.
+Unknown historical intent types or malformed rows refuse the whole store; they
+are never skipped or treated as narrative transitions. No silent pruning occurs.
+
+Lock order is coordinator then SQLite; the intent path never holds SQLite while
+acquiring coordinator. Existing monitor paths acquire no coordinator lock while
+holding a SQLite write transaction. Intent writes hold coordinator through fresh
+preparation, full retained task comparison, transaction commit and durability
+barriers. Fresh checks run again inside the SQLite transaction and before output.
+The store must remain current-user private, physical, regular, single-linked and
+bounded, including SQLite sidecars. The selected database inode is checked around
+open/validation and commit/replay sync. Noncooperating filesystem writers are not
+authenticated or isolated by these cooperative locks.
+
+| Intent result | Meaning | Exit |
+| --- | --- | --- |
+| `INTENT_RECORDED` | Exact pending local request committed and durability barriers completed | 0 |
+| `REPLAYED_PENDING` | Exact identical retained request and unchanged current task; durability barriers completed again | 0 |
+| `CONFLICT` | Changed expected fences, reused operation with different request, lock contention or full intent capacity | 4 |
+| `UNVERIFIED` | Unsafe/unsupported history, unavailable SQLite, changed reads or unknown commit/sync outcome | 3 |
+
+Success output contains only fixed status/reason codes, public `operation_id`,
+`comment_sha256`, `mutation_authorized: false` and `remote_effects_enabled: false`.
+It contains no body, private IDs, paths or task fingerprint. Failure omits operation
+and digest. Exit 0 certifies local recording only, never remote-effect readiness.
+
+An exact operation/body alone is insufficient for replay: current task metadata,
+revision, worker, generation and session must still match. An updated task with
+unchanged revision still conflicts with its retained full-task fingerprint.
+An interrupted pre-commit transaction rolls back migration and row together.
+A committed row followed by failed acknowledgment/fsync may remain as observed
+pending intent; the command reports `UNVERIFIED`, never ready or published. Exact
+fresh retry verifies the retained request, fsyncs the selected no-follow database
+descriptor and its directories, then acknowledges pending intent. Failed append/
+insert can be retried from the complete explicit inputs after a fresh match.
+Corrupt or ambiguous history requires operator inspection, not invented recovery.
+
+Older readers reject version 3 and the additional table before replay. Upgrade all
+consumers before sharing a version-3 store. For rollback or retention limits,
+preserve/archive the entire database with its SQLite sidecars after quiescing
+writers; never strip the intent table or downgrade metadata to make old readers
+accept it. A newly initialized store has a new private incarnation and does not
+certify continuity with an archived store.
+
+A future separately reviewed remote integration needs explicit public-text
+approval, independent current-actor/task authority and
 remote identity checks, concurrency/retry rules, and independently observed
 publication receipts. A retained match alone cannot supply those guarantees.
+
+`tests/journal-claim-intent-test.py` adds actual schema-3 core CLI fixtures,
+before/after observation and binding compatibility, rollback/retry boundaries,
+strict history validation, full capacity, bounded SQLite contention and unsafe
+filesystem/output cases. It is registered in `make test`/`make check`. Its pinned
+old-reader schema-guard excerpt establishes refusal, not a complete historical
+reader execution or proof that an old writable open has no filesystem/SQLite
+side effects before reaching that guard. The actual binding regression exercises
+`candidate_binding.bind` before and after migration by a separately created and
+claimed issue-backed task. A real SQLite connection subclass simulates commit
+failure at the transaction-context boundary and verifies rollback of migration
+and intent, sanitized failure output and successful fresh retry.
 
 `tests/prepare-task-claim-test.py` is included in `make test`/`make check`.
 Its schema-3 positive fixtures come from the actual copied core CLI's create,
@@ -342,10 +440,10 @@ in any component, hardlinked/nonregular files, and changed file stat/path identi
 during the bounded read are refused. These checks do not authenticate the file or
 turn the host workspace into a sandbox.
 
-Future work may connect this format to the existing coordinator intent journal,
-with a separately reviewed trusted capture adapter retaining actual raw HTTP
+Future work may connect local publication intents to a separately reviewed
+trusted capture adapter retaining actual raw HTTP
 pagination and identity/provenance evidence. Public preparation must remain
-separate from private journal identifiers. This slice adds no outbox, mirror
+separate from private journal identifiers. Local persistence adds no mirror
 state, custom capture envelope, mutation adapter, or new admission state.
 
 The offline fixture suites are `tests/native-claim-test.py` and
