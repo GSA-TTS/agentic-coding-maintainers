@@ -210,7 +210,15 @@ def issue_anchor(value, transport, number):
     return tuple(value[key] for key in ("id", "number", "updated_at", "comments", "state", "locked"))
 
 
-def observe(repository, number, transport):
+def observe(repository, number, transport, *, expected_body=None):
+    # Internal composition only: compare bounded raw bodies during this fresh
+    # traversal, never upgrade a caller-supplied summary or capture file.
+    expected = codec.parse_marker(expected_body) if expected_body is not None else None
+    if expected_body is not None:
+        require(expected is not None and expected_body == codec.render(expected)
+                and expected["repo"] == repository and expected["issue"] == number,
+                "EXPECTED_BODY_INVALID")
+    exact_ids = []
     user, _ = transport.get(API + "/user")
     require(codec.positive(user.get("id")) and codec.login(user.get("login"))
             and user.get("type") == "User", "CURRENT_USER_INVALID")
@@ -241,6 +249,8 @@ def observe(repository, number, transport):
             body = comment.get("body")
             require(type(body) is str and len(body.encode("utf-8")) <= codec.MAX_BODY_BYTES,
                     "COMMENT_BODY_INVALID")
+            # Only the canonical codec can attribute a claim. A malformed body
+            # remains UNVERIFIED even if prose contains the expected operation.
             claim = codec.parse_marker(body)
             if claim is None:
                 continue
@@ -259,6 +269,14 @@ def observe(repository, number, transport):
                               "actor_is_current_user": claim["actor"] == user["login"]
                               and author["login"] == user["login"] and author["id"] == user["id"],
                               "author_matches_actor": claim["actor"] == author["login"]})
+            if expected is not None:
+                if (claim != expected or body != expected_body
+                        or codec.digest(body) != codec.digest(expected_body)):
+                    conflicts.add("OTHER_CLAIM_OR_PAYLOAD")
+                elif not summaries[-1]["actor_is_current_user"]:
+                    conflicts.add("EXPECTED_ACTOR_MISMATCH")
+                else:
+                    exact_ids.append(identifier)
         if successor is None:
             break
     else:
@@ -273,6 +291,9 @@ def observe(repository, number, transport):
                   issue_number=number, issue_closed=anchor[4] == "closed", issue_locked=anchor[5],
                   page_count=page, comment_count=len(seen), recognized_claim_count=len(summaries),
                   claims=summaries, conflict_reasons=sorted(conflicts))
+    if expected is not None:
+        result.update(exact_match_comment_id=exact_ids[0] if len(exact_ids) == 1 and not conflicts else None,
+                      expected_body_sha256=codec.digest(expected_body))
     return result
 
 
