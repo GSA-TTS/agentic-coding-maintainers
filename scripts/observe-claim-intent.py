@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -53,8 +54,8 @@ def arguments(prepare):
     return args, claim
 
 
-def snapshot(args, claim, prepare, journal):
-    """Existing schema-3 API, exact selected row, private physical-file fences.
+def snapshot(args, claim, prepare, journal, observation_id=None):
+    """Existing schema-3/4 API, exact selected row, private physical-file fences.
 
     All descriptors and the read-only SQLite connection close before returning.
     No CoordinatorLock is acquired: that API creates a lock directory. Repeated
@@ -110,9 +111,16 @@ def snapshot(args, claim, prepare, journal):
             db.execute("BEGIN")
             journal.validate_store(db)
             version, store_id = db.execute("SELECT version,store_id FROM meta").fetchone()
-            preflight.require(version == 3, "UNSUPPORTED_JOURNAL_SCHEMA")
+            # Journal schema is independent of the task's schema-3 fence above.
+            # Both intent-bearing versions are read-only; this path never migrates.
+            preflight.require(version in {3, 4}, "UNSUPPORTED_JOURNAL_SCHEMA")
+            if observation_id is not None:
+                journal.validate_observation_id(db, observation_id)
             if args.store_id is not None and args.store_id != store_id:
                 raise Refusal("CONFLICT", "STORE_ID_MISMATCH")
+            prior = journal.claim_observation(db, observation_id) if observation_id is not None else None
+            if prior is not None and prior["operation_id"] != claim["operation_id"]:
+                raise Refusal("CONFLICT", "OBSERVATION_CONFLICT")
             rows = db.execute("SELECT request,request_sha256 FROM claim_intents WHERE operation_id=?",
                               (claim["operation_id"],)).fetchall()
             preflight.require(len(rows) == 1, "INTENT_NOT_FOUND")
@@ -148,7 +156,7 @@ def snapshot(args, claim, prepare, journal):
                                               for fd in (authority, current_store, current_monitor)),
                           "CHANGED_DURING_READ")
         return (raw, request_sha256, identity, directories, before, task,
-                tuple(stamp for _, stamp in retained + lease_retained), lease_values), request["comment"]
+                tuple(stamp for _, stamp in retained + lease_retained), lease_values, prior), request["comment"]
 
 
 class Refusal(Exception):
@@ -156,21 +164,39 @@ class Refusal(Exception):
         self.status, self.reason = status, reason
 
 
-def observe(args, claim, prepare, journal, observer):
-    before, body = snapshot(args, claim, prepare, journal)
+class CollectedObservation:
+    """Internal result of the actual bounded observer; never decoded from input."""
+
+    def __init__(self, snapshot_value, remote, observed_at):
+        self.snapshot = snapshot_value
+        self.remote = remote
+        self.observed_at = observed_at
+
+
+def collect(args, claim, prepare, journal, observer, *, initial=None, observation_id=None):
+    before, body = initial if initial is not None else snapshot(args, claim, prepare, journal, observation_id)
     # No private snapshot is accepted from a file or exported. Only this in-memory
     # body from the just-validated selected request reaches the internal matcher.
     transport = observer.Transport(claim["repo"], claim["issue"],
                                    time.monotonic() + observer.DEADLINE_SECONDS)
     try:
         remote = observer.observe(claim["repo"], claim["issue"], transport, expected_body=body)
+        observed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     finally:
         try:
-            after, _ = snapshot(args, claim, prepare, journal)
+            after, _ = snapshot(args, claim, prepare, journal, observation_id)
             if after != before:
                 raise Refusal("UNVERIFIED", "LOCAL_SNAPSHOT_CHANGED")
         except Exception as exc:
             raise Refusal("UNVERIFIED", "LOCAL_SNAPSHOT_CHANGED") from exc
+    if remote["remote_coverage"] != "complete_pagination" or remote["status"] not in {"OBSERVED", "CONFLICT"}:
+        raise Refusal("UNVERIFIED", "INCOMPLETE_OBSERVATION")
+    return CollectedObservation(before, remote, observed_at)
+
+
+def observe(args, claim, prepare, journal, observer):
+    collected = collect(args, claim, prepare, journal, observer)
+    remote = collected.remote
     if remote["status"] == "CONFLICT":
         output = report("CONFLICT", "OBSERVED_CONFLICT")
     elif remote["exact_match_comment_id"] is not None:

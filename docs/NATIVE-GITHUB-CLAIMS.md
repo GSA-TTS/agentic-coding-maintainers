@@ -263,6 +263,97 @@ adversarial fixtures check raw task/lease changes and sanitized no-effect result
 Execute that suite and repository checks only inside an independently justified
 isolated environment.
 
+## Durable historical local observation receipts
+
+`scripts/record-claim-observation.py` takes the same explicit binding/public
+flags as `observe-claim-intent.py`, plus a required `--observation-id` (random
+caller-selected lowercase hex32) and optional private `--store-id` fence. It
+collects the actual bounded GET-only observer result against the exact existing
+intent. It accepts no body, JSON summary, capture, timestamp or freshness input.
+Observation IDs must differ from known private session/worker/lease/store IDs,
+acknowledgment incarnations, and public claim/operation IDs. No identifier is
+inferred from text in the public body.
+
+Reservation is symmetric and permanent within this store: later intent writes
+reject any public claim/operation or private store/session/worker ID equal to an
+existing observation ID before insert. Candidate binding checks its operation,
+incarnation and store IDs before the authoritative task write; acknowledgment
+repeats that check inside its SQLite transaction. Receipt validation also checks
+acknowledgment operation IDs. Thus a valid later append cannot invalidate an
+earlier receipt by growing the identifier namespace. Exact equality is used,
+including hex32 IDs; random selection alone is not collision prevention.
+
+Before GET, the collector validates the current full task, lease fingerprints,
+selected immutable intent and physical journal read-only. Every descriptor and
+SQLite connection closes before GET, and no coordinator lock spans the network.
+After GET it repeats the read-only snapshot comparison, then acquires coordinator
+and repeats it again. Under coordinator, the SQLite transaction revalidates all
+retained rows, the exact request and current task/lease/physical-file fences.
+After its own write it compares physical identity and task/lease fingerprints;
+it does not mistake its own journal update for a concurrent replacement.
+
+Only validated complete pagination is persisted, including a complete missing
+match. Malformed/edited markers, network errors, changed anchors, incomplete
+traversals or changed local bindings return `UNVERIFIED` without a receipt.
+The immutable canonical receipt contains `schema_version: 1`, `observation_id`,
+`operation_id`, private `store_id`, `intent_request_sha256`, one of `VISIBLE_MATCH`,
+`NO_MATCH_OBSERVED`, `CONFLICT`, a fixed reason, bounded observer summary, and
+`observed_at`. The timestamp is UTC generated immediately after actual collection;
+it is not a caller assertion or a freshness deadline. Summary retains complete
+pagination coverage, repository/issue numeric IDs, issue number/closed/locked,
+page/comment/recognized-claim counts, and an exact-match comment ID/body digest
+only for `VISIBLE_MATCH`. It retains no raw body, branch, login, worker, token,
+private task binding or arbitrary diagnostics. Its SHA-256 binds this canonical
+receipt, not raw remote response bytes or an atomic remote snapshot.
+`CONFLICT` requires at least one recognized claim and never more recognized
+claims than observed comments. An altered missing-match receipt cannot become
+a valid conflict merely by changing its status/reason and recomputing its digest.
+
+Only this explicit record path migrates an existing schema-3 intent store to
+schema 4. Migration and insertion share one independent SQLite `BEGIN IMMEDIATE`
+transaction with `synchronous=FULL`. Version 4 requires the exact original tables,
+`binding_acks`, `claim_intents`, and `claim_observations`; the new table references
+the intent operation and validates its request digest and store incarnation.
+Versions 1/2 are refused by this collector. Existing intent writes/replay, monitor
+reads/writes and binding acknowledgments accept 4 and preserve it. The original
+candidate-binding missing-authoritative-task-receipt guard covers 2/3/4.
+There are at most 1,000 observations, no pruning, and the existing database byte
+ceiling. Multiple observation IDs for one operation are allowed.
+
+The same observation ID is never recollected: exact replay validates the current
+task and input request, then returns the original receipt without GET. A different
+operation/request under that ID conflicts. A changed or handed-off task refuses
+record/replay acknowledgment. Failed post-commit durability acknowledgment may
+leave a receipt; retry with the same ID repeats database, directory and parent
+fsync barriers without GET. Failure reports fixed codes without receipt identifiers.
+
+For historical inspection without any current-task requirement:
+
+```sh
+python3 -I -B scripts/record-claim-observation.py --show \
+  --authority-root /physical/workspace \
+  --observation-id 00112233445566778899aabbccddeeff
+```
+
+`--show` validates the private physical journal read-only and performs no network
+or durability writes. Success output for all paths contains fixed historical
+status/reason, observation ID, canonical receipt digest, and a prefixed
+`HISTORICAL_VISIBLE_MATCH`, `HISTORICAL_NO_MATCH_OBSERVED`, or `HISTORICAL_CONFLICT`.
+Local statuses are `HISTORICAL_RECORDED`, `HISTORICAL_REPLAY`, `HISTORICAL_SHOWN`.
+Every result says `historical: true`, `stored_freshness_current: false`, no mutation,
+remote effect or absence authority, and unverified current-task authority and
+remote-operation completion. Exit is 3, or 4 for conflict (including historical
+conflict). No result is remote success or permission to publish, retry, admit,
+release or claim ownership.
+
+Pre-extension readers reject version 4/table shape. Upgrade consumers before
+sharing the store; archive the complete quiesced database and sidecars for rollback
+or capacity recovery. Never delete tables or downgrade metadata. The new fixture
+suite reuses actual intent/task CLI and fake REST helpers and exercises schema
+pairing, immutable replay, lost acknowledgment, lock/rollback, private output and
+the actual candidate-binding orphan-ack guard. Run it and `make check` only in an
+independently justified isolated guest.
+
 ## Observe an actual REST comment capture
 
 `reconcile` accepts a raw JSON array captured from

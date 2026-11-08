@@ -22,6 +22,12 @@ SOURCE = re.compile(r"^(?:repo:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|project:[A-Za-z0-
 TABLES = {"meta", "polls", "sources", "coverage", "events", "candidates"}
 MAX_CLAIM_INTENTS = 1000
 MAX_INTENT_BYTES = 16_384
+MAX_CLAIM_OBSERVATIONS = 1000
+OBSERVATION_COLUMNS = [("observation_id", "TEXT", 1, None, 1),
+                       ("operation_id", "TEXT", 1, None, 0),
+                       ("request_sha256", "TEXT", 1, None, 0),
+                       ("receipt", "TEXT", 1, None, 0),
+                       ("receipt_sha256", "TEXT", 1, None, 0)]
 
 
 class StoreConnection(sqlite3.Connection):
@@ -136,7 +142,8 @@ def validate_store(db: sqlite3.Connection) -> None:
     objects = db.execute("SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
     names = {row["name"] for row in objects}
     versions = {1: TABLES, 2: TABLES | {"binding_acks"},
-                3: TABLES | {"binding_acks", "claim_intents"}}
+                3: TABLES | {"binding_acks", "claim_intents"},
+                4: TABLES | {"binding_acks", "claim_intents", "claim_observations"}}
     if names not in versions.values() or any(row["type"] != "table" for row in objects):
         raise JournalError("unsupported journal schema")
     meta = db.execute("SELECT * FROM meta").fetchall()
@@ -166,6 +173,23 @@ def validate_store(db: sqlite3.Connection) -> None:
                     or row["request_sha256"] != fingerprint(request)):
                 raise JournalError("claim intent identity differs")
             seen.add(row["operation_id"])
+    if "claim_observations" in names:
+        columns = [tuple(row)[1:6] for row in db.execute("PRAGMA table_info(claim_observations)")]
+        if columns != OBSERVATION_COLUMNS:
+            raise JournalError("unsupported claim observation schema")
+        foreign = [tuple(row)[2:5] for row in db.execute("PRAGMA foreign_key_list(claim_observations)")]
+        if foreign != [("claim_intents", "operation_id", "operation_id")]:
+            raise JournalError("unsupported claim observation reference")
+        if db.execute("SELECT count(*) FROM claim_observations").fetchone()[0] > MAX_CLAIM_OBSERVATIONS:
+            raise JournalError("claim observation capacity exceeded")
+        for row in db.execute("SELECT * FROM claim_observations"):
+            receipt = decode_intent(row["receipt"])
+            validate_claim_observation(db, receipt)
+            if (row["observation_id"] != receipt["observation_id"]
+                    or row["operation_id"] != receipt["operation_id"]
+                    or row["request_sha256"] != receipt["intent_request_sha256"]
+                    or row["receipt_sha256"] != fingerprint(receipt)):
+                raise JournalError("claim observation identity differs")
     if db.execute("PRAGMA quick_check").fetchone()[0] != "ok" or db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise JournalError("journal integrity check failed")
     for query, limit in (("SELECT count(*) FROM polls", MAX_POLLS), ("SELECT count(*) FROM events", MAX_EVENTS), ("SELECT count(*) FROM candidates", MAX_CANDIDATES)):
@@ -360,9 +384,10 @@ def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guar
         version, identity = db.execute("SELECT version,store_id FROM meta").fetchone()
         if identity != request["store_id"]:
             raise JournalError("claim intent store differs")
+        reject_reserved_observation_ids(db, claim_intent_identifiers(request))
         if guard is not None:
             guard()
-        if version == 3:
+        if version in {3, 4}:
             prior = db.execute("SELECT request FROM claim_intents WHERE operation_id=?", (request["operation_id"],)).fetchone()
             if prior:
                 if prior[0] != raw:
@@ -383,6 +408,144 @@ def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guar
         if guard is not None:
             guard()
     return "INTENT_RECORDED"
+
+
+def validate_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any]) -> None:
+    """Bound historical summary only; a digest never certifies source freshness."""
+    if (type(receipt) is not dict or set(receipt) != {
+            "schema_version", "observation_id", "operation_id", "store_id",
+            "intent_request_sha256", "status", "reason", "summary", "observed_at"}
+            or type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1):
+        raise JournalError("unsupported claim observation fields")
+    for key in ("observation_id", "operation_id", "store_id", "intent_request_sha256"):
+        length = 64 if key == "intent_request_sha256" else 32
+        if type(receipt[key]) is not str or re.fullmatch(r"[0-9a-f]{" + str(length) + r"}", receipt[key]) is None:
+            raise JournalError("invalid claim observation identifier")
+    reasons = {"VISIBLE_MATCH": "EXACT_PENDING_INTENT_VISIBLE",
+               "NO_MATCH_OBSERVED": "NO_MATCH_OBSERVED", "CONFLICT": "OBSERVED_CONFLICT"}
+    if type(receipt["status"]) is not str or receipt["status"] not in reasons or receipt["reason"] != reasons[receipt["status"]]:
+        raise JournalError("invalid claim observation status")
+    stamp = receipt["observed_at"]
+    if type(stamp) is not str or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z", stamp) is None:
+        raise JournalError("invalid claim observation timestamp")
+    try:
+        datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise JournalError("invalid claim observation timestamp") from exc
+    summary = receipt["summary"]
+    if type(summary) is not dict or set(summary) != {
+            "remote_coverage", "repository_id", "issue_id", "issue_number", "issue_closed",
+            "issue_locked", "page_count", "comment_count", "recognized_claim_count",
+            "comment_id", "comment_sha256"} or summary["remote_coverage"] != "complete_pagination":
+        raise JournalError("invalid claim observation summary")
+    for key, minimum, maximum in (("repository_id", 1, 2**63 - 1), ("issue_id", 1, 2**63 - 1),
+                                  ("issue_number", 1, 2**63 - 1), ("page_count", 1, 10),
+                                  ("comment_count", 0, 1000), ("recognized_claim_count", 0, 1000)):
+        if type(summary[key]) is not int or not minimum <= summary[key] <= maximum:
+            raise JournalError("invalid claim observation count")
+    if (type(summary["issue_closed"]) is not bool or type(summary["issue_locked"]) is not bool
+            or summary["recognized_claim_count"] > summary["comment_count"]):
+        raise JournalError("invalid claim observation summary")
+    row = db.execute("SELECT request,request_sha256 FROM claim_intents WHERE operation_id=?",
+                     (receipt["operation_id"],)).fetchone()
+    if row is None:
+        raise JournalError("claim observation lacks intent")
+    request = decode_intent(row[0])
+    validate_claim_intent(request)
+    if (receipt["store_id"] != db.execute("SELECT store_id FROM meta").fetchone()[0]
+            or receipt["store_id"] != request["store_id"]
+            or receipt["intent_request_sha256"] != row[1] or row[1] != fingerprint(request)
+            or summary["issue_number"] != request["claim"]["issue"]):
+        raise JournalError("claim observation intent differs")
+    if receipt["status"] == "VISIBLE_MATCH":
+        if (type(summary["comment_id"]) is not int or not 1 <= summary["comment_id"] <= 2**63 - 1
+                or summary["comment_sha256"] != request["comment_sha256"]
+                or summary["recognized_claim_count"] != 1):
+            raise JournalError("claim observation match differs")
+    elif summary["comment_id"] is not None or summary["comment_sha256"] is not None:
+        raise JournalError("nonmatch carries match identity")
+    if receipt["status"] == "NO_MATCH_OBSERVED" and summary["recognized_claim_count"] != 0:
+        raise JournalError("nonmatch carries recognized claim")
+    if receipt["status"] == "CONFLICT" and summary["recognized_claim_count"] < 1:
+        raise JournalError("conflict lacks recognized claim")
+    # Check all known private and public claim/operation IDs, not substrings of
+    # the body. Also check acknowledgments' private task incarnation identifiers.
+    validate_observation_id(db, receipt["observation_id"])
+
+
+def validate_observation_id(db: sqlite3.Connection, observation_id: str) -> None:
+    if type(observation_id) is not str or re.fullmatch(r"[0-9a-f]{32}", observation_id) is None:
+        raise JournalError("invalid claim observation identifier")
+    forbidden = {db.execute("SELECT store_id FROM meta").fetchone()[0]}
+    for intent in db.execute("SELECT request FROM claim_intents"):
+        value = decode_intent(intent[0])
+        forbidden.update(claim_intent_identifiers(value))
+    for row in db.execute("SELECT incarnation,operation_id FROM binding_acks"):
+        forbidden.update(row)
+    if observation_id in forbidden:
+        raise JournalError("claim observation identifier reuse")
+
+
+def claim_intent_identifiers(request: dict[str, Any]) -> set[str]:
+    """Exact known IDs only, never body substrings or arbitrary prose."""
+    binding = request["binding"]
+    worker = binding["worker"]
+    return {request["store_id"], request["operation_id"], request["claim"]["claim_id"],
+            binding["session_id"], worker["session_id"], worker["worker_id"], worker["token"]}
+
+
+def reject_reserved_observation_ids(db: sqlite3.Connection, identifiers) -> None:
+    """Symmetric pre-write reservation: future IDs cannot invalidate history.
+
+    Caller validates the store and retains its transaction/coordinator fences.
+    Legacy versions have no observation namespace and retain their behavior.
+    """
+    if db.execute("SELECT version FROM meta").fetchone()[0] != 4:
+        return
+    reserved = {row[0] for row in db.execute("SELECT observation_id FROM claim_observations")}
+    if reserved.intersection(identifiers):
+        raise JournalError("reserved claim observation identifier")
+
+
+def claim_observation(db: sqlite3.Connection, observation_id: str) -> dict[str, Any] | None:
+    version = db.execute("SELECT version FROM meta").fetchone()[0]
+    if version not in {3, 4}:
+        raise JournalError("claim observation requires existing intent schema")
+    if version == 3:
+        return None
+    row = db.execute("SELECT receipt FROM claim_observations WHERE observation_id=?", (observation_id,)).fetchone()
+    return decode_intent(row[0]) if row else None
+
+
+def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *, guard) -> str:
+    """Coordinator-held append. Migration and insertion share one FULL transaction."""
+    if db.in_transaction:
+        raise JournalError("claim observation requires independent transaction")
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        validate_store(db)
+        version = db.execute("SELECT version FROM meta").fetchone()[0]
+        if version not in {3, 4}:
+            raise JournalError("claim observation requires existing intent schema")
+        validate_claim_observation(db, receipt)
+        guard()
+        prior = claim_observation(db, receipt["observation_id"])
+        if prior is not None:
+            if prior != receipt:
+                raise JournalError("conflicting claim observation")
+            return "HISTORICAL_REPLAY"
+        count = db.execute("SELECT count(*) FROM claim_observations").fetchone()[0] if version == 4 else 0
+        if count >= MAX_CLAIM_OBSERVATIONS:
+            raise JournalError("claim observation capacity reached")
+        if version == 3:
+            db.execute("CREATE TABLE claim_observations (observation_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT NOT NULL REFERENCES claim_intents(operation_id), request_sha256 TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
+            db.execute("UPDATE meta SET version=4")
+        db.execute("INSERT INTO claim_observations VALUES(?,?,?,?,?)",
+                   (receipt["observation_id"], receipt["operation_id"], receipt["intent_request_sha256"],
+                    canonical(receipt), fingerprint(receipt)))
+        validate_store(db)
+        guard()
+    return "HISTORICAL_RECORDED"
 
 
 def begin(db: sqlite3.Connection, attempt: str, config: str, task: str, sources: list[str], started: str) -> int:
