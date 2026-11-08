@@ -82,6 +82,31 @@ The original import revision and `SOURCE-SHA256SUMS` remain unchanged. This base
 identifies the starting revision, not a new canonical revision for these edits;
 `CANONICAL-SHA256SUMS` must be regenerated for the completed skill assets.
 
+## Durable historical claim observation receipts
+
+Canonical base `70496835`: explicit consumer GET collector adds immutable bounded
+historical receipts in the existing shared SQLite store. Only receipt recording
+migrates schema 3 to 4, transactionally retaining intents and binding acknowledgments.
+Packaged validation checks the exact version/table pair, reference, canonical
+receipt digest, intent request digest/store incarnation, bounded complete observer
+summary, UTC finish timestamp and known identifier separation. Existing intent
+and monitor APIs preserve 4; candidate binding's original orphan-ack guard extends
+from 2/3 to 2/3/4. No remote success, task authority or second outbox is added.
+The consumer fixture is `tests/record-claim-observation-test.py`; it reuses actual
+task/intent CLI and REST fixture helpers and is registered in `Makefile`.
+Runtime validation is assigned to the primary's independent isolated guest;
+static edits are not passing execution evidence. Imported source history and
+`SOURCE-SHA256SUMS` remain preserved.
+
+Receipt review corrections: reserve observation IDs symmetrically before future
+intent insertion and before candidate-binding task authority writes, with a repeat
+guard inside acknowledgment transactions. Historical validation includes both
+acknowledgment incarnation and operation identifiers, and conflict summaries must
+contain at least one recognized claim. Actual schema-4 observer fixtures reset
+the fake GET call log between collections and assert unchanged private storage.
+Collision fixtures exercise actual candidate binding refusal before task mutation,
+noncolliding binding/ack append and retained-history validation.
+
 ## Bounded local public-claim intent persistence
 
 Canonical base `cb5323f6219f2c7787b487b4895b175b2f75479c`: shared monitor

@@ -189,6 +189,9 @@ def acknowledge(db, binding):
     key = request["incarnation"]
     with db:
         db.execute("BEGIN IMMEDIATE")
+        journal.validate_store(db)
+        journal.reject_reserved_observation_ids(db, {
+            request["operation_id"], request["incarnation"], candidate["store_id"]})
         version = db.execute("SELECT version FROM meta").fetchone()[0]
         if version == 1:
             db.execute("CREATE TABLE binding_acks (incarnation TEXT PRIMARY KEY, task_id TEXT NOT NULL, operation_id TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
@@ -254,7 +257,7 @@ def bind(root: Path, task_id: str, request: dict[str, Any], config_path: Path) -
                 if not (root/"monitor/history.sqlite3").is_file():
                     raise Unverified("existing observation journal required")
                 db = journal.open_store(root/"monitor",writable=True)
-                if db.execute("SELECT version FROM meta").fetchone()[0] in {2, 3} and db.execute(
+                if db.execute("SELECT version FROM meta").fetchone()[0] in {2, 3, 4} and db.execute(
                         "SELECT 1 FROM binding_acks WHERE incarnation=?", (incarnation(record),)).fetchone():
                     raise Unverified("journal acknowledgment exists but authoritative task receipt is missing")
                 observation, as_of = resolve(db,request,config,journal)
@@ -262,6 +265,15 @@ def bind(root: Path, task_id: str, request: dict[str, Any], config_path: Path) -
                     raise Refused("configuration changed during binding")
                 updated, result, changed = prepare(record,request,observation,as_of)
                 if changed:
+                    # Refuse before authoritative task mutation, not merely at
+                    # the later acknowledgment mirror. Coordinator + poll lock
+                    # exclude the cooperating receipt and journal writers.
+                    try:
+                        journal.validate_store(db)
+                        journal.reject_reserved_observation_ids(db, {
+                            request["operation_id"], request["incarnation"], request["candidate"]["store_id"]})
+                    except journal.JournalError as exc:
+                        raise Unverified("binding identifier conflicts with retained observation") from exc
                     result = None  # Never acknowledge a write whose durability barrier failed.
                     state.write_task(root,updated)
                     record = state.read_task(root,task_id)
