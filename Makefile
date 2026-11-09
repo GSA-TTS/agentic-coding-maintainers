@@ -58,6 +58,7 @@ test:
 	python3 -I -B tests/prepare-task-claim-test.py
 	python3 -I -B tests/prepare-approved-claim-test.py
 	python3 -I -B tests/journal-claim-intent-test.py
+	python3 -I -B tests/journal-approved-claim-test.py
 	python3 -I -B tests/observe-github-claims-test.py
 	python3 -I -B tests/observe-claim-intent-test.py
 	python3 -I -B tests/record-claim-observation-test.py

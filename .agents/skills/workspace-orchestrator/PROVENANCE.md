@@ -133,3 +133,24 @@ Consumers must carry/run that fixture separately in an independently justified
 isolated environment. Original import history and `SOURCE-SHA256SUMS` remain
 unchanged. `CANONICAL-SHA256SUMS` binds the adapted sources and provenance;
 static inspection alone is not passing runtime validation.
+
+## Identity-bound local claim intent adaptation
+
+Issue #117 based on canonical revision
+`3eb8fb1af5c201739f443f561b2be0f611f5f221`: explicit consumer binder records
+fresh private identity observations and unauthenticated exact-text declarations
+as request v2. Only explicit v2 insertion advances the shared SQLite header to
+version 5, with the existing v4 tables/columns. Packaged strict validation accepts
+unchanged v1 rows and v2 only in v5; old readers reject the new version boundary.
+Migration and insertion are one transaction. Existing monitor, v1 intent,
+receipt and acknowledgment writes preserve v5; candidate binding retains its
+pre-authority missing-task-receipt guard and observation-ID reservations.
+The consumer's actual GET transport is identity-gated against persisted numeric
+and node IDs before comment traversal. Receipt schema remains v1 and binds the
+complete request digest plus conditional immutable target IDs. No row becomes
+publishable or confers authentication, issuance, publisher or mutation authority.
+The consumer adds `tests/journal-approved-claim-test.py`, registered in `Makefile`,
+using existing actual core/intent/receipt/REST/binding fixtures. Execution is
+reserved for an independently justified isolated guest; static inspection is
+not passing runtime evidence. Original source history and `SOURCE-SHA256SUMS`
+remain unchanged; `CANONICAL-SHA256SUMS` binds the adapted skill assets.

@@ -36,10 +36,12 @@ def modules():
 
 def arguments(prepare):
     # Reuse the journal CLI's actual preparation parser, including every required
-    # fence and canonical public input. Only the optional private store fence is
-    # extracted here; there is no second public-request builder.
+    # fence and canonical public input. Extract private store and optional v2
+    # numeric identity fences here; there is no second public-request builder.
     parser = prepare.codec.Parser(allow_abbrev=False, add_help=False)
     parser.add_argument("--store-id", action=prepare.codec.StoreOnce)
+    for name in ("expected-actor-id", "expected-repo-id", "expected-issue-id"):
+        parser.add_argument("--" + name, action=prepare.codec.StoreOnce)
     extra, remaining = parser.parse_known_args()
     if extra.store_id is not None:
         prepare.codec.require(prepare.preflight.HEX32.fullmatch(extra.store_id) is not None,
@@ -51,11 +53,14 @@ def arguments(prepare):
     finally:
         sys.argv = original
     args.store_id = extra.store_id
+    for key in ("expected_actor_id", "expected_repo_id", "expected_issue_id"):
+        value = getattr(extra, key)
+        setattr(args, key, prepare.codec.number(value) if value is not None else None)
     return args, claim
 
 
 def snapshot(args, claim, prepare, journal, observation_id=None):
-    """Existing schema-3/4 API, exact selected row, private physical-file fences.
+    """Existing schema-3/4/5 API, exact selected row, private physical-file fences.
 
     All descriptors and the read-only SQLite connection close before returning.
     No CoordinatorLock is acquired: that API creates a lock directory. Repeated
@@ -112,8 +117,8 @@ def snapshot(args, claim, prepare, journal, observation_id=None):
             journal.validate_store(db)
             version, store_id = db.execute("SELECT version,store_id FROM meta").fetchone()
             # Journal schema is independent of the task's schema-3 fence above.
-            # Both intent-bearing versions are read-only; this path never migrates.
-            preflight.require(version in {3, 4}, "UNSUPPORTED_JOURNAL_SCHEMA")
+            # Intent-bearing versions are read-only; this path never migrates.
+            preflight.require(version in {3, 4, 5}, "UNSUPPORTED_JOURNAL_SCHEMA")
             if observation_id is not None:
                 journal.validate_observation_id(db, observation_id)
             if args.store_id is not None and args.store_id != store_id:
@@ -127,6 +132,14 @@ def snapshot(args, claim, prepare, journal, observation_id=None):
             raw, request_sha256 = rows[0]
             request = journal.decode_intent(raw)
             journal.validate_claim_intent(request)
+            if request["schema_version"] == 2:
+                observed = request["identity_observation"]
+                for key, argument in (("actor_id", "expected_actor_id"),
+                                      ("repository_id", "expected_repo_id"),
+                                      ("issue_id", "expected_issue_id")):
+                    value = getattr(args, argument, None)
+                    preflight.require(value is not None, "EXPECTED_IDENTITY_REQUIRED")
+                    preflight.require(value == observed[key], "EXPECTED_IDENTITY_MISMATCH")
             binding = request["binding"]
             # Compare the validated immutable request directly. The recording CLI
             # has no exported builder; do not copy its request construction here.
@@ -173,12 +186,42 @@ class CollectedObservation:
         self.observed_at = observed_at
 
 
+def identity_transport(observer, identity):
+    """Gate the actual observer's fixed GET responses, not a supplied summary."""
+    class BoundTransport(observer.Transport):
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.identity_seen = set()
+
+        def get(self, url, page=None):
+            if page is not None:
+                observer.require(self.identity_seen == {"actor", "repository", "issue"},
+                                 "IMMUTABLE_IDENTITY_INCOMPLETE")
+            value, successor = super().get(url, page)
+            if page is None:
+                kind = "actor" if url == observer.API + "/user" else (
+                    "repository" if url == self.repo_url else "issue")
+                observer.require(type(value) is dict and observer.codec.positive(value.get("id"))
+                                 and type(value.get("node_id")) is str
+                                 and value["id"] == identity[kind + "_id"]
+                                 and value["node_id"] == identity[kind + "_node_id"],
+                                 "IMMUTABLE_IDENTITY_MISMATCH")
+                if kind == "actor":
+                    observer.require(value.get("login") == identity["actor_login"]
+                                     and value.get("type") == "User", "ACTOR_IDENTITY_MISMATCH")
+                self.identity_seen.add(kind)
+            return value, successor
+
+    return BoundTransport
+
+
 def collect(args, claim, prepare, journal, observer, *, initial=None, observation_id=None):
     before, body = initial if initial is not None else snapshot(args, claim, prepare, journal, observation_id)
     # No private snapshot is accepted from a file or exported. Only this in-memory
     # body from the just-validated selected request reaches the internal matcher.
-    transport = observer.Transport(claim["repo"], claim["issue"],
-                                   time.monotonic() + observer.DEADLINE_SECONDS)
+    request = journal.decode_intent(before[0])
+    factory = identity_transport(observer, request["identity_observation"]) if request["schema_version"] == 2 else observer.Transport
+    transport = factory(claim["repo"], claim["issue"], time.monotonic() + observer.DEADLINE_SECONDS)
     try:
         remote = observer.observe(claim["repo"], claim["issue"], transport, expected_body=body)
         observed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
