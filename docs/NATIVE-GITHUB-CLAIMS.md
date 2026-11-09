@@ -242,6 +242,81 @@ CLI refusals, repeated-identity changes, task changes at the network boundary,
 closed/locked observations, and shared transport deadline/byte bounds. Run it
 and `make check` only in an independently justified isolated guest.
 
+### Assignment-first runner candidate
+
+`scripts/publish-github-assignment.py` composes an existing request-v2 intent
+with genuine controlling-terminal approval, a durable task reservation, journal
+v6, and one additive assignment POST. This is an operator-invoked candidate,
+subject to isolated qualification and exact-head review. It does not activate
+automatic claiming. The protocol's
+[implementation boundary](CLAIM-PUBLISHER-PROTOCOL.md#assignment-implementation-boundary)
+records supported outcomes and the operator-approved deferral of abandonment
+release. On 2026-11-09 the operator chose permanently fenced UNKNOWN for this
+assignment-only delivery; issue #117 remains open for later release support.
+
+The CLI requires Python `-I -B` and these explicit private fences:
+
+```text
+python3 -I -B scripts/publish-github-assignment.py assign
+  --authority-root ABSOLUTE_WORKSPACE --invoking-root SAME_PHYSICAL_WORKSPACE
+  --task-id TASK --expected-revision REVISION
+  --expected-worker-id WORKER_ID --expected-session-id SESSION
+  --expected-generation GENERATION --intent-operation-id EXISTING_INTENT_ID
+  --implementation-head CLEAN_COMMITTED_40_HEX_SHA
+```
+
+Supply the human publisher's recognizable classic PAT/OAuth token through the
+trusted host's `GH_TOKEN`; tokens never belong in command arguments, guests,
+receipts or repository files. The transport rejects credential fallback,
+unsupported token types, routing/TLS overrides, missing OAuth scope evidence,
+missing repository push permission, nonassignable actors, and changed immutable
+actor/target identities. The collector displays exact JSON-escaped bindings and
+requires the displayed digest challenge within 120 seconds. No file, boolean,
+stdin or environment approval override exists.
+
+Approval binds the exact additive payload, all prior assignee IDs, actor/target
+IDs, intent and dispatch operation IDs, attempt, store, implementation SHA and
+prospective reserved full task digest/revision/session/generation/worker. The
+existing intent still must equal its **original** full task snapshot; reserving
+never weakens v2 equality. The reservation marker precedes the journal attempt;
+failed/ambiguous persistence prevents launch and retains the fence. No global
+coordinator or SQLite lock spans terminal interaction or network requests.
+
+Terminal outcomes are `ASSIGNMENT_CONFIRMED_OBSERVED`, `SATISFIED_NO_POST`,
+`DRIFT`, `FAILED_ACTUAL_RESULT`, and positively unlaunched `NOT_SENT`. Only the
+first two have satisfaction true. A possibly issued POST with a lost response
+retains completion `UNKNOWN`, even if GET shows the actor. A confirmed POST
+with incomplete GET retains completion `CONFIRMED` but remains reserved until
+observation completes. Exit 0 means a durably settled local outcome, including
+terminal failure; inspect the outcome and satisfaction fields. Exit 3 means
+unverified or unresolved. Output omits credentials and private bindings.
+
+For an exact pending dispatch, `settle` uses the same fences at the **reserved**
+task revision plus `--assignment-operation-id`. It repairs durable settlement
+acknowledgment or performs bounded GET-only completion from confirmed transport
+evidence. It never posts. The original operation is never replayed. The
+`arbitrate` action always refuses with
+`PRODUCER_TERMINATION_PROOF_UNSUPPORTED`; no `ABANDONED_UNKNOWN` path exists.
+Missing evidence, marker-only crashes and UNKNOWN attempts remain blocked.
+PID disappearance and boot identity changes are not accepted as stop evidence.
+
+Journal v6 adds typed assignment tables to the existing private database and
+preserves old immutable rows. Request/attempt IDs and preallocated evidence/
+settlement IDs share exclusion rules with existing observation/acknowledgment
+IDs. Before the task marker, a rolled-back rehearsal checks actual insertion,
+capacity and collisions; the real reservation repeats those checks. All journal
+consumers must be upgraded together; do not downgrade the
+header. The permanent schema-3 `assignment_dispatch` anchor prevents old
+controllers from accepting either pending or settled tasks. Pending guards
+cover mutations, claim, cancellation, capacity/scope release and recovery;
+unrelated tasks remain usable. Rollback requires preserving complete stores and
+continuing to use a compatible controller until pending attempts are resolved.
+
+Run `tests/publish-github-assignment-test.py`, `tests/assignment-dispatch-test.py`,
+the cooperative lifecycle suite and `make check` only in the independent
+validation sandbox. PTY fixtures exercise the real collector, not human identity.
+There is no comment publication or continuation in this delivery.
+
 ### Identity-bound local intent (request v2, journal v5)
 
 `scripts/journal-approved-claim.py` takes all preparation flags and all six

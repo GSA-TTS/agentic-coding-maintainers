@@ -324,7 +324,7 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
     missing = required - raw.keys()
     if missing:
         raise UnknownError(f"task record missing fields: {', '.join(sorted(missing))}")
-    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions", "transition_recovery"}:
+    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions", "transition_recovery", "assignment_dispatch"}:
         raise UnknownError("cooperative core-only task has unsupported retained extensions")
     if raw["schema_version"] not in {SCHEMA, BOUND_SCHEMA} or type(raw["revision"]) is not int or raw["revision"] < 0:
         raise UnknownError("task schema or revision is invalid")
@@ -373,6 +373,7 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
         if worker["task_id"] != raw["task_id"]:
             raise UnknownError("task worker id does not match task")
     validate_cooperative_binding(raw)
+    validate_assignment_dispatch(raw)
     validate_transition_recovery(raw)
     if "candidate_binding" in raw:
         path = Path(__file__).resolve().with_name("candidate-binding.py")
@@ -495,6 +496,8 @@ def validate_transition_recovery(record: dict[str, Any]) -> None:
     snapshot = copy.deepcopy(record)
     snapshot.pop("transition_recovery")
     snapshot.pop("legacy_finding_dispositions", None)
+    if snapshot.get("assignment_dispatch", {}).get("original_revision", -1) >= receipt["base_revision"]:
+        snapshot.pop("assignment_dispatch", None)
     snapshot.update(state=receipt["source"], transition_intent=receipt["intent"],
                     worker=receipt["worker"], leases=receipt["leases"], revision=receipt["base_revision"])
     worker = receipt["worker"]
@@ -619,7 +622,112 @@ def read_task(root: Path, task_id: str, *, allow_bound: bool = False) -> dict[st
     return validate_record(read_json(path, f"task {task_id}"), task_id, allow_bound=allow_bound)
 
 
+def validate_assignment_dispatch(record):
+    """Permanent schema-3 extension: old controllers refuse even settled anchors."""
+    marker = record.get("assignment_dispatch")
+    if "assignment_dispatch" not in record:
+        return
+    if (record["schema_version"] != BOUND_SCHEMA or type(marker) is not dict
+            or set(marker) != {"version", "phase", "operation_id", "attempt_id", "store_id",
+                               "intent_sha256", "original_sha256", "original_revision", "implementation_head"}
+            or type(marker["version"]) is not int or marker["version"] != 1
+            or marker["phase"] not in {"pending", "settled"}):
+        raise UnknownError("invalid assignment reservation")
+    for key, length in (("operation_id", 32), ("attempt_id", 32), ("store_id", 32),
+                        ("intent_sha256", 64), ("original_sha256", 64), ("implementation_head", 40)):
+        if type(marker[key]) is not str or re.fullmatch(r"[0-9a-f]{" + str(length) + "}", marker[key]) is None:
+            raise UnknownError("invalid assignment reservation identity")
+    if (type(marker["original_revision"]) is not int or marker["original_revision"] < 1
+            or record["revision"] <= marker["original_revision"]
+            or marker["original_revision"] > MAX_GENERATION - 2):
+        raise UnknownError("invalid assignment reservation revision")
+    if marker["phase"] == "pending" and (record["state"] not in ACTIVE
+            or record["worker"] is None or record["transition_intent"] is not None
+            or record.get("transition_recovery", {}).get("phase") == "pending"):
+        raise UnknownError("assignment reservation ownership changed")
+
+
+def require_assignment_settled(record):
+    validate_assignment_dispatch(record)
+    if record.get("assignment_dispatch", {}).get("phase") == "pending":
+        raise BusyError("assignment dispatch unresolved; explicit durable settlement required")
+
+
+def assignment_reserve(root, original, reserved):
+    """Qualified adapter, coordinator held. Marker FIRST; failure never rolls it back."""
+    current = read_task(root, original["task_id"], allow_bound=True)
+    require_assignment_settled(current)
+    if current != original or original["schema_version"] != BOUND_SCHEMA:
+        raise UnknownError("assignment original task changed")
+    if original["transition_intent"] or original.get("transition_recovery", {}).get("phase") == "pending":
+        raise UnknownError("assignment recovery pending")
+    verify_reservations(root, original)
+    expected = copy.deepcopy(original)
+    expected.update(revision=original["revision"] + 1, updated_at=reserved["updated_at"],
+                    assignment_dispatch=reserved["assignment_dispatch"])
+    if reserved != expected or reserved["assignment_dispatch"]["phase"] != "pending":
+        raise UnknownError("assignment prospective task changed")
+    validate_record(reserved, original["task_id"], allow_bound=True)
+    atomic_json(task_path(root, original["task_id"]), reserved)
+
+
+def assignment_release(root, reserved):
+    """Only the dispatch adapter calls this AFTER settlement commit and fsync."""
+    current = read_task(root, reserved["task_id"], allow_bound=True)
+    if current != reserved or current.get("assignment_dispatch", {}).get("phase") != "pending":
+        raise UnknownError("assignment settlement task changed")
+    verify_reservations(root, current)
+    spec = importlib.util.spec_from_file_location("release_assignment_journal", Path(__file__).with_name("monitor-journal.py"))
+    if spec is None or spec.loader is None:
+        raise UnknownError("assignment journal unavailable")
+    journal = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(journal)
+    monitor = root / "monitor"
+    db = journal.open_store(monitor, writable=False)
+    try:
+        db.execute("BEGIN")
+        journal.validate_store(db)
+        typed = journal.assignment_journal()
+        request = typed.get(db, "assignment_requests", current["assignment_dispatch"]["operation_id"])
+        if request is None or request["reserved_task"] != current:
+            raise UnknownError("assignment release lacks exact request")
+        settlement = typed.get(db, "assignment_settlements", request["settlement_id"])
+        if settlement is None:
+            raise UnknownError("assignment release lacks terminal settlement")
+        # Re-prove local durability here too; callers cannot bypass it by directly
+        # invoking this adapter. A marker-only crash has no release route.
+        fd = os.open(journal.check_path(monitor), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) != db.file_identity:
+                raise UnknownError("assignment release database changed")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        directory = os.open(monitor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        db.close()
+    final = copy.deepcopy(current)
+    final["assignment_dispatch"]["phase"] = "settled"
+    final["revision"] += 1
+    final["updated_at"] = now()
+    validate_record(final, final["task_id"], allow_bound=True)
+    atomic_json(task_path(root, final["task_id"]), final)
+    return final
+
+
 def write_task(root: Path, record: dict[str, Any], *, allow_bound: bool = False) -> None:
+    require_assignment_settled(record)
+    path = task_path(root, record["task_id"])
+    if path.exists():
+        retained = read_task(root, record["task_id"], allow_bound=allow_bound)
+        require_assignment_settled(retained)
+        if "assignment_dispatch" in retained and record.get("assignment_dispatch") != retained["assignment_dispatch"]:
+            raise UnknownError("permanent assignment anchor changed")
     record["revision"] += 1
     record["updated_at"] = now()
     validate_record(record, record["task_id"], allow_bound=allow_bound)
@@ -643,6 +751,9 @@ def release_dir(path: Path, token: str) -> None:
     if not path.exists():
         return
     owner = read_json(path / "owner.json", f"reservation {path.name}")
+    if path.parent.name in {"slots", "implementation", "scopes"}:
+        root = path.parent.parent
+        require_assignment_settled(read_task(root, owner["task_id"], allow_bound=True))
     if owner.get("token") != token:
         raise UnknownError(f"reservation fencing token changed: {path.name}")
     os.unlink(path / "owner.json")
@@ -666,11 +777,11 @@ def reserve_first(root: Path, group: str, count: int, metadata: dict[str, Any]) 
     raise BusyError(f"no {group} capacity available")
 
 
-def process_identity(pid: int) -> tuple[str, str | None]:
+def process_identity(pid: int, *, environment: dict[str, str] | None = None) -> tuple[str, str | None]:
     try:
         value = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart="], check=False,
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, env=environment,
         )
     except (OSError, subprocess.SubprocessError):
         return "unknown", None
@@ -864,6 +975,7 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     with CoordinatorLock(root):
         validate_admission_reservations(root, allow_bound=True)
         record = read_task(root, args.task_id, allow_bound=True)
+        require_assignment_settled(record)
         bound = record["schema_version"] == BOUND_SCHEMA
         session = getattr(args, "session_id", None)
         if bound or session is not None:
@@ -928,6 +1040,7 @@ def require_expected_counters(args: argparse.Namespace, record: dict[str, Any], 
 
 def require_cooperative_mutation(args: argparse.Namespace, root: Path, record: dict[str, Any]) -> None:
     """Invocation comparison under the caller's coordinator lock; not authentication."""
+    require_assignment_settled(record)
     if record["schema_version"] != BOUND_SCHEMA:
         if (getattr(args, "operator_action", False) or any(getattr(args, key, None) is not None
                 for key in ("expected_session_id", "expected_worker_id", "expected_generation"))):
@@ -968,6 +1081,7 @@ def require_cooperative_mutation(args: argparse.Namespace, root: Path, record: d
 
 
 def release_capacity(root: Path, record: dict[str, Any]) -> None:
+    require_assignment_settled(record)
     worker = record.get("worker") or {}
     token = worker.get("token")
     if not token:
@@ -984,6 +1098,7 @@ def release_capacity(root: Path, record: dict[str, Any]) -> None:
 
 
 def release_implementation_lane(root: Path, record: dict[str, Any]) -> None:
+    require_assignment_settled(record)
     worker = record.get("worker") or {}
     token = worker.get("token")
     lane = record["leases"].get("implementation_lane")
@@ -1304,6 +1419,7 @@ def validate_admission_reservations(root: Path, *, allow_bound: bool = False) ->
 
 
 def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
+    require_assignment_settled(record)
     if record["schema_version"] == BOUND_SCHEMA:
         raise UnknownError("cooperative interrupted transition recovery is unsupported")
     target = record["transition_intent"]
@@ -1356,6 +1472,7 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    require_assignment_settled(record)
     if record["schema_version"] == BOUND_SCHEMA:
         raise UnknownError("cooperative task requires guarded operator lifecycle; automatic reconciliation is unsupported")
     if has_review_reservations(record):
@@ -1393,6 +1510,7 @@ def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], b
 
 def recovery_reservations(root: Path, selected: dict[str, Any], pending: bool) -> dict[str, bool]:
     """Preflight both directions before the first recovery write or release."""
+    require_assignment_settled(selected)
     records = {}
     for path in sorted((root / "tasks").glob("*/task.json")):
         record = validate_record(read_json(path, "recovery task", strict=True), path.parent.name, allow_bound=True)
@@ -1455,6 +1573,7 @@ def command_recover(args: argparse.Namespace, root: Path) -> list[dict[str, Any]
     with CoordinatorLock(root):
         path = task_path(root, args.recover)
         record = validate_record(read_json(path, "recovery task", strict=True), args.recover, allow_bound=True)
+        require_assignment_settled(record)
         if record["schema_version"] != BOUND_SCHEMA:
             raise UnknownError("explicit recovery requires schema 3")
         require_expected_counters(args, record, record["cooperative_binding"]["generation"])

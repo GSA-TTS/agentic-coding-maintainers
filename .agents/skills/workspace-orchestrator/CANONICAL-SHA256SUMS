@@ -1,8 +1,9 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-cac72041052900fab5daeeb9f72f9493d1df4ca1f26f069d2941be639e5d62c5  ./PROVENANCE.md
+c47cf35778fabbaf8041a8b17e6c8f2543a961780200ccf2c20dac3645e3d30a  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
-ead52a1e6eab589d2fe882dde0d679bf3f02a3bdc0aa5c2828088ac694077ce6  ./bin/candidate-binding.py
+6842e24a53071e13e751de26b133689f4caa9c49cee11b6ecc78e5f095e13811  ./bin/assignment-journal.py
+c6870d5fc9d025f83567416bd2de889f6c959c6719aba642588a6bc2411f9535  ./bin/candidate-binding.py
 c5d6a343f20765c2ac73c4447fce1968fa96bb9c84d19d869603454d6ced7143  ./bin/execution-observe.py
 9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
 d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foreground-admission.py
@@ -10,10 +11,10 @@ d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foregrou
 e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foreground-delivery.py
 55df01c80de182298ab9d6e7026f50755058396bb21bb3c5e39940439970fab8  ./bin/foreground-repair.py
 8a57114282fb1afe9e6135bbae31f46c70e0fdaa32b084da2c71ec5cf3194fcc  ./bin/foreground-review.py
-4ad35d02d1e58165aef9f03dd766b497f75749c63159de647854f6c8accc52c4  ./bin/monitor-journal.py
+1da80feb2b2468b08f47b7bf6176523cb5bf9cff4435f09bf4c721a89cb06849  ./bin/monitor-journal.py
 da6efdd36dd0f16f9a4de3a88ade80add80d94c50ec16863e2210869c557129a  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
-05f5f27dede9597146d5c18b69295948e6c169bf5006ce5f9e55f4b7f21b760f  ./bin/orchestrator-state.py
+8460f0e7200083339d0ef88e6f9ea13137eaf3ada49d85a0e9de755ec820bbed  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 758f61822f30af9c1d0b8013fcd8e98c2c8d1d48bb4500dd722580cb9d8942fe  ./bin/repair-apply.py
 66c78fbc691bf58a8d0f78aa83eb3b968c3eb4b0e08e90e2c7dfcd27fc1afeed  ./bin/repair-proposal.py

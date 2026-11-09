@@ -196,6 +196,32 @@ class CooperativeBindingTest(unittest.TestCase):
         self.assertEqual(list((self.state / "implementation").iterdir()), [])
         return new
 
+    def test_assignment_anchor_fences_all_lifecycle_mutations(self):
+        self.create()
+        record = self.claim()
+        record = self.invoke("transition", "pilot", "Implementing", *self.owned(record))
+        reserved = copy.deepcopy(record)
+        reserved["revision"] += 1
+        reserved["assignment_dispatch"] = {"version": 1, "phase": "pending", "operation_id": "c" * 32,
+            "attempt_id": "d" * 32, "store_id": "e" * 32, "intent_sha256": "1" * 64,
+            "original_sha256": "2" * 64, "original_revision": record["revision"], "implementation_head": HEAD}
+        with self.core_module.CoordinatorLock(self.state):
+            self.core_module.assignment_reserve(self.state, record, reserved)
+        with self.assertRaises(ValueError):
+            previous_schema3_extension_excerpt(reserved, allow_bound=True)
+        owned = self.owned(reserved)
+        self.refuses_unchanged("transition", "pilot", "Cancelled", *owned, expected=4)
+        self.refuses_unchanged("record", "pilot", "validation", "fixture", *owned, expected=4)
+        self.refuses_unchanged("update-head", "pilot", HEAD, *owned, expected=4)
+        self.refuses_unchanged("reconcile", "--recover", "pilot", *self.operator(reserved), expected=4)
+        self.refuses_unchanged("claim", "pilot", "--owner", "fixture-owner", "--pid", str(os.getpid()),
+                              "--session-id", SESSION, "--expected-generation", "1",
+                              "--expected-revision", str(reserved["revision"]), expected=4)
+        # A reservation on pilot is not a global freeze: unrelated admission runs.
+        self.create("unrelated", kind="monitor")
+        self.claim("unrelated")
+        self.assertEqual(self.invoke("show", "pilot"), reserved)
+
     def test_recovery_complete_intent_preserves_unrelated_task_and_scope(self):
         self.create("unrelated", kind="monitor")
         record = self.interrupted_worker()
