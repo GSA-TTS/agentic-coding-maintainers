@@ -53,7 +53,7 @@ def binding():
 
 
 class ApprovalTest(unittest.TestCase):
-    def interaction(self, answer="approve", after=None, short_deadline=False):
+    def interaction(self, answer="approve", after=None, short_deadline=False, terminal_change=None):
         """Child has a real controlling PTY, parent responds only after full prompt."""
         child, fd = pty.fork()
         if child == 0:
@@ -61,7 +61,32 @@ class ApprovalTest(unittest.TestCase):
                 if short_deadline:
                     publisher.MAX_APPROVAL_SECONDS = 0.08
                 value = binding()
-                approval = publisher.collect_approval(value)
+                actual_attributes = publisher.termios.tcgetattr
+                attribute_reads = 0
+
+                def observed_attributes(terminal):
+                    nonlocal attribute_reads
+                    attributes = copy.deepcopy(actual_attributes(terminal))
+                    attribute_reads += 1
+                    if terminal_change == "pendin":
+                        if attribute_reads == 1:
+                            attributes[3] |= publisher.termios.PENDIN
+                        else:
+                            attributes[3] &= ~publisher.termios.PENDIN
+                    elif terminal_change is not None and attribute_reads > 1:
+                        if terminal_change == "canonical":
+                            attributes[3] &= ~publisher.termios.ICANON
+                        elif terminal_change == "echo":
+                            attributes[3] ^= publisher.termios.ECHO
+                        elif terminal_change == "input":
+                            attributes[0] ^= publisher.termios.ICRNL
+                        elif terminal_change == "control-character":
+                            attributes[6][publisher.termios.VERASE] = b"\x01"
+                    return attributes
+
+                # Real PTY/challenge, deterministic kernel-observation changes.
+                with mock.patch.object(publisher.termios, "tcgetattr", side_effect=observed_attributes):
+                    approval = publisher.collect_approval(value)
                 if after == "expiry":
                     with mock.patch.object(publisher.time, "monotonic",
                                            return_value=approval._started + 120):
@@ -149,6 +174,22 @@ class ApprovalTest(unittest.TestCase):
         result, output = self.interaction()
         self.assertEqual(result, "APPROVED")
         self.assertIn(publisher.canonical(binding()).encode("ascii"), output)
+
+    @unittest.skipUnless(hasattr(publisher.termios, "PENDIN"), "platform has no PENDIN")
+    def test_pending_input_flag_clears_during_actual_interaction(self):
+        self.assertEqual(self.interaction(terminal_change="pendin")[0], "APPROVED")
+        self.assertEqual(self.interaction(answer="wrong-digest", terminal_change="pendin")[0],
+                         "APPROVAL_DECLINED")
+
+    def test_other_terminal_changes_still_refuse(self):
+        for change in ("canonical", "echo", "input", "control-character"):
+            with self.subTest(change=change):
+                self.assertEqual(self.interaction(terminal_change=change)[0], "TTY_CHANGED_DURING_INTERACTION")
+
+    def test_platform_without_pendin_keeps_exact_settings(self):
+        attributes = [1, 2, 3, 4, 5, 6, [b"x"]]
+        with mock.patch.object(publisher, "termios", object()):
+            self.assertEqual(publisher.terminal_settings(attributes), attributes)
 
     def test_decline_and_wrong_digest(self):
         for answer in ("decline", "wrong-digest"):
