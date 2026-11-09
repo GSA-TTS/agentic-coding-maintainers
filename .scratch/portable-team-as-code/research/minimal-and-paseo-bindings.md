@@ -599,13 +599,16 @@ claims":
    raw observation, a seat-level one can be canon"
    ([knowledge-maturity.md:106-113](https://github.com/mvschwarz/openrig/blob/bd39da9872afc39cbe0c8e839a322b4cb8955cbe/docs/reference/knowledge-maturity.md#L106-L113)).
    Three axes, independently chosen.
-7. **OpenRig's own maturity doc is honest that none of this is enforced.**
-   "Nothing in this document is mechanized: no enforcement tooling, no mass
-   relabeling, and no new tier scheme"
-   ([knowledge-maturity.md:120-125](https://github.com/mvschwarz/openrig/blob/bd39da9872afc39cbe0c8e839a322b4cb8955cbe/docs/reference/knowledge-maturity.md#L120-L125)).
-   The convention is carried by agent discipline plus a `trace` command, not by
-   a validator. Adopting it costs almost no machinery; relying on it to be
-   enforced would be a mistake.
+7. **Structural stage validation is distinct from judging knowledge maturity.**
+   The pinned documentation says `rig scope slice stage` and
+   `rig scope mission stage` reject invented stages and `superseded` without
+   a successor; context-pack manifests and lore frontmatter are not checked
+   ([knowledge-maturity.md:91-96](https://github.com/mvschwarz/openrig/blob/bd39da9872afc39cbe0c8e839a322b4cb8955cbe/docs/reference/knowledge-maturity.md#L91-L96)).
+   This is a documentation observation, not an executed command test. Its closing
+   disclaimer leaves readers, parity checks, and promotion tooling outside scope
+   ([knowledge-maturity.md:122-125](https://github.com/mvschwarz/openrig/blob/bd39da9872afc39cbe0c8e839a322b4cb8955cbe/docs/reference/knowledge-maturity.md#L122-L125)).
+   Valid stage labels do not establish that evidence warrants promotion; that
+   judgment remains with the agents and people applying the convention.
 
 ## 6. Observed vs proposed guarantees
 
@@ -631,7 +634,7 @@ host-probed rows are distinguished in §9 rather than in the cell.
 | G9 | Event stream can be replayed after a gap | **Not applicable** (files are the state) | **Not offered** — no cursor, no replay | Same | Not inspected for the SSE stream |
 | G10 | Conversation history is addressable and gaps are flagged | Partially — `opencode session export` exists and is whole-session, not cursored (probed via `--help`) | **Observed** — `{epoch, seq}` cursor with `reset`/`staleCursor`/`gap` | Same | Not inspected |
 | G11 | Authored knowledge has a stable address independent of its trust level | **Proposed**, and cheap (filenames + frontmatter) | **Not offered** — no authored-knowledge layer | Same | **Observed** — chain files by address; lore filenames exclude stage/date |
-| G12 | Trust/maturity is explicit and machine-readable | **Proposed** | Not offered | Same | **Observed** for stage-bearing items; address-carried for corpus files; **unenforced by tooling** |
+| G12 | Trust/maturity is explicit and machine-readable | **Proposed** | Not offered | Same | **Observed** for stage-bearing items; address-carried for corpus files. Scope stage vocabulary/supersession validation is **documented, not command-tested here**; lore/pack metadata and epistemic promotion remain unenforced (§5.3) |
 | G13 | Writing knowledge ≠ delivering it to a running occupant | **Proposed** — must be stated | Implicit: nothing delivers files into a live turn | Same | **Observed and stated** — "editing a file is not delivery" |
 | G14 | Retrieval works with no service running | **Observed of the primitives** — reading files needs nothing running | **Not offered** — needs the daemon | Same | **Observed** for `rig context trace` specifically |
 | G15 | Occupant's decisions survive its replacement, with supersession | **Proposed** | Not offered | Not offered | **Observed** — `RECAP.md` + byte-preserved `recap-superseded/` |
