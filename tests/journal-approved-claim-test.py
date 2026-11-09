@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import unittest
@@ -139,7 +140,44 @@ class ApprovedIntentTests(unittest.TestCase):
         self.assertEqual(self.rows(), (version, rows))
         self.assertEqual(self.request()["binding"]["generation"], self.fixture.local.task["cooperative_binding"]["generation"])
 
-    def test_fresh_initialization_exact_parent_link_delta_preserves_task_and_leases(self):
+    def test_constant_directory_nlink_fresh_initialization_and_zero_get_replay(self):
+        self.assertFalse(self.monitor.exists())
+        actual_fingerprint = self.prepare.preflight.fingerprint
+
+        def constant_directory_nlink(info):
+            fingerprint = actual_fingerprint(info)
+            # Model directory metadata only: regular-file link counts and all
+            # physical identities, times, permissions and owners stay real.
+            return (*fingerprint[:7], 1) if stat.S_ISDIR(info.st_mode) else fingerprint
+
+        with mock.patch.object(sys, "argv", self.argv()):
+            args, claim = self.approval.arguments(self.prepare)
+        with mock.patch.object(self.prepare.preflight, "fingerprint", side_effect=constant_directory_nlink):
+            before, public = self.approval.snapshot(args, claim, self.prepare)
+            task_bytes = self.fixture.local.task_path.read_bytes()
+            self.assert_recorded(direct=True)
+            self.assertEqual(json.loads(self.calls.read_text()), self.fixture.urls)
+            after, text = self.approval.snapshot(args, claim, self.prepare)
+            self.assertEqual((before[2][7], after[2][7]), (1, 1))
+            self.assertEqual(text, public)
+            for index in (0, 1, 3, 4):
+                self.assertEqual(after[index], before[index])
+            version, rows = self.rows()
+            self.assertEqual(version, 5)
+            self.assertEqual(len(rows), 1)
+            request = self.request()
+            self.assertEqual(request["schema_version"], 2)
+            self.assertEqual(request["binding"], self.module.binding(before[0], self.journal))
+            self.assertEqual(request["comment_sha256"], args.approved_body_sha256)
+            code, output = self.direct(steps=[])
+            self.assertEqual(code, 0, repr(output))
+            self.assertEqual(output["status"], "REPLAYED_PENDING", repr(output))
+            self.assertFalse(self.calls.exists())
+            self.assertEqual(self.rows(), (version, rows))
+            self.assertEqual(self.approval.snapshot(args, claim, self.prepare), (after, text))
+            self.assertEqual(self.fixture.local.task_path.read_bytes(), task_bytes)
+
+    def test_fresh_initialization_portable_parent_metadata_preserves_task_and_leases(self):
         self.assertFalse(self.monitor.exists())
         with mock.patch.object(sys, "argv", self.argv()):
             args, claim = self.approval.arguments(self.prepare)
@@ -147,17 +185,33 @@ class ApprovedIntentTests(unittest.TestCase):
         self.assert_recorded()
         after, text = self.approval.snapshot(args, claim, self.prepare)
         self.assertEqual(text, public)
-        self.assertEqual(after[2][7], before[2][7] + 1)
+        self.assertIn(after[2][7], (before[2][7], before[2][7] + 1))
         self.assertTrue(self.module.initialized_snapshot_matches(before, after, created=True))
-        self.assertFalse(self.module.initialized_snapshot_matches(before, after, created=False))
+        self.assertTrue(self.module.initialized_snapshot_matches(before, before, created=False))
+        # Exercise both mkdir conventions regardless of the guest filesystem.
+        for links in (before[2][7], before[2][7] + 1):
+            changed = list(before)
+            metadata = list(before[2])
+            for index in (2, 3, 4):
+                metadata[index] += 1
+            metadata[7] = links
+            changed[2] = tuple(metadata)
+            self.assertTrue(self.module.initialized_snapshot_matches(before, tuple(changed), created=True))
+            self.assertFalse(self.module.initialized_snapshot_matches(before, tuple(changed), created=False))
         for index in (0, 1, 3, 4):
             changed = list(after)
             changed[index] = None
             self.assertFalse(self.module.initialized_snapshot_matches(before, tuple(changed), created=True))
-        for index in (0, 1, 5, 6, 7):
+        for index in (0, 1, 5, 6):
             changed = list(after)
             metadata = list(after[2])
             metadata[index] += 1
+            changed[2] = tuple(metadata)
+            self.assertFalse(self.module.initialized_snapshot_matches(before, tuple(changed), created=True))
+        for links in (before[2][7] - 1, before[2][7] + 2):
+            changed = list(after)
+            metadata = list(after[2])
+            metadata[7] = links
             changed[2] = tuple(metadata)
             self.assertFalse(self.module.initialized_snapshot_matches(before, tuple(changed), created=True))
         self.assertEqual(self.rows()[0], 5)
