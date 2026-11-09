@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Private, genuine-terminal approval primitives for the assignment-only runner.
+
+Assignment-only adapter with durable core/journal fencing and no automatic retry.
+Never interpret a stored approval digest as authority to launch another attempt.
+"""
+
+import hashlib
+import importlib.util
+import json
+import math
+import os
+import re
+import select
+import stat
+import sys
+import termios
+import time
+from pathlib import Path
+
+MAX_APPROVAL_SECONDS = 120
+MAX_DISPLAY_BYTES = 32768
+_SEAL = object()
+
+
+class Refusal(Exception):
+    """Fixed public refusal code."""
+
+
+def require(condition, reason):
+    if not condition:
+        raise Refusal(reason)
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                      allow_nan=False)
+
+
+def binding_digest(binding):
+    return hashlib.sha256(canonical(binding).encode("ascii")).hexdigest()
+
+
+class _Approval:
+    """In-memory evidence minted only by the actual collector, never deserialized.
+
+    Cooperative binding, not cryptographic authentication against same-UID code.
+    The deadline begins before the displayed challenge, so interaction itself is
+    bounded. Serialization deliberately omits authority and monotonic clock values.
+    """
+
+    def __init__(self, binding, started, seal):
+        require(seal is _SEAL, "INTERACTION_REQUIRED")
+        self._binding = canonical(binding)
+        self._started = started
+        self._pid = os.getpid()
+        self._seal = seal
+
+    def validate(self, binding):
+        age = time.monotonic() - self._started
+        require(self._seal is _SEAL and self._pid == os.getpid(), "INTERACTION_REQUIRED")
+        require(math.isfinite(age) and 0 <= age < MAX_APPROVAL_SECONDS, "APPROVAL_EXPIRED")
+        require(self._binding == canonical(binding), "APPROVAL_BINDING_CHANGED")
+        return {"binding_sha256": binding_digest(binding),
+                "interaction": "CONTROLLING_TTY_EXACT_CHALLENGE",
+                "age_milliseconds": int(age * 1000),
+                "maximum_age_seconds": MAX_APPROVAL_SECONDS}
+
+
+def validate_binding(binding):
+    require(type(binding) is dict and set(binding) == {
+        "schema_version", "action", "intent_operation_id", "operation_id", "attempt_id",
+        "intent_sha256", "store_id", "target", "publisher", "payload", "payload_sha256",
+        "prior_assignee_ids", "task_binding", "implementation_head"}, "INVALID_APPROVAL_BINDING")
+    require(type(binding["schema_version"]) is int and binding["schema_version"] == 1
+            and binding["action"] == "add-assignee", "INVALID_APPROVAL_BINDING")
+    for key in ("intent_operation_id", "operation_id", "attempt_id", "store_id"):
+        require(type(binding[key]) is str and re.fullmatch(r"[0-9a-f]{32}", binding[key]),
+                "INVALID_APPROVAL_BINDING")
+    require(len({binding[key] for key in ("intent_operation_id", "operation_id", "attempt_id", "store_id")}) == 4,
+            "REUSED_OPERATION_ID")
+    for key in ("intent_sha256", "payload_sha256"):
+        require(type(binding[key]) is str and re.fullmatch(r"[0-9a-f]{64}", binding[key]),
+                "INVALID_APPROVAL_BINDING")
+    require(type(binding["implementation_head"]) is str
+            and re.fullmatch(r"[0-9a-f]{40}", binding["implementation_head"]), "INVALID_APPROVAL_BINDING")
+    publisher = binding["publisher"]
+    require(type(publisher) is dict and set(publisher) == {"id", "node_id", "login"},
+            "INVALID_APPROVAL_BINDING")
+    login = publisher["login"]
+    require(type(login) is str and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login)
+            and "--" not in login, "INVALID_APPROVAL_BINDING")
+    require(type(publisher["id"]) is int and 0 < publisher["id"] <= 2**63 - 1,
+            "INVALID_APPROVAL_BINDING")
+    require(type(publisher["node_id"]) is str
+            and re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", publisher["node_id"]), "INVALID_APPROVAL_BINDING")
+    expected_payload = canonical({"assignees": [login]})
+    require(binding["payload"] == expected_payload
+            and binding["payload_sha256"] == hashlib.sha256(expected_payload.encode("ascii")).hexdigest(),
+            "INVALID_APPROVAL_BINDING")
+    target = binding["target"]
+    require(type(target) is dict and set(target) == {
+        "repository", "repository_id", "repository_node_id", "issue", "issue_id", "issue_node_id"},
+        "INVALID_APPROVAL_BINDING")
+    require(type(target["repository"]) is str and re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9][A-Za-z0-9._-]{0,99}",
+        target["repository"]), "INVALID_APPROVAL_BINDING")
+    for key in ("repository_id", "issue", "issue_id"):
+        require(type(target[key]) is int and 0 < target[key] <= 2**63 - 1, "INVALID_APPROVAL_BINDING")
+    for key in ("repository_node_id", "issue_node_id"):
+        require(type(target[key]) is str and re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", target[key]),
+                "INVALID_APPROVAL_BINDING")
+    ids = binding["prior_assignee_ids"]
+    require(type(ids) is list and len(ids) <= 10
+            and all(type(value) is int and 0 < value <= 2**63 - 1 for value in ids)
+            and ids == sorted(set(ids)) and (publisher["id"] in ids or len(ids) < 10),
+            "INVALID_APPROVAL_BINDING")
+    # The journal validates the complete retained task binding. This collector
+    # binds those exact bytes; it does not replace the core ownership validator.
+    task = binding["task_binding"]
+    require(type(task) is dict and set(task) == {
+        "task_id", "created_at", "task_sha256", "revision", "generation", "session_id", "worker"},
+        "INVALID_APPROVAL_BINDING")
+    require(type(task["task_sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", task["task_sha256"])
+            and type(task["worker"]) is dict, "INVALID_APPROVAL_BINDING")
+    require(len(canonical(binding)) <= MAX_DISPLAY_BYTES, "APPROVAL_DISPLAY_BOUND")
+
+
+def collect_approval(binding):
+    """Read one exact challenge from /dev/tty, outside all coordinator/DB locks.
+
+    stdin/stdout, files, environment variables and caller booleans cannot approve.
+    Reject background process groups and non-canonical terminals. Flush queued input
+    before displaying the challenge. Every displayed input is JSON-escaped, avoiding
+    terminal control injection from private metadata. Fixtures must use a real PTY.
+    """
+    validate_binding(binding)
+    # Snapshot before interaction: mutation of the caller's dict cannot rebind it.
+    binding = json.loads(canonical(binding))
+    fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        require(stat.S_ISCHR(os.fstat(fd).st_mode) and os.isatty(fd)
+                and os.tcgetpgrp(fd) == os.getpgrp(), "FOREGROUND_CONTROLLING_TTY_REQUIRED")
+        attributes = termios.tcgetattr(fd)
+        require(bool(attributes[3] & termios.ICANON), "CANONICAL_TTY_REQUIRED")
+        termios.tcflush(fd, termios.TCIFLUSH)
+        started = time.monotonic()
+        require(math.isfinite(started), "MONOTONIC_CLOCK_UNVERIFIED")
+        challenge = "APPROVE " + binding_digest(binding)
+        prompt = ("\nAssignment action (private binding; do not publish):\n"
+                  + canonical(binding) + "\nType exactly " + challenge
+                  + " to approve this one additive assignment, or anything else to decline:\n")
+        output = memoryview(prompt.encode("ascii"))
+        while output:
+            remaining = MAX_APPROVAL_SECONDS - (time.monotonic() - started)
+            require(math.isfinite(remaining) and 0 < remaining <= MAX_APPROVAL_SECONDS, "APPROVAL_EXPIRED")
+            _, writable, _ = select.select([], [fd], [], remaining)
+            require(bool(writable), "APPROVAL_EXPIRED")
+            try:
+                count = os.write(fd, output)
+            except BlockingIOError:
+                continue
+            require(count > 0, "TTY_UNAVAILABLE")
+            output = output[count:]
+        received = bytearray()
+        while b"\n" not in received:
+            remaining = MAX_APPROVAL_SECONDS - (time.monotonic() - started)
+            require(math.isfinite(remaining) and 0 < remaining <= MAX_APPROVAL_SECONDS, "APPROVAL_EXPIRED")
+            readable, _, _ = select.select([fd], [], [], remaining)
+            require(bool(readable), "APPROVAL_EXPIRED")
+            try:
+                chunk = os.read(fd, 256)
+            except BlockingIOError:
+                continue
+            require(bool(chunk) and len(received) + len(chunk) <= 256, "APPROVAL_DECLINED")
+            received.extend(chunk)
+        require(bytes(received) == (challenge + "\n").encode("ascii"), "APPROVAL_DECLINED")
+        require(os.tcgetpgrp(fd) == os.getpgrp() and termios.tcgetattr(fd) == attributes,
+                "TTY_CHANGED_DURING_INTERACTION")
+        approval = _Approval(binding, started, _SEAL)
+        approval.validate(binding)
+        return approval
+    finally:
+        os.close(fd)
+
+
+def main():
+    output = {"status": "UNVERIFIED", "reason": "DISPATCH_OR_DURABILITY_UNVERIFIED",
+              "reservation": "unverified", "completion": "UNKNOWN"}
+    try:
+        require(sys.flags.isolated and sys.dont_write_bytecode, "ISOLATED_PYTHON_REQUIRED")
+        spec = importlib.util.spec_from_file_location("assignment_dispatch", Path(__file__).with_name("assignment-dispatch.py"))
+        require(spec is not None and spec.loader is not None, "ADAPTER_UNAVAILABLE")
+        adapter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(adapter)
+        try:
+            args = adapter.arguments()
+            # Pass the live module, preserving its private collector seal.
+            output = (adapter.dispatch if args.action == "assign" else adapter.recover)(args, sys.modules[__name__])
+        except (Refusal, adapter.Refusal) as exc:
+            output["reason"] = str(exc)
+    except Refusal as exc:
+        output["reason"] = str(exc)
+    except Exception:
+        pass  # No filesystem, credential, SQLite or network diagnostics on stdout.
+    print(canonical(output))
+    return 0 if output.get("reservation") == "settled" else 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -137,6 +137,15 @@ recovery limits and the unified skill-sync outbox process.
 
 ## Checks
 
+The candidate [assignment-first runner](docs/NATIVE-GITHUB-CLAIMS.md#assignment-first-runner-candidate)
+connects genuine per-action terminal approval to the core reservation, typed
+journal and additive GitHub assignment transport. It requires an existing bound
+intent and a clean explicit implementation SHA. UNKNOWN attempts stay reserved;
+stopped-producer arbitration remains unsupported. See the
+[publisher protocol](docs/CLAIM-PUBLISHER-PROTOCOL.md#assignment-implementation-boundary)
+for qualification requirements and the operator-approved deferral of UNKNOWN
+abandonment release. Issue #117 remains open for that later work.
+
 For an operator-invoked, read-only **current-state** task-record scorecard, run
 `python3 -I -B scripts/evaluate-workflow.py --workspace .`. See
 [`docs/WORKFLOW-EVALUATION.md`](docs/WORKFLOW-EVALUATION.md) for its unmeasured
