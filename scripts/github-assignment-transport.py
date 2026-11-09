@@ -186,12 +186,15 @@ class Transport:
         self._until = time.monotonic() + MAX_SECONDS
         self._post_attempted = False
         self._closed = False
+        self.http_status = None
 
     def close(self):
         self._token = None
         self._closed = True
 
     def _request(self, method, path, body=None):
+        # Per-call measurement, reset even when refusing before network activity.
+        self.http_status = None
         require(not self._closed, "TRANSPORT_CLOSED")
         allowed = {"/user", self.repo_path, self.issue_path}
         assignable = re.fullmatch(re.escape(self.repo_path) + "/assignees/(" + LOGIN + ")", path)
@@ -216,13 +219,19 @@ class Transport:
                                                          context=self._context, timeout=remaining)
                 connection.request(method, path, body=body, headers=headers)
                 response = connection.getresponse()
+                if type(response.status) is int and 100 <= response.status <= 599:
+                    self.http_status = response.status
                 fields = {}
                 for key, value in response.getheaders():
                     key = key.lower()
                     require(key not in fields, "DUPLICATE_HTTP_HEADER")
                     fields[key] = value
-                require(not {"location", "link", "content-encoding"} & fields.keys(),
-                        "ROUTING_OR_INCOMPLETE_RESPONSE")
+                # RFC 9110 10.2.2 / 15.3.2: Location on the expected POST 201
+                # describes the created resource. It is inert metadata here,
+                # never a redirect or an endpoint for the follow-up observation.
+                require(not {"link", "content-encoding"} & fields.keys()
+                        and ("location" not in fields or (method == "POST" and response.status == 201)),
+                         "ROUTING_OR_INCOMPLETE_RESPONSE")
                 # Any rate-limit instruction ends this run. Never sleep/retry a POST.
                 require("retry-after" not in fields and fields.get("x-ratelimit-remaining") != "0",
                         "RATE_LIMITED")
@@ -257,8 +266,13 @@ class Transport:
                 require(media in {"application/json", "application/vnd.github.raw+json"},
                         "CONTENT_TYPE_REFUSED")
                 return decode(raw), fields
+        except Refusal as exc:
+            exc.http_status = self.http_status
+            raise
         except (OSError, http.client.HTTPException, ValueError) as exc:
-            raise Refusal("TRANSPORT_UNVERIFIED") from exc
+            error = Refusal("TRANSPORT_UNVERIFIED")
+            error.http_status = self.http_status
+            raise error from exc
         finally:
             if connection is not None:
                 connection.close()
@@ -310,6 +324,7 @@ class Transport:
 
     def assign(self, observed):
         """One additive POST. Caller must retain UNKNOWN if this raises."""
+        self.http_status = None
         value, _ = self._request("POST", self.issue_path + "/assignees",
                                  payload(observed["actor_login"]))
         self.validate_issue(value, observed)

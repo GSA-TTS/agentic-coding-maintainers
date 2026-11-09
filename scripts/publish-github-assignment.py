@@ -21,6 +21,31 @@ from pathlib import Path
 MAX_APPROVAL_SECONDS = 120
 MAX_DISPLAY_BYTES = 32768
 _SEAL = object()
+PUBLIC_REASONS = frozenset("""
+DISPATCH_OR_DURABILITY_UNVERIFIED ISOLATED_PYTHON_REQUIRED ADAPTER_UNAVAILABLE
+INVALID_ARGUMENTS DUPLICATE_ARGUMENT INTERACTION_REQUIRED APPROVAL_EXPIRED
+APPROVAL_BINDING_CHANGED INVALID_APPROVAL_BINDING REUSED_OPERATION_ID
+APPROVAL_DISPLAY_BOUND FOREGROUND_CONTROLLING_TTY_REQUIRED CANONICAL_TTY_REQUIRED
+MONOTONIC_CLOCK_UNVERIFIED TTY_UNAVAILABLE APPROVAL_DECLINED TTY_CHANGED_DURING_INTERACTION
+IMPLEMENTATION_HEAD_CHANGED ROOT_MISMATCH EXISTING_JOURNAL_REQUIRED STORE_IDENTITY_CHANGED
+TASK_CHANGED OWNERSHIP_UNVERIFIED WORKER_HOST_CHANGED LANE_CHANGED LEASE_CHANGED
+OWNERSHIP_CHANGED WORKER_NOT_ACTIVE IDENTITY_BOUND_INTENT_REQUIRED INTENT_NOT_FOUND
+INTENT_CHANGED RECOVERY_BINDING_INVALID PRODUCER_TERMINATION_PROOF_UNSUPPORTED
+RESERVATION_REQUEST_CHANGED RECOVERY_EVIDENCE_CHANGED EXPLICIT_GH_TOKEN_REQUIRED
+REVISION_LIMIT ORIGINAL_INTENT_BINDING_CHANGED POST_REPLAY_REFUSED SELECTED_ROWS_CHANGED
+PRIOR_ASSIGNEES_CHANGED RESERVATION_NOT_FOUND REVISION_MISMATCH
+INVALID_METADATA UNSUPPORTED_SCHEMA UNSAFE_STORE CHANGED_DURING_READ
+REPOSITORY_INVALID ISSUE_NUMBER_INVALID UNSUPPORTED_CREDENTIAL ROUTING_OR_TLS_OVERRIDE_REFUSED
+ACTOR_LOGIN_INVALID DNS_UNVERIFIED DNS_OR_CONNECT_UNVERIFIED DEADLINE_EXCEEDED
+DUPLICATE_JSON_KEY INVALID_JSON INCOMPLETE_RESPONSE INVALID_HTTP_FRAMING
+OUTPUT_BYTE_BOUND INCOMPLETE_HTTP_BODY MAIN_THREAD_REQUIRED EXISTING_TIMER_REFUSED
+TRANSPORT_CLOSED ENDPOINT_REFUSED DUPLICATE_HTTP_HEADER ROUTING_OR_INCOMPLETE_RESPONSE
+RATE_LIMITED HTTP_STATUS_REFUSED CONFLICTING_HTTP_FRAMING CONTENT_TYPE_REFUSED
+TRANSPORT_UNVERIFIED ISSUE_IDENTITY_OR_STATE_CHANGED ASSIGNEES_INCOMPLETE
+ACTOR_IDENTITY_CHANGED REPOSITORY_IDENTITY_CHANGED ASSIGNMENT_PERMISSION_UNPROVEN
+CREDENTIAL_SCOPE_UNPROVEN ASSIGNEE_CAPACITY_EXHAUSTED ASSIGNMENT_CAPACITY_EXHAUSTED
+ASSIGNMENT_IDENTIFIER_COLLISION
+""".split())
 
 
 class Refusal(Exception):
@@ -197,27 +222,65 @@ def collect_approval(binding):
         os.close(fd)
 
 
+def public_failure(error):
+    """Exact fixed codes only, including known refusals from imported preflight modules."""
+    reason = error.args[0] if len(error.args) == 1 and type(error.args[0]) is str else None
+    output = {"status": "UNVERIFIED", "reason": reason if reason in PUBLIC_REASONS else
+              "DISPATCH_OR_DURABILITY_UNVERIFIED", "reservation": "unverified", "completion": "UNKNOWN"}
+    status = getattr(error, "http_status", None)
+    if reason in PUBLIC_REASONS and type(status) is int and 100 <= status <= 599:
+        output["http_status"] = status
+    return output
+
+
+def emit_result(output):
+    """Flush before reporting completion; delivery is not a durable-state receipt."""
+    try:
+        encoded = canonical(output) + "\n"
+        require(sys.stdout.write(encoded) == len(encoded), "FINAL_OUTPUT_UNVERIFIED")
+        sys.stdout.flush()
+    except Exception:
+        # Do not let interpreter shutdown retry buffered output and emit a raw
+        # exception. The stream may already contain a partial or complete line.
+        try:
+            target = sys.stdout.fileno()
+            sink = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(sink, target)
+            finally:
+                os.close(sink)
+        except Exception:
+            pass
+        sys.stdout = None
+        try:
+            sys.stderr.write("FINAL_OUTPUT_UNVERIFIED\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        return 3
+    return 0 if output.get("reservation") == "settled" else 3
+
+
+def load_adapter():
+    spec = importlib.util.spec_from_file_location("assignment_dispatch", Path(__file__).with_name("assignment-dispatch.py"))
+    require(spec is not None and spec.loader is not None, "ADAPTER_UNAVAILABLE")
+    adapter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adapter)
+    return adapter
+
+
 def main():
     output = {"status": "UNVERIFIED", "reason": "DISPATCH_OR_DURABILITY_UNVERIFIED",
               "reservation": "unverified", "completion": "UNKNOWN"}
     try:
         require(sys.flags.isolated and sys.dont_write_bytecode, "ISOLATED_PYTHON_REQUIRED")
-        spec = importlib.util.spec_from_file_location("assignment_dispatch", Path(__file__).with_name("assignment-dispatch.py"))
-        require(spec is not None and spec.loader is not None, "ADAPTER_UNAVAILABLE")
-        adapter = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(adapter)
-        try:
-            args = adapter.arguments()
-            # Pass the live module, preserving its private collector seal.
-            output = (adapter.dispatch if args.action == "assign" else adapter.recover)(args, sys.modules[__name__])
-        except (Refusal, adapter.Refusal) as exc:
-            output["reason"] = str(exc)
-    except Refusal as exc:
-        output["reason"] = str(exc)
-    except Exception:
-        pass  # No filesystem, credential, SQLite or network diagnostics on stdout.
-    print(canonical(output))
-    return 0 if output.get("reservation") == "settled" else 3
+        adapter = load_adapter()
+        args = adapter.arguments()
+        # Pass the live module, preserving its private collector seal.
+        output = (adapter.dispatch if args.action == "assign" else adapter.recover)(args, sys.modules[__name__])
+    except Exception as exc:
+        output = public_failure(exc)
+    return emit_result(output)
 
 
 if __name__ == "__main__":

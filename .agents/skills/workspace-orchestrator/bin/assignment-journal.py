@@ -21,6 +21,24 @@ OUTCOMES = {"NOT_SENT": ("NOT_SENT", False),
             "ASSIGNMENT_CONFIRMED_OBSERVED": ("CONFIRMED", True),
             "DRIFT": ("CONFIRMED", False),
             "FAILED_ACTUAL_RESULT": ("CONFIRMED", False)}
+DIAGNOSTIC_STAGES = {"APPROVAL", "POST", "OBSERVATION", "CORRELATION"}
+DIAGNOSTIC_REASONS = frozenset("""
+UNEXPECTED_FAILURE APPROVAL_EXPIRED APPROVAL_BINDING_CHANGED INTERACTION_REQUIRED
+ACTOR_LOGIN_INVALID DNS_UNVERIFIED DNS_OR_CONNECT_UNVERIFIED DEADLINE_EXCEEDED
+DUPLICATE_JSON_KEY INVALID_JSON INCOMPLETE_RESPONSE INVALID_HTTP_FRAMING
+OUTPUT_BYTE_BOUND INCOMPLETE_HTTP_BODY MAIN_THREAD_REQUIRED EXISTING_TIMER_REFUSED
+TRANSPORT_CLOSED ENDPOINT_REFUSED POST_REPLAY_REFUSED DUPLICATE_HTTP_HEADER
+ROUTING_OR_INCOMPLETE_RESPONSE RATE_LIMITED HTTP_STATUS_REFUSED
+CONFLICTING_HTTP_FRAMING CONTENT_TYPE_REFUSED TRANSPORT_UNVERIFIED
+ISSUE_IDENTITY_OR_STATE_CHANGED ASSIGNEES_INCOMPLETE ACTOR_IDENTITY_CHANGED
+""".split())
+
+
+def diagnostic(stage, error, http_status=None):
+    """Never stringify exceptions: even their __str__ may expose private data."""
+    reason = error.args[0] if len(error.args) == 1 and type(error.args[0]) is str else None
+    return {"stage": stage, "reason": reason if reason in DIAGNOSTIC_REASONS else "UNEXPECTED_FAILURE",
+            "http_status": http_status if type(http_status) is int and 100 <= http_status <= 599 else None}
 
 
 class Invalid(Exception):
@@ -155,13 +173,30 @@ def validate_ids(ids):
 
 
 def validate_evidence(request, evidence):
-    fields(evidence, "version attempt_id completion result_ids producer")
-    require(type(evidence["version"]) is int and evidence["version"] == 1
-            and evidence["attempt_id"] == request["binding"]["attempt_id"]
+    require(type(evidence) is dict and type(evidence.get("version")) is int and evidence["version"] in {1, 2})
+    fields(evidence, "version attempt_id completion result_ids producer" + (" diagnostics" if evidence["version"] == 2 else ""))
+    require(evidence["attempt_id"] == request["binding"]["attempt_id"]
             and evidence["completion"] in {"NOT_SENT", "CONFIRMED", "UNKNOWN"}
             and evidence["producer"] == "SYNCHRONOUS_TRANSPORT_CLOSED")
     if evidence["result_ids"] is not None:
         validate_ids(evidence["result_ids"])
+    if evidence["version"] == 2:
+        diagnostics = evidence["diagnostics"]
+        require(type(diagnostics) is list and len(diagnostics) <= 2)
+        stages = []
+        for item in diagnostics:
+            fields(item, "stage reason http_status")
+            require(type(item["stage"]) is str and item["stage"] in DIAGNOSTIC_STAGES
+                    and type(item["reason"]) is str and item["reason"] in DIAGNOSTIC_REASONS)
+            status = item["http_status"]
+            require(status is None or (type(status) is int and 100 <= status <= 599))
+            stages.append(item["stage"])
+        require(stages in ([], ["APPROVAL"], ["POST"], ["POST", "CORRELATION"], ["OBSERVATION"]))
+        if stages:
+            require(evidence["completion"] == {"APPROVAL": "NOT_SENT", "POST": "UNKNOWN",
+                                               "OBSERVATION": "CONFIRMED"}[stages[0]])
+            if stages[0] == "APPROVAL":
+                require(diagnostics[0]["http_status"] is None)
 
 
 def validate_settlement(request, evidence, settlement):
@@ -254,11 +289,21 @@ def reservation_rows(db, request):
         for table in TABLES:
             db.execute("CREATE TABLE " + table + " (id TEXT PRIMARY KEY NOT NULL, document TEXT, sha256 TEXT, reserved BLOB NOT NULL)")
         db.execute("UPDATE meta SET version=6")
-    require(db.execute("SELECT count(*) FROM assignment_requests").fetchone()[0] < CAPACITY)
+    if db.execute("SELECT count(*) FROM assignment_requests").fetchone()[0] >= CAPACITY:
+        raise Invalid("ASSIGNMENT_CAPACITY_EXHAUSTED")
     binding = request["binding"]
+    forbidden = {db.execute("SELECT store_id FROM meta").fetchone()[0]} | identifiers(db)
+    for row in db.execute("SELECT request FROM claim_intents"):
+        forbidden.update(journal.claim_intent_identifiers(journal.decode_intent(row[0])))
+    for row in db.execute("SELECT incarnation,operation_id FROM binding_acks"):
+        forbidden.update(row)
+    forbidden.update(row[0] for row in db.execute("SELECT observation_id FROM claim_observations"))
+    if forbidden & {binding["operation_id"], binding["attempt_id"], request["evidence_id"], request["settlement_id"]}:
+        raise Invalid("ASSIGNMENT_IDENTIFIER_COLLISION")
     # One assignment per intent; all prior outcomes, including UNKNOWN, refuse replay.
     for row in db.execute("SELECT document FROM assignment_requests"):
-        require(decode(row[0])["binding"]["intent_operation_id"] != binding["intent_operation_id"])
+        if decode(row[0])["binding"]["intent_operation_id"] == binding["intent_operation_id"]:
+            raise Invalid("POST_REPLAY_REFUSED")
     attempt = {"version": 1, "phase": "DISPATCHING", "operation_id": binding["operation_id"],
                "request_sha256": digest(request), "producer": "DIRECT_HTTPS_NO_DESCENDANTS"}
     for table, identity, document in ((TABLES[0], binding["operation_id"], request),

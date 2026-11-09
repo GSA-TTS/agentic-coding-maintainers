@@ -132,6 +132,7 @@ class DispatchTest(unittest.TestCase):
         class FakeTransport:
             def __init__(self, *args):
                 self.closed = False
+                self.http_status = None
 
             def no_locks(self):
                 if (fixture.local.state / "locks/coordinator.lock").exists():
@@ -145,6 +146,8 @@ class DispatchTest(unittest.TestCase):
 
             def fresh(self, observed):
                 self.no_locks()
+                if scenario == "preflight-refused":
+                    raise real_transport.Refusal("ASSIGNMENT_PERMISSION_UNPROVEN")
                 return [actor] if scenario == "present" else [actor + 1] if scenario == "drift" else []
 
             def assign(self, observed):
@@ -155,11 +158,21 @@ class DispatchTest(unittest.TestCase):
                 fixture.trace.write_text("POST")
                 if scenario == "lost":
                     raise OSError("lost response")
+                if scenario == "both-fail":
+                    self.http_status = 201
+                    raise real_transport.Refusal("ROUTING_OR_INCOMPLETE_RESPONSE")
+                if scenario == "canary":
+                    raise RuntimeError("private-canary-token-header-id")
                 if scenario == "truncated-post":
                     truncated("POST", observed)
 
             def issue(self, observed):
                 self.no_locks()
+                if scenario == "both-fail":
+                    self.http_status = 403
+                    raise real_transport.Refusal("RATE_LIMITED")
+                if scenario == "canary":
+                    raise RuntimeError("private-canary-token-header-id")
                 if scenario == "incomplete":
                     raise OSError("incomplete GET")
                 if scenario == "truncated-get":
@@ -182,6 +195,14 @@ class DispatchTest(unittest.TestCase):
                     original_durable = parts[4].durable
                     original_build = adapter.build
                     original_release = parts[1].assignment_release
+                    original_evidence = adapter.evidence
+
+                    def evidence(*args):
+                        receipt = original_evidence(*args)
+                        if scenario == "legacy-evidence":
+                            receipt["version"] = 1
+                            del receipt["diagnostics"]
+                        return receipt
 
                     def release(*args):
                         if scenario == "terminal-crash":
@@ -209,14 +230,15 @@ class DispatchTest(unittest.TestCase):
                     with (mock.patch.object(parts[3], "reserve", side_effect=reserve),
                           mock.patch.object(parts[4], "durable", side_effect=durable),
                           mock.patch.object(adapter, "build", side_effect=build),
+                          mock.patch.object(adapter, "evidence", side_effect=evidence),
                           mock.patch.object(parts[1], "assignment_release", side_effect=release),
-                          mock.patch.object(parts[3], "CAPACITY", 0 if scenario == "full" else parts[3].CAPACITY)):
-                        result = adapter.dispatch(self.args, publisher)
-                os.write(1, ("\nRESULT:" + result["status"] + "\n").encode())
-                os._exit(0)
-            except BaseException as exc:
-                os.write(1, ("\nRESULT:REFUSED:" + type(exc).__name__ + ":" + str(exc) + "\n").encode())
-                os._exit(0)
+                          mock.patch.object(parts[3], "CAPACITY", 0 if scenario == "full" else parts[3].CAPACITY),
+                          mock.patch.object(publisher, "load_adapter", return_value=adapter),
+                          mock.patch.object(adapter, "arguments", return_value=self.args)):
+                        code = publisher.main()
+                os._exit(code)  # Bypass shutdown buffering: main must flush JSON itself.
+            except BaseException:
+                os._exit(2)
         output = bytearray()
         sent = False
         status = None
@@ -243,10 +265,13 @@ class DispatchTest(unittest.TestCase):
                 _, status = os.waitpid(child, 0)
         finally:
             os.close(fd)
-        self.assertEqual(status, 0, output.decode(errors="replace"))
-        match = re.search(rb"RESULT:([^\r\n]+)", output)
-        self.assertIsNotNone(match, output.decode(errors="replace"))
-        return match[1].decode()
+        lines = [json.loads(line) for line in output.splitlines() if line.startswith(b'{"completion":')]
+        self.assertEqual(len(lines), 1, output.decode(errors="replace"))
+        result = lines[0]
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0 if result["reservation"] == "settled" else 3)
+        self.assertNotIn(b"private-canary", output)
+        self.last_output = result
+        return "REFUSED:" + result["reason"] if result["status"] == "UNVERIFIED" else result["status"]
 
     def test_success_exact_intent_and_durable_terminal(self):
         self.assertEqual(self.run_vertical(), "ASSIGNMENT_CONFIRMED_OBSERVED")
@@ -314,13 +339,13 @@ class DispatchTest(unittest.TestCase):
         self.assert_pending_guards()
 
     def test_full_journal_refuses_before_marker(self):
-        self.assertIn("REFUSED", self.run_vertical("full"))
+        self.assertEqual(self.run_vertical("full"), "REFUSED:ASSIGNMENT_CAPACITY_EXHAUSTED")
         self.assertEqual(self.task(), self.local.task)
         self.assertEqual(self.rows()[0], 5)
         self.assertFalse(self.trace.exists())
 
     def test_reserved_identifier_collision_refuses_before_marker(self):
-        self.assertIn("REFUSED", self.run_vertical("collision"))
+        self.assertEqual(self.run_vertical("collision"), "REFUSED:ASSIGNMENT_IDENTIFIER_COLLISION")
         self.assertEqual(self.task(), self.local.task)
         self.assertEqual(self.rows()[0], 5)
         self.assertFalse(self.trace.exists())
@@ -362,6 +387,68 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(self.rows()[2]["completion"], "CONFIRMED")
         self.assertIsNone(self.rows()[2]["result_ids"])
         self.assert_pending_guards()
+
+    def test_primary_post_failure_survives_correlation_failure(self):
+        self.assertEqual(self.run_vertical("both-fail"), "UNKNOWN")
+        receipt = self.rows()[2]
+        self.assertEqual(receipt["diagnostics"], [
+            {"stage": "POST", "reason": "ROUTING_OR_INCOMPLETE_RESPONSE", "http_status": 201},
+            {"stage": "CORRELATION", "reason": "RATE_LIMITED", "http_status": 403}])
+        self.assertEqual(self.last_output["diagnostics"], receipt["diagnostics"])
+        self.assertIsNone(receipt["result_ids"])
+        self.assertIsNone(self.rows()[3])
+        self.assert_pending_guards()
+
+    def test_canary_exceptions_are_not_retained_or_printed(self):
+        self.assertEqual(self.run_vertical("canary"), "UNKNOWN")
+        receipt = self.rows()[2]
+        self.assertNotIn("private-canary", json.dumps(receipt))
+        self.assertEqual([item["reason"] for item in receipt["diagnostics"]], ["UNEXPECTED_FAILURE"] * 2)
+
+    def test_known_transport_preflight_refusal_reaches_cli(self):
+        self.assertEqual(self.run_vertical("preflight-refused"), "REFUSED:ASSIGNMENT_PERMISSION_UNPROVEN")
+        self.assertEqual(self.task(), self.local.task)
+        self.assertEqual(self.rows()[0], 5)
+        self.assertFalse(self.trace.exists())
+
+    def test_old_v6_evidence_reads_without_rewriting(self):
+        self.assertEqual(self.run_vertical("legacy-evidence"), "ASSIGNMENT_CONFIRMED_OBSERVED")
+        journal, typed = self.parts[2:4]
+        _, request, receipt, terminal = self.rows()
+        self.assertEqual(receipt["version"], 1)
+        self.assertNotIn("diagnostics", receipt)
+        db = journal.open_store(self.fixture.monitor, writable=True)
+        try:
+            before = [tuple(row) for row in db.execute("SELECT * FROM assignment_evidence")]
+            journal.validate_store(db)
+            typed.fill(db, "assignment_evidence", request["evidence_id"], receipt)
+            self.assertEqual(before, [tuple(row) for row in db.execute("SELECT * FROM assignment_evidence")])
+            self.assertEqual(typed.get(db, "assignment_settlements", request["settlement_id"]), terminal)
+            with self.assertRaises(typed.Invalid):
+                typed.fill(db, "assignment_evidence", request["evidence_id"], dict(receipt, version=2, diagnostics=[]))
+        finally:
+            db.close()
+
+    def test_typed_diagnostics_reject_unbounded_or_unrecognized_content(self):
+        typed = self.parts[3]
+        class CanaryError(Exception):
+            def __str__(self):
+                raise AssertionError("exception stringification attempted")
+
+        self.assertEqual(typed.diagnostic("POST", CanaryError("private-canary"), True),
+                         {"stage": "POST", "reason": "UNEXPECTED_FAILURE", "http_status": None})
+        request = {"binding": {"attempt_id": "1" * 32}}
+        valid = adapter.evidence(request, "UNKNOWN", None, [
+            {"stage": "POST", "reason": "HTTP_STATUS_REFUSED", "http_status": 422}])
+        typed.validate_evidence(request, valid)
+        for field, value in (("stage", "private-canary"), ("reason", "private-canary"),
+                             ("http_status", True), ("http_status", 600), ("http_status", "201")):
+            changed = copy.deepcopy(valid)
+            changed["diagnostics"][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(typed.Invalid):
+                typed.validate_evidence(request, changed)
+        with self.assertRaises(typed.Invalid):
+            typed.validate_evidence(request, dict(valid, diagnostics=valid["diagnostics"] * 3))
 
     def test_confirmed_incomplete_get_only_settlement(self):
         self.assertEqual(self.run_vertical("incomplete"), "UNKNOWN")

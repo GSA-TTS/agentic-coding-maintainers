@@ -254,6 +254,20 @@ records supported outcomes and the operator-approved deferral of abandonment
 release. On 2026-11-09 the operator chose permanently fenced UNKNOWN for this
 assignment-only delivery; issue #117 remains open for later release support.
 
+New assignment evidence carries bounded, allowlisted stage/reason diagnostics
+and measured HTTP status when available (document v2, still journal v6). Old
+document-v1 evidence remains immutable and readable. The primary POST failure
+survives a failed correlation GET. Public errors omit raw exceptions and private
+identifiers. The CLI explicitly flushes final JSON; write/flush failure exits 3
+and attempts a fixed `FINAL_OUTPUT_UNVERIFIED` stderr message. Process death can
+still prevent output, and missing historical stdout cannot be reconstructed or
+converted into success from the actor's current assignment. Existing UNKNOWN
+attempts remain fenced and must not be replayed or rewritten for diagnostics.
+The expected POST 201 now accepts inert Location metadata under RFC 9110; it
+never follows it, and redirects remain refused. This defect is an unproven
+pilot-cause hypothesis, separate from missing final output. See the protocol's
+implementation boundary for the exact evidence and output semantics.
+
 The CLI requires Python `-I -B` and these explicit private fences:
 
 ```text

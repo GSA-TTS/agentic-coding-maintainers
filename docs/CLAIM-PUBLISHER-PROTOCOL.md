@@ -266,6 +266,40 @@ All operations refuse replay, including additive assignment. Old intent rows ret
 their exact bytes and original v2 binding equality. Existing journal consumers
 accept v6 and preserve its version and identifier reservations.
 
+New evidence uses document `version: 2` inside the existing journal v6, adding
+`diagnostics`: zero to two entries with fixed allowlisted `stage` and `reason`,
+and `http_status` (a measured integer 100–599, or null). Stages are `APPROVAL`,
+`POST`, `OBSERVATION`, and `CORRELATION`. A POST failure is retained first even
+if the subsequent correlation GET fails; correlation never establishes POST
+completion. Status is captured immediately after response acquisition, before
+header validation, and reset before each request. It does not imply an accepted
+body or successful assignment. Raw exceptions, bodies, headers, tokens, paths
+and identifiers are excluded from diagnostics and public error output.
+Known preflight refusals, including assignment capacity and identifier collision,
+have fixed public reasons; other failures retain a generic unverified reason.
+Old evidence document v1 remains readable with its exact bytes and hashes. There
+is no evidence migration, historical annotation, replay or UNKNOWN promotion.
+Readers predating evidence v2 refuse new documents; deploy the matching typed
+reader with the runner. Rolling back code does not authorize rewriting evidence.
+
+The expected additive POST's HTTP 201 may carry inert `Location` metadata, as
+specified by [RFC 9110 sections 10.2.2 and 15.3.2][4]. It is never dereferenced,
+and the observation GET still uses the fixed original issue endpoint. All 3xx
+responses are refused; duplicate-header, Link and encoding restrictions still
+apply, and complete body/identity validation remains required. The earlier
+blanket Location refusal is a compatibility defect and only a **hypothesis**
+for the pilot's UNKNOWN result, not an established historical cause.
+
+Final JSON is explicitly flushed before normal return. A write, short write or
+flush failure returns exit 3 and attempts only `FINAL_OUTPUT_UNVERIFIED` on
+stderr, with no retry of the JSON or remote action. A partial or even complete
+line may already have reached the consumer; neither exit status nor output
+failure changes durable assignment evidence. Hard kills, process death, and
+unavailable output streams can still prevent all output. Missing historical
+stdout cannot be reconstructed from current issue assignment or from the new
+diagnostics, and no success receipt is manufactured. Inspect existing evidence
+read-only; UNKNOWN stays fenced even if the actor is now assigned.
+
 **Operator-approved assignment-only scope:** on 2026-11-09 the operator chose
 to keep UNKNOWN permanently blocked and defer abandonment release. Issue #117
 remains open for that later work. `arbitrate`
@@ -283,3 +317,4 @@ and its fixtures grant no live-target write authorization or automatic activatio
 [1]: https://docs.github.com/en/rest/issues/assignees#add-assignees-to-an-issue
 [2]: https://docs.github.com/en/rest/issues/comments#create-an-issue-comment
 [3]: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+[4]: https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.2

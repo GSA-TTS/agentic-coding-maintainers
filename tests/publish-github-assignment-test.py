@@ -248,6 +248,60 @@ class FakeResponse:
         return self.raw[:count]
 
 
+class OutputBoundaryTest(unittest.TestCase):
+    def test_actual_cli_invalid_arguments_are_sanitized_json(self):
+        result = subprocess.run([sys.executable, "-I", "-B", str(SOURCE / "scripts/publish-github-assignment.py"),
+                                 "private-canary-token-header-id"], capture_output=True, check=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(json.loads(result.stdout)["reason"], "INVALID_ARGUMENTS")
+        self.assertEqual(result.stderr, b"")
+        self.assertNotIn(b"private-canary", result.stdout)
+
+    def test_actual_cli_closed_pipe_has_fixed_failure_only(self):
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            result = subprocess.run([sys.executable, "-I", "-B", str(SOURCE / "scripts/publish-github-assignment.py")],
+                                    stdout=write_fd, stderr=subprocess.PIPE, check=False)
+        finally:
+            os.close(write_fd)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stderr, b"FINAL_OUTPUT_UNVERIFIED\n")
+
+    def test_flush_write_and_partial_write_failures_cannot_report_success(self):
+        for mode in ("write", "flush", "short"):
+            class Output:
+                def write(self, value):
+                    if mode == "write":
+                        raise OSError("private-canary-token-header-id")
+                    return len(value) - (mode == "short")
+
+                def flush(self):
+                    raise OSError("private-canary-token-header-id")
+
+            stderr = io.StringIO()
+            with (self.subTest(mode=mode), mock.patch.object(publisher.sys, "stdout", Output()),
+                  mock.patch.object(publisher.sys, "stderr", stderr)):
+                self.assertEqual(publisher.emit_result({"reservation": "settled"}), 3)
+                self.assertIsNone(publisher.sys.stdout)
+            self.assertEqual(stderr.getvalue(), "FINAL_OUTPUT_UNVERIFIED\n")
+
+    def test_failure_allowlist_never_stringifies_exception(self):
+        class CanaryError(Exception):
+            def __str__(self):
+                raise AssertionError("exception stringification attempted")
+
+        for error in (CanaryError("private-canary-token-header-id"), publisher.Refusal("private-canary"),
+                      OSError(1, "private-canary")):
+            self.assertEqual(publisher.public_failure(error)["reason"], "DISPATCH_OR_DURABILITY_UNVERIFIED")
+        error = CanaryError("HTTP_STATUS_REFUSED")
+        for status in (True, "201", 99, 600, None):
+            error.http_status = status
+            self.assertNotIn("http_status", publisher.public_failure(error))
+        error.http_status = 422
+        self.assertEqual(publisher.public_failure(error)["http_status"], 422)
+
+
 class TransportTest(unittest.TestCase):
     def setUp(self):
         self.observed = {"actor_id": 9, "actor_node_id": "U_actor", "actor_login": "operator",
@@ -314,6 +368,67 @@ class TransportTest(unittest.TestCase):
         with self.assertRaisesRegex(transport.Refusal, "POST_REPLAY_REFUSED"):
             self.client.assign(self.observed)
         self.assertEqual(len(self.calls), 1)
+
+    def test_http_201_location_is_inert_and_all_redirects_refuse(self):
+        class Socket:
+            def __init__(self, wire):
+                self.wire = wire
+
+            def makefile(self, mode):
+                return io.BytesIO(self.wire)
+
+        def response(status):
+            body = json.dumps(self.issue).encode("ascii")
+            value = transport.http.client.HTTPResponse(Socket(
+                b"HTTP/1.1 " + str(status).encode() + b" Fixture\r\n"
+                b"Location: https://example.invalid/private-canary\r\nContent-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body))
+            value.begin()
+            return value
+
+        self.responses = [response(201), FakeResponse(200, self.issue)]
+        self.client.assign(self.observed)
+        self.assertEqual(self.client.http_status, 201)
+        self.assertEqual(self.client.issue(self.observed), [8])
+        self.assertEqual([(method, path) for method, path, _, _ in self.calls], [
+            ("POST", "/repos/example/fixture/issues/12/assignees"),
+            ("GET", "/repos/example/fixture/issues/12")])
+        self.responses = [response(200)]
+        with self.assertRaisesRegex(transport.Refusal, "ROUTING_OR_INCOMPLETE_RESPONSE"):
+            self.client.issue(self.observed)
+        self.issue["id"] = 99
+        self.responses = [response(201)]
+        client = transport.Transport("example/fixture", 12, "ghp_" + "x" * 36)
+        try:
+            with self.assertRaisesRegex(transport.Refusal, "ISSUE_IDENTITY_OR_STATE_CHANGED"):
+                client.assign(self.observed)
+        finally:
+            client.close()
+        self.issue["id"] = 11
+        for status in range(300, 400):
+            with self.subTest(status=status):
+                self.responses = [response(status)]
+                client = transport.Transport("example/fixture", 12, "ghp_" + "x" * 36)
+                try:
+                    before = len(self.calls)
+                    with self.assertRaises(transport.Refusal) as raised:
+                        client.assign(self.observed)
+                    self.assertEqual(raised.exception.http_status, status)
+                    self.assertEqual(len(self.calls), before + 1)
+                finally:
+                    client.close()
+
+    def test_measured_status_survives_header_refusal_then_resets(self):
+        self.responses = [FakeResponse(201, self.issue, [("Link", "private-canary")])]
+        with self.assertRaisesRegex(transport.Refusal, "ROUTING_OR_INCOMPLETE_RESPONSE") as raised:
+            self.client.assign(self.observed)
+        self.assertEqual(raised.exception.http_status, 201)
+        self.assertEqual(self.client.http_status, 201)
+        self.responses = [OSError("private-canary")]
+        with self.assertRaisesRegex(transport.Refusal, "TRANSPORT_UNVERIFIED") as raised:
+            self.client.issue(self.observed)
+        self.assertIsNone(raised.exception.http_status)
+        self.assertIsNone(self.client.http_status)
 
     def test_redirect_rate_limit_and_missing_scope(self):
         cases = [FakeResponse(302, {}, [("Location", "https://example.invalid")]),

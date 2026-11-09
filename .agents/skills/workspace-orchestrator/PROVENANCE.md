@@ -58,6 +58,20 @@ bindings remain exact; missing or UNKNOWN evidence stays fenced. Fixtures use
 real HTTPResponse parsing over bounded synthetic socket streams and real reaped
 workers for terminal acknowledgment and confirmed GET-only recovery.
 
+Diagnostic hardening based on canonical revision
+`b6345eec1b4abfe55051ad6013d68db487701a45` adds typed evidence document v2
+within journal v6: at most two allowlisted stage/reason/status diagnostics,
+preserving the primary POST failure before any correlation failure. The typed
+reader accepts immutable document v1 unchanged; monitor validation delegates to
+that reader, and dispatch/recovery continue hashing the exact retained document.
+Known capacity/identifier preflight refusals receive fixed codes. The publisher
+flushes final JSON explicitly and reports output failure without changing durable
+state. Consumer fixtures exercise the actual CLI/output boundary and legacy v6
+evidence. RFC 9110 sections 10.2.2 and 15.3.2 justify inert Location metadata only
+on the expected POST 201; redirects remain refused. This compatibility defect is
+a pilot-cause hypothesis, not a demonstrated explanation of the historical
+UNKNOWN or missing stdout. No historical attempt is rewritten or replayed.
+
 Bounded issue #116 pilot based on canonical maintainer revision `00091f99`
 (approved 2026-11-05): opt-in schema-3 cooperative task/worker session and retained
 generation, explicit lock-held lifecycle comparisons, complete capacity metadata
