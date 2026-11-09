@@ -38,7 +38,7 @@ TASK_FIELDS = {
     "head_sha", "reviewed_sha", "restricted_paths", "acceptance_criteria", "dependencies",
     "reviewers", "findings", "validation", "next_action", "worker", "leases",
     "transition_intent", "rework_count", "revision", "created_at", "updated_at"}
-BOUND_OPTIONAL_FIELDS = {"legacy_finding_dispositions", "transition_recovery"}
+BOUND_OPTIONAL_FIELDS = {"legacy_finding_dispositions", "transition_recovery", "assignment_dispatch"}
 WORKER_FIELDS = {"task_id", "owner", "pid", "process_start", "worker_id", "token",
                  "hostname", "created_at"}
 BOUND_WORKER_FIELDS = WORKER_FIELDS | {"session_id", "generation"}
@@ -238,6 +238,8 @@ def validate_transition_recovery(task):
     snapshot = copy.deepcopy(task)
     snapshot.pop("transition_recovery")
     snapshot.pop("legacy_finding_dispositions", None)
+    if snapshot.get("assignment_dispatch", {}).get("original_revision", -1) >= receipt["base_revision"]:
+        snapshot.pop("assignment_dispatch", None)
     worker = receipt["worker"]
     snapshot.update(
         state=receipt["source"],
@@ -252,7 +254,7 @@ def validate_transition_recovery(task):
     )
     if type(worker) is dict and type(worker.get("owner")) is str:
         snapshot["owner"] = worker["owner"]
-    fields(snapshot, TASK_FIELDS | {"cooperative_binding"})
+    fields(snapshot, TASK_FIELDS | {"cooperative_binding"} | ({"assignment_dispatch"} if "assignment_dispatch" in snapshot else set()))
     validate_interrupted_snapshot(snapshot, receipt["capacity_observed"])
     if receipt["phase"] == "pending":
         require(task["revision"] == receipt["pending_revision"]
@@ -312,6 +314,25 @@ def validate_legacy_dispositions(task):
         previous_revision, previous_epoch = revision, epoch
 
 
+def validate_assignment_dispatch(task):
+    if "assignment_dispatch" not in task:
+        return
+    marker = task["assignment_dispatch"]
+    fields(marker, {"version", "phase", "operation_id", "attempt_id", "store_id", "intent_sha256",
+                    "original_sha256", "original_revision", "implementation_head"})
+    require(type(marker["version"]) is int and marker["version"] == 1
+            and marker["phase"] in {"pending", "settled"})
+    for key in ("operation_id", "attempt_id", "store_id"):
+        matches(marker[key], HEX32)
+    for key in ("intent_sha256", "original_sha256"):
+        matches(marker[key], HEX64)
+    matches(marker["implementation_head"], HEX40)
+    integer(marker["original_revision"], 1, min(MAX_INT64 - 2, task["revision"] - 1))
+    if marker["phase"] == "pending":
+        require(task["state"] in ACTIVE and task["worker"] is not None
+                and task["transition_intent"] is None and task.get("transition_recovery", {}).get("phase") != "pending")
+
+
 def validate_task(task):
     # No prototype upgrade and no imports of the state module or its plugins.
     schema = task.get("schema_version")
@@ -324,6 +345,7 @@ def validate_task(task):
     require(type(task) is dict and required <= set(task) and set(task) - required <= BOUND_OPTIONAL_FIELDS)
     validate_base_task(task, bound=True)
     validate_cooperative_binding(task, check_worker_task=False)
+    validate_assignment_dispatch(task)
     validate_transition_recovery(task)
     validate_legacy_dispositions(task)
 
@@ -398,7 +420,8 @@ def inspect(args):
         if bound and not has_bound_args:
             return result("UNVERIFIED", "MISSING_BOUND_EXPECTATIONS")
         if (task["state"] not in ACTIVE or task["transition_intent"] is not None
-                or task.get("transition_recovery", {}).get("phase") == "pending"):
+                or task.get("transition_recovery", {}).get("phase") == "pending"
+                or task.get("assignment_dispatch", {}).get("phase") == "pending"):
             return result("UNVERIFIED", "INACTIVE_OR_TRANSITIONING")
         worker = task["worker"]
         if worker is None or task["leases"]["global_slot"] is None:

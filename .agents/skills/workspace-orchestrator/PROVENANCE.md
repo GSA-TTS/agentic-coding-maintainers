@@ -22,6 +22,42 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Assignment-first adapter candidate
+
+Issue #117 candidate based on canonical revision
+`7c6f71c7956e9b064180999c7b5bd29fa799d4b2`: narrowly qualified schema-3
+`assignment_dispatch` reservation, lifecycle/release/recovery guards and journal
+v6 typed requests, attempts, evidence and settlements. The permanent anchor is
+written first; intermediate failure remains fenced. Existing immutable intent
+rows retain exact v2 original-task equality, with a separate prospective reserved
+task bound to interactive approval. All journal readers preserve v6 and reserve
+assignment identifiers against observation and acknowledgment identifiers.
+
+The consumer runner and fixtures are `scripts/assignment-dispatch.py`,
+`scripts/publish-github-assignment.py`, `scripts/github-assignment-transport.py`,
+`tests/assignment-dispatch-test.py`, `tests/publish-github-assignment-test.py`, and
+the cooperative lifecycle fixture. Runtime validation belongs in the primary's
+independently isolated guest. UNKNOWN arbitration remains unsupported without
+qualified containment/termination evidence; no PID/boot-ID declaration releases
+it. This candidate does not activate automatic claims or comment publication.
+Original import history and `SOURCE-SHA256SUMS` remain preserved.
+
+On 2026-11-09 the operator explicitly selected assignment-only delivery with
+permanently fenced UNKNOWN, deferring abandonment release while issue #117 stays
+open. Hardening reuses the core raw-byte whole-checkout verifier through a
+credential-free, no-fsmonitor/hooks/filters/lazy-fetch Git probe. The runner's
+process identity probe also receives a minimal environment. A rolled-back typed
+insertion rehearsal precedes the marker, checking actual namespace/capacity/page
+allocation before repeating the same checks in the real reservation transaction.
+
+Fixed-head review rework from `15c12b27369040bf56ffe86be8eda2994723b364`
+requires complete HTTP framing before JSON acceptance (including strict chunk
+termination), and allows stopped-worker settlement only from already retained,
+validated closed-producer evidence with known completion. Original task/lease
+bindings remain exact; missing or UNKNOWN evidence stays fenced. Fixtures use
+real HTTPResponse parsing over bounded synthetic socket streams and real reaped
+workers for terminal acknowledgment and confirmed GET-only recovery.
+
 Bounded issue #116 pilot based on canonical maintainer revision `00091f99`
 (approved 2026-11-05): opt-in schema-3 cooperative task/worker session and retained
 generation, explicit lock-held lifecycle comparisons, complete capacity metadata

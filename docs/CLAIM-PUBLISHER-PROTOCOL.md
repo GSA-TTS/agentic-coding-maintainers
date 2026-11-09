@@ -206,6 +206,76 @@ Keep approval, task/session/lease/store metadata and diagnostics private. Publis
 only reviewed codec fields and sanitized qualification outcomes, never local
 secrets, private identifiers, paths or raw journal/credential material.
 
+### Assignment implementation boundary
+
+`scripts/github-assignment-transport.py` contains the candidate direct HTTPS
+transport, with fixed GitHub.com endpoints, no redirects, a 30-second total
+deadline per transport instance, and no POST retry. A credential-free isolated
+Python DNS resolver is killed and reaped on timeout; numeric-address connection
+and hostname-verified TLS occur in the runner. No dispatch-capable child is
+created. It intentionally supports only
+recognizable classic PAT/OAuth token formats with fresh `X-OAuth-Scopes` evidence;
+fine-grained PAT, App, installation, Actions, and unprefixed legacy tokens fail
+closed. Repository push permission and actor assignability are separate checks.
+It is a private library, not a dispatch authorization interface.
+
+`scripts/publish-github-assignment.py` contains the candidate controlling-terminal
+collector. It displays JSON-escaped exact private bindings, flushes queued input,
+requires an exact digest challenge from a foreground canonical `/dev/tty`, and
+revalidates monotonic age and binding in memory. It has no file, boolean, stdin,
+or environment approval override. The 120-second ceiling includes interaction
+time. Offline PTY fixtures exercise this actual path, not human authentication.
+
+The candidate command now composes `assignment-dispatch.py`, the schema-3 core
+reservation adapter, and journal v6 in an assignment-only path. It requires a
+clean committed implementation matching the explicit implementation SHA, existing
+identity-bound intent with exact original task equality, fresh permissions and
+prior assignees, and the real controlling-terminal challenge. The immutable
+original task and prospective reserved full task are both retained. The approval
+binds the reserved revision/digest, avoiding a self-referential request hash.
+
+The task marker is durably written **before** journal migration/`DISPATCHING`.
+Before the marker, a rolled-back insertion rehearsal exercises the same typed
+validation, identifier exclusions, retention limits and actual SQLite page
+allocation as the real reservation. Predictable full-store/collision refusals
+therefore leave the task untouched. Reservation repeats those checks after the
+marker; interruption or new storage failures still remain fenced.
+Marker-only failure blocks all task lifecycle/release/recovery paths. After FULL
+SQLite commit and filesystem barriers, locks are released before the sole POST
+site. Evidence and settlement have preallocated bounded storage. Terminal
+settlement is committed and synced before the marker becomes permanently
+`settled`; old schema-3 readers refuse that extension even after release.
+Unrelated task work can proceed while the selected assignment is pending.
+
+`assign` supports confirmed observed assignment, already-satisfied no-POST,
+confirmed drift/ignored-assignee failures, and positively unlaunched expired
+approval. `settle` repairs exact durable terminal acknowledgment or completes
+GET-only observation after retained confirmed transport; it never posts. These
+recovery paths retain exact task/session/worker/lease bindings. A recorded worker
+need not still be alive when validated journal evidence already proves the
+synchronous transport closed with known completion; missing/UNKNOWN evidence
+never receives that exception. HTTP bodies require exact Content-Length or
+strict complete chunk framing before JSON decoding. Conflicting framing,
+premature EOF and malformed chunk terminators are refused; chunk extensions,
+trailers and close-delimited bodies are unsupported.
+All operations refuse replay, including additive assignment. Old intent rows retain
+their exact bytes and original v2 binding equality. Existing journal consumers
+accept v6 and preserve its version and identifier reservations.
+
+**Operator-approved assignment-only scope:** on 2026-11-09 the operator chose
+to keep UNKNOWN permanently blocked and defer abandonment release. Issue #117
+remains open for that later work. `arbitrate`
+returns `PRODUCER_TERMINATION_PROOF_UNSUPPORTED` without effects. UNKNOWN, absent
+transport evidence, and marker-only crash remain blocked. PID disappearance,
+operator declarations and changed boot IDs are not termination proof: descendants,
+cloned machines and restored snapshots defeat those assumptions. There is no
+`ABANDONED_UNKNOWN` release path or comment continuation in this candidate.
+
+The fixtures exercise real terminal interaction, core state, SQLite migration,
+dispatch-boundary interruptions and injectable HTTP. They require independent
+isolated execution; edits alone are not passing validation. This implementation
+and its fixtures grant no live-target write authorization or automatic activation.
+
 [1]: https://docs.github.com/en/rest/issues/assignees#add-assignees-to-an-issue
 [2]: https://docs.github.com/en/rest/issues/comments#create-an-issue-comment
 [3]: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
