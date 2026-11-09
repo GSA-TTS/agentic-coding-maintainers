@@ -19,7 +19,8 @@
    already uses a managed global `core.hooksPath`, do not replace it with
    `pre-commit install`; integrate the command into that managed hook instead.
 6. Use a Conventional Commit message and PR title with a verified contributor identity.
-7. Open a pull request and complete the template.
+7. Open a pull request and complete the template using the canonical
+   [PR/MR description guidance](docs/PR-DESCRIPTIONS.md).
 
 Use `type(scope)!: description` for the PR title; scope and `!` are optional.
 Accepted types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,

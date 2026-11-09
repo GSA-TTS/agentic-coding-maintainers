@@ -40,6 +40,8 @@ here.
 - Preserve executable modes and provenance when syncing skills.
 - Use Conventional Commits and a verified contributor identity.
 - Use pull-request-level AI disclosure when AI materially assisted the change.
+- Follow [PR/MR description guidance](docs/PR-DESCRIPTIONS.md) when drafting or
+  refreshing a description.
 - Keep GitHub Actions pinned to full commit SHAs with least permissions.
 - Run `make check` before requesting review.
 
