@@ -277,7 +277,8 @@ class OutputBoundaryTest(unittest.TestCase):
                     return len(value) - (mode == "short")
 
                 def flush(self):
-                    raise OSError("private-canary-token-header-id")
+                    if mode == "flush":
+                        raise OSError("private-canary-token-header-id")
 
             stderr = io.StringIO()
             with (self.subTest(mode=mode), mock.patch.object(publisher.sys, "stdout", Output()),
@@ -285,6 +286,20 @@ class OutputBoundaryTest(unittest.TestCase):
                 self.assertEqual(publisher.emit_result({"reservation": "settled"}), 3)
                 self.assertIsNone(publisher.sys.stdout)
             self.assertEqual(stderr.getvalue(), "FINAL_OUTPUT_UNVERIFIED\n")
+
+    def test_actual_cli_both_output_pipes_closed_preserves_exit_three(self):
+        read_out, write_out = os.pipe()
+        read_err, write_err = os.pipe()
+        os.close(read_out)
+        os.close(read_err)
+        try:
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", str(SOURCE / "scripts/publish-github-assignment.py")],
+                stdout=write_out, stderr=write_err, check=False, timeout=10)
+        finally:
+            os.close(write_out)
+            os.close(write_err)
+        self.assertEqual(result.returncode, 3)
 
     def test_failure_allowlist_never_stringifies_exception(self):
         class CanaryError(Exception):

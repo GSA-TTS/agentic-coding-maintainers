@@ -256,7 +256,18 @@ def emit_result(output):
             sys.stderr.write("FINAL_OUTPUT_UNVERIFIED\n")
             sys.stderr.flush()
         except Exception:
-            pass
+            # Finalization also retries stderr. Neutralize its failed buffer so
+            # that a second broken destination cannot replace exit 3 with 120.
+            try:
+                target = sys.stderr.fileno()
+                sink = os.open(os.devnull, os.O_WRONLY)
+                try:
+                    os.dup2(sink, target)
+                finally:
+                    os.close(sink)
+            except Exception:
+                pass
+            sys.stderr = None
         return 3
     return 0 if output.get("reservation") == "settled" else 3
 
