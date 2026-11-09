@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.4.0...v0.5.0) (2026-11-09)
+
+
+### Features
+
+* **orchestration:** bind claim identity and exact-text declaration ([#147](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/147)) ([3eb8fb1](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/3eb8fb1af5c201739f443f561b2be0f611f5f221))
+* **orchestration:** bind claim preparation to retained task ownership ([#142](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/142)) ([cb5323f](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/cb5323f6219f2c7787b487b4895b175b2f75479c))
+* **orchestration:** correlate retained claim intents with fresh observations ([#145](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/145)) ([7049683](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/70496835b6301d55c64096fa7637a0dd258831f2))
+* **orchestration:** journal task-bound local claim intents ([#144](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/144)) ([13455d5](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/13455d58013c4f65ae157a0fe257d5edcafd6cc6))
+* **orchestration:** persist identity-bound claim intents ([#148](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/148)) ([81ee581](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/81ee58169108cdd49f05ca4d349445735c93d2f9))
+* **orchestration:** retain historical claim observation receipts ([#146](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/146)) ([7af28e8](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/7af28e878719511cfbdea9606c3e25fd51a4a55c))
+
+
+### Bug Fixes
+
+* **orchestration:** support constant directory link counts ([#151](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/151)) ([5fe39b6](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/5fe39b660baacc9d52bbb899ee1d81807336f1fc))
+
 ## [0.4.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.3.0...v0.4.0) (2026-11-07)
 
 
