@@ -212,9 +212,9 @@ def build(store, intent, task, ids, head):
             "approval": None, "evidence_id": uuid.uuid4().hex, "settlement_id": uuid.uuid4().hex}
 
 
-def evidence(request, completion, result_ids):
-    return {"version": 1, "attempt_id": request["binding"]["attempt_id"], "completion": completion,
-            "result_ids": result_ids, "producer": "SYNCHRONOUS_TRANSPORT_CLOSED"}
+def evidence(request, completion, result_ids, diagnostics):
+    return {"version": 2, "attempt_id": request["binding"]["attempt_id"], "completion": completion,
+            "result_ids": result_ids, "producer": "SYNCHRONOUS_TRANSPORT_CLOSED", "diagnostics": diagnostics}
 
 
 def settle(store, request, receipt, outcome, result_ids=None, *, recovery=False):
@@ -228,7 +228,8 @@ def settle(store, request, receipt, outcome, result_ids=None, *, recovery=False)
         t.fill(db, "assignment_evidence", request["evidence_id"], receipt)
         store.durable(db)
         if outcome is None:
-            return {"status": "UNKNOWN", "reservation": "pending", "completion": receipt["completion"]}
+            return {"status": "UNKNOWN", "reservation": "pending", "completion": receipt["completion"],
+                    **({"diagnostics": receipt["diagnostics"]} if receipt["version"] == 2 else {})}
         completion, satisfaction = t.OUTCOMES[outcome]
         terminal = {"version": 1, "attempt_id": request["binding"]["attempt_id"],
                     "evidence_sha256": t.digest(receipt), "outcome": outcome,
@@ -239,7 +240,8 @@ def settle(store, request, receipt, outcome, result_ids=None, *, recovery=False)
         store.guard(db, request, recovery=recovery)
         store.core.assignment_release(store.root, request["reserved_task"])
         return {"status": outcome, "reservation": "settled", "completion": completion,
-                "satisfaction": satisfaction}
+                "satisfaction": satisfaction,
+                **({"diagnostics": receipt["diagnostics"]} if receipt["version"] == 2 else {})}
 
 
 def dispatch(args, publisher):
@@ -289,9 +291,11 @@ def dispatch(args, publisher):
             store.durable(db)
             store.guard(db, request)
         completion, result_ids, outcome = "NOT_SENT", None, None
+        diagnostics = []
         try:
             approval.validate(request["binding"])
-        except publisher.Refusal:
+        except publisher.Refusal as exc:
+            diagnostics.append(t.diagnostic("APPROVAL", exc))
             outcome = "NOT_SENT"
         else:
             if observed["actor_id"] in ids:
@@ -306,14 +310,18 @@ def dispatch(args, publisher):
                     actual, _ = transport.actual_result(ids, result_ids, observed["actor_id"])
                     outcome = "ASSIGNMENT_CONFIRMED_OBSERVED" if actual == "PRESERVED_ACTOR_PRESENT" else actual
                 except Exception as exc:
+                    primary = t.diagnostic("POST" if completion == "UNKNOWN" else "OBSERVATION",
+                                           exc, getattr(exc, "http_status", getattr(client, "http_status", None)))
+                    diagnostics.append(primary)
                     # Correlation only after a lost response; no automatic replay.
-                    if completion == "UNKNOWN" and str(exc) not in {"RATE_LIMITED", "DEADLINE_EXCEEDED"}:
+                    if completion == "UNKNOWN" and primary["reason"] not in {"RATE_LIMITED", "DEADLINE_EXCEEDED"}:
                         try:
                             result_ids = client.issue(observed)
-                        except Exception:
-                            pass
+                        except Exception as correlation_error:
+                            diagnostics.append(t.diagnostic("CORRELATION", correlation_error,
+                                getattr(correlation_error, "http_status", getattr(client, "http_status", None))))
         client.close()  # Actual synchronous producer has returned, sockets closed.
-        return settle(store, request, evidence(request, completion, result_ids), outcome)
+        return settle(store, request, evidence(request, completion, result_ids, diagnostics), outcome)
     finally:
         client.close()
 

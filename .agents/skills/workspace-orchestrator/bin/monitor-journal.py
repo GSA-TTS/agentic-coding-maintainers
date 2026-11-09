@@ -595,6 +595,8 @@ def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *,
 
 
 def assignment_journal():
+    # Journal v6 delegates typed evidence validation here. Evidence documents v1
+    # and v2 coexist; opening/validating a store never upgrades immutable rows.
     spec = importlib.util.spec_from_file_location("assignment_journal", Path(__file__).with_name("assignment-journal.py"))
     if spec is None or spec.loader is None:
         raise JournalError("assignment journal unavailable")
