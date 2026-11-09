@@ -5,8 +5,8 @@ the separate GET-only observer below adds bounded live comment traversal.
 These are a proposal, not a live ownership or admission protocol. The standalone
 codec and observer do not read coordinator metadata or verify assignments.
 The retained-task preparation wrapper below adds a local consistency comparison;
-none grants authority. Only the live
-observer looks up the authenticated current-user identity.
+none grants authority. The live observer and identity/declaration wrapper
+look up the current-user identity through the configured `gh` transport.
 The codec commands use no network, subprocesses, or file writes; stdout is the result.
 Only GitHub.com issue comments are supported. No GitLab quick actions are supported.
 
@@ -141,6 +141,90 @@ report `bound_retained_snapshot: false`. Original preflight status/reason and
 structural exit distinctions are preserved. Schema 2 with these required bound
 expectations is refused, rather than upgraded. Exit 3 deliberately prevents
 preparation success from being mistaken for authority.
+
+### Pre-intent identity observation and public-text declaration
+
+`scripts/prepare-approved-claim.py` composes the unchanged retained-task preparer
+and observer `Transport`. Supply **all** preparation flags above, plus:
+
+```text
+--expected-actor-id 7 --expected-repo-id 400 --expected-issue-id 500
+--reviewer public-reviewer
+--approved-body-sha256 <exactly 64 lowercase hexadecimal characters>
+--approve-public-text
+```
+
+These are fictitious fixture IDs. The three expected IDs are required fences,
+positive exact integers at most 2^63−1; CLI spelling rejects leading zeroes,
+booleans, fractions and signs. Observed JSON IDs also reject booleans/fractions.
+`--actor` remains the explicit expected login from preparation, compared exactly
+with `GET /user.login`, never derived from a local owner label. `--reviewer` is
+an explicit syntactically valid public login declaration; it is not authenticated
+as a human reviewer and is not echoed. `--approve-public-text` is a required
+affirmative zero-value flag, not inferred approval. All values and this flag use
+the existing `StoreOnce` action; missing, repeated, unknown and malformed flags
+fail with sanitized JSON before GET. No credentials-close, readiness, capture,
+body-file, URL override or caller-supplied verification flags exist.
+
+First the actual local schema-3 preflight/preparation and physical task/lease
+file metadata are checked. The approved digest must equal SHA-256 of the actual
+canonical rendered public body, including its final newline. A wrong digest,
+stale expected local fence or wrong physical root fails before network dispatch.
+The wrapper then performs only these internally fixed requests, twice:
+`GET /user`, `GET /repos/{repo}`, `GET /repos/{repo}/issues/{number}`. It
+reprepares the prospective intent text between the two rounds, repeats local
+preflight after the network interval (including failures), and refuses changed
+full task/file/lease snapshots. It reads no journal, writes no state, initializes
+nothing and acquires no coordinator lock across GET.
+
+Both rounds validate numeric and node identity, exact repository `full_name` and
+URL, and issue number/URL/repository/HTML target; Issues responses containing
+`pull_request` are refused. Actor ID/login/type, repository ID/node/name/URL and
+`updated_at`, and issue node/ID/number/`updated_at`/comment count/state/locked
+anchors must remain equal. User `updated_at`, when present, is checked too.
+Closed or locked targets remain explicit observations and confer no readiness.
+Changed responses or a task changed during GET are refused. Six requests share
+one 30-second transport deadline and the existing 512 KiB combined stdout/stderr
+budget. No comments pages are requested or claim absence established. Repeated
+equal anchors are not an atomic snapshot or a guarantee of continued freshness;
+compensating edits and subsequent changes remain possible.
+
+The canonical compact JSON machine contract is
+`claim-identity-approval-declaration-v1` (`schema_version: 1`). A completed
+comparison returns `IDENTITY_BOUND_DECLARATION`, reason
+`PRE_INTENT_OBSERVATION_AND_DECLARATION`, **exit 3**, with observed numeric
+`actor_id`, `repository_id`, `issue_id`, issue number/closed/locked flags,
+`comment_sha256`, `get_counts` (user/repository/issue each 2), `get_count: 6`,
+`network_deadline_seconds: 30`, and `output_byte_limit: 524288`.
+`remote_coverage` is only `repeated_identity_gets`;
+`identity_at_preparation: OBSERVED`, `bound_retained_snapshot: true`,
+`public_text_approval: DECLARED_UNAUTHENTICATED`, and `reviewer_declared: true`
+describe this in-memory observation/declaration, not an approval authority.
+The bundle omits raw body, logins, repository name, branch, task/session/worker
+identifiers, paths and subprocess diagnostics. Numeric actor/target IDs and the
+body hash remain correlatable: `private_correlatable: true` means keep this
+bundle private; it is not a public receipt. Failure omits observed IDs and hash.
+Local preflight conflicts retain exit 4; structural, changed-snapshot and remote
+identity refusals are `UNVERIFIED`, exit 3.
+
+Always: `mutation_authorized`, `remote_effects_enabled`, `atomic_snapshot`,
+`absence_authorizing` and `persisted` are false. Session authentication,
+`current_actor_authentication`, `publisher_authority` and `issuance_identity`
+remain `UNVERIFIED`. Normal `gh` credentials/configuration fallback remains
+available with debugging overrides removed; redirect handling and credential
+routing are not attested secure by this composition. A current immutable actor
+observed at preparation is not a verified actor at issuance until a separately
+reviewed binding is persisted. The actor/session/publisher relationship is not
+established. This bundle cannot be fed into the existing intent contract: a
+future typed v2 intent requires a separate binder and explicit schema review,
+not implicit acceptance or journal upgrade. The existing intent command below
+continues to record only its existing request, without this declaration.
+
+`tests/prepare-approved-claim-test.py` reuses actual schema-3 core CLI fixtures
+and the fixed-argv fake `gh` fixture, with secret-output filtering, strict ID and
+CLI refusals, repeated-identity changes, task changes at the network boundary,
+closed/locked observations, and shared transport deadline/byte bounds. Run it
+and `make check` only in an independently justified isolated guest.
 
 ### Explicit local publication intent
 
