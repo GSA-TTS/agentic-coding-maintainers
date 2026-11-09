@@ -10,6 +10,22 @@ look up the current-user identity through the configured `gh` transport.
 The codec commands use no network, subprocesses, or file writes; stdout is the result.
 Only GitHub.com issue comments are supported. No GitLab quick actions are supported.
 
+The [proposed operator-controlled publisher](CLAIM-PUBLISHER-PROTOCOL.md) specifies
+the separate assignment-first remote-effect path for #117: the exact authenticated
+human user, per-action interactive host approval, and a reviewed typed dispatch
+reservation enforced by the core. It is not implemented or activated by the
+commands below. #116 ownership remains a separate dependency; #69 App automatic
+actions remain parked. Request v2/journal v5 and declared reviewer fields alone
+cannot authorize publication, assignment or retries.
+The proposal distinguishes confirmed observed assignment from satisfied-without-POST
+and terminal failed observations. Its separate operator arbitration may durably
+abandon unknown dispatch after verified producer termination, releasing only the
+local reservation: completion stays unknown, the old operation is never replayable,
+and correlated/abandoned assignment does not qualify for automated claim comments.
+Proposed interactions occur outside coordinator/SQLite locks; exact approval and
+bounded monotonic age are revalidated before attempts and launch. Expiry never
+clears pending dispatch, and scripted interaction fixtures do not prove human identity.
+
 ## Prepare for explicit public review
 
 Run in an independently justified isolated environment:
