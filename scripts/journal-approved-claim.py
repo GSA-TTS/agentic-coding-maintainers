@@ -104,11 +104,15 @@ def initialized_snapshot_matches(before, after, *, created):
     if not created:
         return store == old_store
     # check-native-ownership.fingerprint: dev, ino, size, mtime_ns,
-    # ctime_ns, mode, uid, nlink. mkdir changes size/times and adds one
-    # directory link; it cannot change the parent's identity or permissions.
+    # ctime_ns, mode, uid, nlink. mkdir may change size/times and either add
+    # one directory link or leave nlink unchanged on filesystems that do not
+    # count subdirectories. Neither case can change identity or permissions.
+    # The caller pins the physical child and requires an exact parent snapshot
+    # after initialization; this exception applies only across our mkdir.
     old_dev, old_ino, _, _, _, old_mode, old_uid, old_links = old_store
     dev, ino, _, _, _, mode, uid, links = store
-    return (dev, ino, mode, uid, links) == (old_dev, old_ino, old_mode, old_uid, old_links + 1)
+    return ((dev, ino, mode, uid) == (old_dev, old_ino, old_mode, old_uid)
+            and links in (old_links, old_links + 1))
 
 
 def record(args, claim, prepare, core, journal, intent, approval, observer):
