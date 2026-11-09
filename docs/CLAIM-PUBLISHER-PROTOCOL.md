@@ -250,8 +250,15 @@ Unrelated task work can proceed while the selected assignment is pending.
 `assign` supports confirmed observed assignment, already-satisfied no-POST,
 confirmed drift/ignored-assignee failures, and positively unlaunched expired
 approval. `settle` repairs exact durable terminal acknowledgment or completes
-GET-only observation after retained confirmed transport; it never posts. All
-operations refuse replay, including additive assignment. Old intent rows retain
+GET-only observation after retained confirmed transport; it never posts. These
+recovery paths retain exact task/session/worker/lease bindings. A recorded worker
+need not still be alive when validated journal evidence already proves the
+synchronous transport closed with known completion; missing/UNKNOWN evidence
+never receives that exception. HTTP bodies require exact Content-Length or
+strict complete chunk framing before JSON decoding. Conflicting framing,
+premature EOF and malformed chunk terminators are refused; chunk extensions,
+trailers and close-delimited bodies are unsupported.
+All operations refuse replay, including additive assignment. Old intent rows retain
 their exact bytes and original v2 binding equality. Existing journal consumers
 accept v6 and preserve its version and identifier reservations.
 

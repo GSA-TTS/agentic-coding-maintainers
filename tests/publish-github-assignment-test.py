@@ -8,6 +8,7 @@ No sockets or credentials are used. The vertical fixture separately covers dispa
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import pty
@@ -196,6 +197,8 @@ class FakeResponse:
         self.status = status
         self.raw = b"" if value is None else json.dumps(value).encode("ascii")
         self.headers = headers if headers is not None else [("Content-Type", "application/json")]
+        if not any(key.lower() in {"content-length", "transfer-encoding"} for key, _ in self.headers):
+            self.headers = [*self.headers, ("Content-Length", str(len(self.raw)))]
 
     def getheaders(self):
         return self.headers
@@ -332,6 +335,47 @@ class TransportTest(unittest.TestCase):
             transport.decode(b'{"id":9,"id":10}')
         with self.assertRaises(transport.Refusal):
             transport.actual_result([True], [1, 9], 9)
+
+    def test_real_http_response_framing(self):
+        class Socket:
+            def __init__(self, wire):
+                self.wire = wire
+
+            def makefile(self, mode):
+                return io.BytesIO(self.wire)
+
+        body = json.dumps(self.issue).encode("ascii")
+        cases = [
+            (b"Content-Length: " + str(len(body) + 10).encode(), body, False),
+            (b"Content-Length: -1", body, False),
+            (b"Content-Length: xyz", body, False),
+            (b"Content-Length: 1, 1", body, False),
+            (b"Content-Length: " + str(len(body)).encode() + b"\r\nTransfer-Encoding: chunked", body, False),
+            (b"Transfer-Encoding: gzip", body, False),
+            (b"Transfer-Encoding: chunked", hex(len(body))[2:].encode() + b"\r\n" + body + b"\r\n", False),
+            (b"Transfer-Encoding: chunked", hex(len(body))[2:].encode() + b"\r\n" + body + b"\r\n0\r\n", False),
+            (b"Transfer-Encoding: chunked", hex(len(body))[2:].encode() + b"\r\n" + body + b"xx0\r\n\r\n", False),
+            (b"Content-Length: " + str(len(body)).encode(), body, True),
+            (b"Transfer-Encoding: chunked", hex(len(body))[2:].encode() + b"\r\n" + body + b"\r\n0\r\n\r\n", True),
+        ]
+        for method in ("GET", "POST"):
+            for framing, encoded, valid in cases:
+                with self.subTest(method=method, framing=framing, valid=valid):
+                    status = b"201 Created" if method == "POST" else b"200 OK"
+                    response = transport.http.client.HTTPResponse(Socket(
+                        b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\n" + framing + b"\r\n\r\n" + encoded))
+                    response.begin()
+                    self.responses = [response]
+                    client = transport.Transport("example/fixture", 12, "ghp_" + "x" * 36)
+                    try:
+                        call = client.assign if method == "POST" else client.issue
+                        if valid:
+                            call(self.observed)
+                        else:
+                            with self.assertRaises(transport.Refusal):
+                                call(self.observed)
+                    finally:
+                        client.close()
 
     def test_dns_timeout_is_killed_reaped_and_credential_free(self):
         # Actual subprocess.run timeout cleanup with a deliberately sleeping

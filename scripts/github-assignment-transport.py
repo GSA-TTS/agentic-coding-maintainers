@@ -107,6 +107,31 @@ def decode(raw):
         raise Refusal("INVALID_JSON") from exc
 
 
+def read_chunked(response, maximum):
+    """Strict bounded chunk framing; extensions/trailers are unsupported.
+
+    HTTPResponse's chunk reader tolerates EOF while discarding trailers and does
+    not validate the data terminator bytes. Read its already-header-parsed body
+    stream directly so even syntactically valid JSON requires complete framing.
+    """
+    require(response.chunked and response.fp is not None, "INVALID_HTTP_FRAMING")
+    chunks = []
+    total = 0
+    while True:
+        line = response.fp.readline(128)
+        require(re.fullmatch(rb"[0-9A-Fa-f]{1,16}\r\n", line) is not None, "INVALID_HTTP_FRAMING")
+        size = int(line[:-2], 16)
+        require(total + size <= maximum, "OUTPUT_BYTE_BOUND")
+        if size == 0:
+            require(response.fp.readline(128) == b"\r\n", "INCOMPLETE_HTTP_BODY")
+            response.close()
+            return b"".join(chunks)
+        chunk = response.fp.read(size)
+        require(len(chunk) == size and response.fp.read(2) == b"\r\n", "INCOMPLETE_HTTP_BODY")
+        chunks.append(chunk)
+        total += size
+
+
 @contextlib.contextmanager
 def deadline(seconds):
     """Bound slow response headers; dispatch runs synchronously in this process.
@@ -203,9 +228,28 @@ class Transport:
                         "RATE_LIMITED")
                 expected = 201 if method == "POST" else 204 if assignable else 200
                 require(response.status == expected, "HTTP_STATUS_REFUSED")
-                raw = response.read(self._remaining + 1)
+                length = fields.get("content-length")
+                encoding = fields.get("transfer-encoding")
+                require(not (length is not None and encoding is not None), "CONFLICTING_HTTP_FRAMING")
+                if length is not None:
+                    require(re.fullmatch(r"0|[1-9][0-9]{0,18}", length) is not None,
+                            "INVALID_HTTP_FRAMING")
+                    length = int(length)
+                    require(length <= self._remaining, "OUTPUT_BYTE_BOUND")
+                if expected == 204:
+                    require(encoding is None and length in (None, 0), "INVALID_HTTP_FRAMING")
+                else:
+                    require((encoding == "chunked" and length is None)
+                            or (encoding is None and length is not None), "INVALID_HTTP_FRAMING")
+                raw = (read_chunked(response, self._remaining) if encoding == "chunked"
+                       else response.read(self._remaining + 1))
                 self._remaining -= len(raw)
                 require(self._remaining >= 0, "OUTPUT_BYTE_BOUND")
+                # read(amount) can return valid JSON after premature EOF without
+                # raising IncompleteRead. Require the declared body length before
+                # decode; chunk framing was fully checked by read_chunked above.
+                if length is not None:
+                    require(len(raw) == length, "INCOMPLETE_HTTP_BODY")
                 if expected == 204:
                     require(not raw, "INCOMPLETE_RESPONSE")
                     return {}, fields

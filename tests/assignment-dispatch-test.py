@@ -3,6 +3,7 @@
 
 import copy
 import importlib.util
+import io
 import json
 import os
 import pty
@@ -40,6 +41,20 @@ class DispatchTest(unittest.TestCase):
         self.fixture = fixture_module.ApprovedIntentTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
+        self.local = self.fixture.fixture.local
+        # Bind intent to a real separately stoppable worker BEFORE recording it.
+        self.worker = subprocess.Popen([sys.executable, "-I", "-B", "-c", "import time; time.sleep(120)"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.stop_worker)
+        status, start = self.fixture.core.process_identity(
+            self.worker.pid, environment={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
+        self.assertEqual(status, "alive")
+        self.local.task["worker"].update(pid=self.worker.pid, process_start=start)
+        self.local.original_worker = copy.deepcopy(self.local.task["worker"])
+        self.local.write(self.local.task_path, self.local.task)
+        for group, index in (("slots", self.local.task["leases"]["global_slot"]),
+                             ("implementation", self.local.task["leases"]["implementation_lane"])):
+            self.local.write(self.local.state / group / (str(index) + ".lock") / "owner.json", self.local.task["worker"])
         self.fixture.assert_recorded()
         self.local = self.fixture.fixture.local
         self.intent = self.fixture.request()
@@ -50,6 +65,11 @@ class DispatchTest(unittest.TestCase):
             intent_operation_id=self.intent["operation_id"], implementation_head="6" * 40, assignment_operation_id=None)
         self.parts = adapter.modules()
         self.trace = self.local.root / "transport-trace"
+
+    def stop_worker(self):
+        if self.worker.poll() is None:
+            self.worker.kill()
+        self.worker.wait(timeout=5)
 
     def task(self):
         return json.loads(self.local.task_path.read_text())
@@ -71,6 +91,43 @@ class DispatchTest(unittest.TestCase):
         real_transport = parts[-1]
         fixture = self
         actor = self.intent["identity_observation"]["actor_id"]
+        original_transport = real_transport.Transport
+
+        def truncated(method, observed):
+            claim = fixture.intent["claim"]
+            path = "/repos/" + claim["repo"] + "/issues/" + str(claim["issue"])
+            body = json.dumps({"id": observed["issue_id"], "node_id": observed["issue_node_id"],
+                "number": claim["issue"], "url": real_transport.API + path,
+                "repository_url": real_transport.API + "/repos/" + claim["repo"], "state": "open",
+                "locked": False, "assignees": [{"id": actor}]}).encode()
+
+            class Socket:
+                def makefile(self, mode):
+                    return io.BytesIO(b"HTTP/1.1 " + (b"201 Created" if method == "POST" else b"200 OK")
+                        + b"\r\nContent-Type: application/json\r\nContent-Length: "
+                        + str(len(body) + 10).encode() + b"\r\n\r\n" + body)
+
+            class Connection:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def request(self, *args, **kwargs):
+                    pass
+
+                def getresponse(self):
+                    response = real_transport.http.client.HTTPResponse(Socket())
+                    response.begin()
+                    return response
+
+                def close(self):
+                    pass
+
+            client = original_transport(claim["repo"], claim["issue"], "ghp_" + "x" * 36)
+            try:
+                with mock.patch.object(real_transport, "BoundedHTTPSConnection", Connection):
+                    return (client.assign if method == "POST" else client.issue)(observed)
+            finally:
+                client.close()
 
         class FakeTransport:
             def __init__(self, *args):
@@ -98,11 +155,15 @@ class DispatchTest(unittest.TestCase):
                 fixture.trace.write_text("POST")
                 if scenario == "lost":
                     raise OSError("lost response")
+                if scenario == "truncated-post":
+                    truncated("POST", observed)
 
             def issue(self, observed):
                 self.no_locks()
                 if scenario == "incomplete":
                     raise OSError("incomplete GET")
+                if scenario == "truncated-get":
+                    return truncated("GET", observed)
                 return [] if scenario == "ignored" else [actor]
 
             def close(self):
@@ -120,6 +181,12 @@ class DispatchTest(unittest.TestCase):
                     original_reserve = parts[3].reserve
                     original_durable = parts[4].durable
                     original_build = adapter.build
+                    original_release = parts[1].assignment_release
+
+                    def release(*args):
+                        if scenario == "terminal-crash":
+                            raise RuntimeError("durable settlement before marker acknowledgment")
+                        return original_release(*args)
 
                     def build(*args):
                         request = original_build(*args)
@@ -142,6 +209,7 @@ class DispatchTest(unittest.TestCase):
                     with (mock.patch.object(parts[3], "reserve", side_effect=reserve),
                           mock.patch.object(parts[4], "durable", side_effect=durable),
                           mock.patch.object(adapter, "build", side_effect=build),
+                          mock.patch.object(parts[1], "assignment_release", side_effect=release),
                           mock.patch.object(parts[3], "CAPACITY", 0 if scenario == "full" else parts[3].CAPACITY)):
                         result = adapter.dispatch(self.args, publisher)
                 os.write(1, ("\nRESULT:" + result["status"] + "\n").encode())
@@ -271,10 +339,19 @@ class DispatchTest(unittest.TestCase):
 
     def test_unknown_presence_never_confirms_or_releases(self):
         self.assertEqual(self.run_vertical("lost"), "UNKNOWN")
+        self.stop_worker()
         self.assertEqual(self.rows()[2]["completion"], "UNKNOWN")
         self.assertIsNone(self.rows()[3])
         self.assert_pending_guards()
         args = copy.copy(self.args)
+        args.action = "settle"
+        args.expected_revision = self.task()["revision"]
+        args.assignment_operation_id = self.rows()[1]["binding"]["operation_id"]
+        with (mock.patch.dict(os.environ, {}, clear=True),
+              mock.patch.object(adapter, "modules", return_value=self.parts),
+              mock.patch.object(adapter, "implementation_head", side_effect=lambda expected: expected),
+              self.assertRaisesRegex(adapter.Refusal, "PRODUCER_TERMINATION_PROOF_UNSUPPORTED")):
+            adapter.recover(args, publisher)
         args.action = "arbitrate"
         with self.assertRaisesRegex(adapter.Refusal, "PRODUCER_TERMINATION_PROOF_UNSUPPORTED"):
             adapter.recover(args, publisher)
@@ -288,6 +365,9 @@ class DispatchTest(unittest.TestCase):
 
     def test_confirmed_incomplete_get_only_settlement(self):
         self.assertEqual(self.run_vertical("incomplete"), "UNKNOWN")
+        self.stop_worker()
+        self.assertEqual(self.parts[1].process_identity(
+            self.worker.pid, environment={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}), ("absent", None))
         _, request, original_evidence, _ = self.rows()
         args = copy.copy(self.args)
         args.action = "settle"
@@ -322,6 +402,38 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(self.rows()[2], original_evidence)
         self.assertEqual(self.rows()[3]["result_ids"], [actor])
         self.assertEqual(self.task()["assignment_dispatch"]["phase"], "settled")
+
+    def test_dead_worker_terminal_acknowledgment_recovery(self):
+        self.assertIn("REFUSED", self.run_vertical("terminal-crash"))
+        _, request, receipt, terminal = self.rows()
+        self.assertIsNotNone(terminal)
+        self.stop_worker()
+        args = copy.copy(self.args)
+        args.action = "settle"
+        args.expected_revision = request["reserved_task"]["revision"]
+        args.assignment_operation_id = request["binding"]["operation_id"]
+        with (mock.patch.dict(os.environ, {}, clear=True),
+              mock.patch.object(adapter, "modules", return_value=self.parts),
+              mock.patch.object(adapter, "implementation_head", side_effect=lambda expected: expected),
+              mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("unexpected network"))):
+            result = adapter.recover(args, publisher)
+        self.assertEqual(result["status"], "ASSIGNMENT_CONFIRMED_OBSERVED")
+        self.assertEqual(self.rows()[2:], (receipt, terminal))
+        self.assertEqual(self.task()["worker"], request["reserved_task"]["worker"])
+        self.assertEqual(self.task()["leases"], request["reserved_task"]["leases"])
+
+    def test_truncated_post_never_confirms(self):
+        self.assertEqual(self.run_vertical("truncated-post"), "UNKNOWN")
+        self.assertEqual(self.rows()[2]["completion"], "UNKNOWN")
+        self.assertIsNone(self.rows()[3])
+        self.assert_pending_guards()
+
+    def test_truncated_get_never_settles(self):
+        self.assertEqual(self.run_vertical("truncated-get"), "UNKNOWN")
+        self.assertEqual(self.rows()[2]["completion"], "CONFIRMED")
+        self.assertIsNone(self.rows()[2]["result_ids"])
+        self.assertIsNone(self.rows()[3])
+        self.assert_pending_guards()
 
     def assert_pending_guards(self):
         core = self.parts[1]

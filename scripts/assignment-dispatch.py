@@ -163,9 +163,15 @@ class Store:
         require(intent["schema_version"] == 2 and row[1] == self.typed.digest(intent), "INTENT_CHANGED")
         return intent
 
-    def guard(self, db, request, *, original=False):
+    def guard(self, db, request, *, original=False, recovery=False):
         self.journal.validate_store(db)
         self.typed.validate_request(db, request)
+        if recovery:
+            require(not original, "RECOVERY_BINDING_INVALID")
+            receipt = self.typed.get(db, "assignment_evidence", request["evidence_id"])
+            require(receipt is not None and receipt["completion"] in {"CONFIRMED", "NOT_SENT"},
+                    "PRODUCER_TERMINATION_PROOF_UNSUPPORTED")
+            self.typed.validate_evidence(request, receipt)
         task = self.task()
         expected = request["original_task" if original else "reserved_task"]
         require(task == expected, "TASK_CHANGED")
@@ -174,7 +180,7 @@ class Store:
         self.args = copy.copy(args)
         self.args.expected_revision = expected["revision"]
         try:
-            self.ownership(task)
+            self.ownership(task, active=not recovery)
         finally:
             self.args = args
         if not original:
@@ -211,11 +217,14 @@ def evidence(request, completion, result_ids):
             "result_ids": result_ids, "producer": "SYNCHRONOUS_TRANSPORT_CLOSED"}
 
 
-def settle(store, request, receipt, outcome, result_ids=None):
+def settle(store, request, receipt, outcome, result_ids=None, *, recovery=False):
     """Explicit evidence then settlement durability; task anchor cleared LAST."""
     t = store.typed
     with store.locked() as db:
-        store.guard(db, request)
+        store.guard(db, request, recovery=recovery)
+        if recovery:
+            require(t.get(db, "assignment_evidence", request["evidence_id"]) == receipt,
+                    "RECOVERY_EVIDENCE_CHANGED")
         t.fill(db, "assignment_evidence", request["evidence_id"], receipt)
         store.durable(db)
         if outcome is None:
@@ -227,7 +236,7 @@ def settle(store, request, receipt, outcome, result_ids=None):
                     "result_ids": receipt["result_ids"] if result_ids is None else result_ids}
         t.fill(db, "assignment_settlements", request["settlement_id"], terminal)
         store.durable(db)
-        store.guard(db, request)
+        store.guard(db, request, recovery=recovery)
         store.core.assignment_release(store.root, request["reserved_task"])
         return {"status": outcome, "reservation": "settled", "completion": completion,
                 "satisfaction": satisfaction}
@@ -326,7 +335,7 @@ def recover(args, publisher):
                 and request["binding"]["intent_operation_id"] == args.intent_operation_id,
                 "RESERVATION_REQUEST_CHANGED")
         require(store.task()["revision"] == args.expected_revision, "REVISION_MISMATCH")
-        store.guard(db, request)
+        store.guard(db, request, recovery=True)
         receipt = t.get(db, "assignment_evidence", request["evidence_id"])
         terminal = t.get(db, "assignment_settlements", request["settlement_id"])
         if terminal is not None:
@@ -345,7 +354,7 @@ def recover(args, publisher):
             outcome = None
         intent = store.intent(db)
     if outcome is not None:
-        return settle(store, request, receipt, outcome)
+        return settle(store, request, receipt, outcome, recovery=True)
     # Confirmed transport with incomplete observation: bounded GET-only recovery.
     require(token is not None, "EXPLICIT_GH_TOKEN_REQUIRED")
     client = transport.Transport(intent["claim"]["repo"], intent["claim"]["issue"], token)
@@ -356,7 +365,7 @@ def recover(args, publisher):
         client.close()
     actual, _ = transport.actual_result(request["binding"]["prior_assignee_ids"], ids, request["binding"]["publisher"]["id"])
     outcome = "ASSIGNMENT_CONFIRMED_OBSERVED" if actual == "PRESERVED_ACTOR_PRESENT" else actual
-    return settle(store, request, receipt, outcome, ids)
+    return settle(store, request, receipt, outcome, ids, recovery=True)
 
 
 def arguments():

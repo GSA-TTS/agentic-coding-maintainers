@@ -50,6 +50,14 @@ process identity probe also receives a minimal environment. A rolled-back typed
 insertion rehearsal precedes the marker, checking actual namespace/capacity/page
 allocation before repeating the same checks in the real reservation transaction.
 
+Fixed-head review rework from `15c12b27369040bf56ffe86be8eda2994723b364`
+requires complete HTTP framing before JSON acceptance (including strict chunk
+termination), and allows stopped-worker settlement only from already retained,
+validated closed-producer evidence with known completion. Original task/lease
+bindings remain exact; missing or UNKNOWN evidence stays fenced. Fixtures use
+real HTTPResponse parsing over bounded synthetic socket streams and real reaped
+workers for terminal acknowledgment and confirmed GET-only recovery.
+
 Bounded issue #116 pilot based on canonical maintainer revision `00091f99`
 (approved 2026-11-05): opt-in schema-3 cooperative task/worker session and retained
 generation, explicit lock-held lifecycle comparisons, complete capacity metadata
