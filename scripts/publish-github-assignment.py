@@ -126,6 +126,18 @@ def validate_binding(binding):
     require(len(canonical(binding)) <= MAX_DISPLAY_BYTES, "APPROVAL_DISPLAY_BOUND")
 
 
+def terminal_settings(attributes):
+    """Compare settings without PENDIN's transient input-reprocessing state.
+
+    The kernel may clear PENDIN while reading pending input (observed on macOS).
+    It is not an approval policy setting. Preserve every other flag, speed and
+    control character; platforms without PENDIN retain exact comparison.
+    """
+    settings = list(attributes)
+    settings[3] &= ~getattr(termios, "PENDIN", 0)
+    return settings
+
+
 def collect_approval(binding):
     """Read one exact challenge from /dev/tty, outside all coordinator/DB locks.
 
@@ -175,7 +187,8 @@ def collect_approval(binding):
             require(bool(chunk) and len(received) + len(chunk) <= 256, "APPROVAL_DECLINED")
             received.extend(chunk)
         require(bytes(received) == (challenge + "\n").encode("ascii"), "APPROVAL_DECLINED")
-        require(os.tcgetpgrp(fd) == os.getpgrp() and termios.tcgetattr(fd) == attributes,
+        require(os.tcgetpgrp(fd) == os.getpgrp()
+                and terminal_settings(termios.tcgetattr(fd)) == terminal_settings(attributes),
                 "TTY_CHANGED_DURING_INTERACTION")
         approval = _Approval(binding, started, _SEAL)
         approval.validate(binding)

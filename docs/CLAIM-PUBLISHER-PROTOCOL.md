@@ -225,6 +225,10 @@ requires an exact digest challenge from a foreground canonical `/dev/tty`, and
 revalidates monotonic age and binding in memory. It has no file, boolean, stdin,
 or environment approval override. The 120-second ceiling includes interaction
 time. Offline PTY fixtures exercise this actual path, not human authentication.
+Terminal stability comparison excludes only the platform's transient `PENDIN`
+input-reprocessing flag, which macOS may clear during input. Foreground ownership,
+canonical mode, every other terminal flag, speeds and control characters remain
+checked. Platforms without `PENDIN` retain exact attribute comparison.
 
 The candidate command now composes `assignment-dispatch.py`, the schema-3 core
 reservation adapter, and journal v6 in an assignment-only path. It requires a
