@@ -215,9 +215,9 @@ available with debugging overrides removed; redirect handling and credential
 routing are not attested secure by this composition. A current immutable actor
 observed at preparation is not a verified actor at issuance until a separately
 reviewed binding is persisted. The actor/session/publisher relationship is not
-established. This bundle cannot be fed into the existing intent contract: a
-future typed v2 intent requires a separate binder and explicit schema review,
-not implicit acceptance or journal upgrade. The existing intent command below
+established. This bundle cannot be fed into an intent command. The separate
+typed v2 binder below collects its own fresh private evidence in-process;
+it does not accept this output as input. The existing intent command below
 continues to record only its existing request, without this declaration.
 
 `tests/prepare-approved-claim-test.py` reuses actual schema-3 core CLI fixtures
@@ -225,6 +225,100 @@ and the fixed-argv fake `gh` fixture, with secret-output filtering, strict ID an
 CLI refusals, repeated-identity changes, task changes at the network boundary,
 closed/locked observations, and shared transport deadline/byte bounds. Run it
 and `make check` only in an independently justified isolated guest.
+
+### Identity-bound local intent (request v2, journal v5)
+
+`scripts/journal-approved-claim.py` takes all preparation flags and all six
+identity/declaration options shown above. It records local pending intent only.
+It does not authenticate the declared reviewer, session, publisher, or issuance
+actor, enable remote effects, or make any old or new row publishable.
+
+Before GET it checks retained task/lease/file snapshots, exact rendered text and
+approved digest, and reads the existing operation from private DELETE-mode
+storage without initialization or migration. Missing monitor storage is allowed
+only when the existing coordinator state and current ownership validate. Invalid
+inputs and conflicting existing operations cause no GET or state writes. A v1
+row with the same operation is a conflict; there is no automatic promotion.
+
+For a new operation, `prepare-approved-claim.py.collect_private` performs the
+same six fixed GETs and repeated local/remote identity checks as preparation.
+No coordinator lock or SQLite reader spans the network interval. Its private
+in-process result is not an input-file or stdout contract. Afterward, under the
+coordinator lock, the binder compares full retained task/lease/file evidence,
+prepared text, selected journal identity/fingerprint/version/store ID and exact
+operation row again. Only then does it open writable storage and append.
+
+Request v2 preserves all v1 fields and adds these exact objects:
+
+```text
+identity_observation:
+  schema_version: 1
+  actor_id, actor_node_id, actor_login
+  repository_id, repository_node_id
+  issue_id, issue_node_id
+  observed_at: YYYY-MM-DDTHH:MM:SS.ffffffZ
+  remote_coverage: repeated_identity_gets
+public_text_declaration:
+  schema_version: 1
+  reviewer
+  approved_body_sha256
+  public_text_approval: DECLARED_UNAUTHENTICATED
+```
+
+Numeric IDs are strict positive integers at most 2^63−1. Node IDs are opaque
+bounded ASCII tokens (1–256 characters from letters, digits, `_+/=-`); arbitrary
+prose is refused. Actor login equals `claim.actor`. Reviewer is a syntactically
+valid declared login. The approved hash equals the stored body hash and SHA-256
+of the exact canonical rendered text, including its final newline. `observed_at`
+is local collection time, not a server attestation. Unknown fields, invalid
+types, duplicate JSON keys and changed row hashes are refused.
+
+Only explicit insertion of a v2 request migrates the shared journal to
+`meta.version: 5`, with exactly the v4 tables and columns. Earlier versions gain
+only the already-defined missing tables. Migration and insertion share one FULL
+`BEGIN IMMEDIATE` transaction; old request/receipt bytes and hashes remain
+unchanged. Read-only opens never migrate. Version 5 is a runtime compatibility
+boundary, not a new authority: upgrade all shared-store consumers before using
+it. Previous v4 validators reject the header version before row interpretation.
+An old caller may perform unrelated reads before opening the store; the header
+is not a network-dispatch interlock. A mixed v4 store containing v2 requests is
+invalid even to the upgraded validator. Archive complete stores for rollback;
+do not downgrade the header or rewrite bound rows.
+
+Exact replay requires current task binding/digest/ownership/generation, claim,
+text, expected numeric IDs, reviewer and approved digest to match. It performs
+zero GETs, preserves the original observation timestamp and generation, and
+repeats the existing descriptor-validated database/directory/parent fsync
+barriers. A lost postcommit acknowledgment may leave a row; exact replay repairs
+durability without replacing evidence. Replay never claims current remote
+freshness. Successful recording/replay uses the existing sanitized intent
+result contract and exit 0; conflicts use exit 4 and unverified results exit 3.
+
+For v2, `observe-claim-intent.py` and receipt recording additionally require
+`--expected-actor-id`, `--expected-repo-id`, and `--expected-issue-id`. These must
+equal persisted numeric IDs before any GET, including historical replay. A
+private transport wrapper checks the actual `/user`, repository and issue
+responses against stored numeric/node identity and actor login/type before
+comment pagination, and checks the final issue reread too. Mismatch returns
+UNVERIFIED without an identity-conflict receipt. The existing body matcher
+requires comment author numeric ID/login to equal the freshly read user, now
+bound to the persisted actor. The wrapper shares the observer's existing
+deadline/byte budget; it exports no raw body and adds no identity GET rounds.
+V1 observation behavior remains unchanged.
+
+Historical receipt schema stays v1: its existing `intent_request_sha256` binds
+the complete v2 request, and repository/issue summary IDs must equal the stored
+v2 identity. Digests bind retained content, not source freshness or proof of
+network execution. Existing monitor, v1 intent and acknowledgment APIs preserve
+v5; the candidate-binding missing-task-receipt refusal and observation-ID
+reservations apply before authoritative task writes in v5 as in v4.
+
+`tests/journal-approved-claim-test.py` reuses actual schema-3 CLI, legacy intent,
+SQLite, bounded fake-gh and candidate-binding fixtures. It covers fresh/replay,
+strict declarations, migration/rollback, lost durability acknowledgment,
+compatibility, orphan acknowledgments and v2 observer/receipt identity gates.
+Fixture additions are coverage definitions, not passing execution evidence;
+run the fixture and `make check` only in an independently isolated guest.
 
 ### Explicit local publication intent
 

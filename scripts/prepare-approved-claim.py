@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 
 
 def report(status, reason):
@@ -106,8 +107,11 @@ def identities(args, claim, observer, transport):
             (issue["node_id"], anchor))
 
 
-def collect(args, claim, prepare, observer):
+def collect_private(args, claim, prepare, observer, *, expected=None):
+    """Fresh in-process evidence only; never accepts or exports a capture artifact."""
     before, public = snapshot(args, claim, prepare)
+    if expected is not None:
+        prepare.codec.require((before, public) == expected, "LOCAL_SNAPSHOT_CHANGED")
     prepare.codec.require(public["comment_sha256"] == args.approved_body_sha256
                           == prepare.codec.digest(prepare.codec.render(claim)),
                           "APPROVED_BODY_MISMATCH")
@@ -127,6 +131,20 @@ def collect(args, claim, prepare, observer):
         except (Refusal, prepare.codec.Unverified, prepare.preflight.Unverified,
                 OSError, ValueError, TypeError, UnicodeError, RecursionError) as exc:
             raise Refusal("UNVERIFIED", "LOCAL_SNAPSHOT_CHANGED") from exc
+    observed = {"schema_version": 1, "actor_id": first[0][0], "actor_node_id": first[0][1],
+                "actor_login": first[0][2], "repository_id": first[1][0],
+                "repository_node_id": first[1][1], "issue_id": first[2][1][0],
+                "issue_node_id": first[2][0],
+                "observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                "remote_coverage": "repeated_identity_gets"}
+    declaration = {"schema_version": 1, "reviewer": args.reviewer,
+                   "approved_body_sha256": args.approved_body_sha256,
+                   "public_text_approval": "DECLARED_UNAUTHENTICATED"}
+    return before, public, first, observed, declaration
+
+
+def collect(args, claim, prepare, observer):
+    _, public, first, _, _ = collect_private(args, claim, prepare, observer)
     output = report("IDENTITY_BOUND_DECLARATION", "PRE_INTENT_OBSERVATION_AND_DECLARATION")
     output.update(bound_retained_snapshot=True, remote_coverage="repeated_identity_gets",
                   actor_id=first[0][0], repository_id=first[1][0], issue_id=first[2][1][0],

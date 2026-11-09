@@ -111,6 +111,7 @@ def record(args, claim, prepare, core, journal, intent, observe, observer):
     if prior is not None and (prior["operation_id"] != claim["operation_id"]
                               or prior["intent_request_sha256"] != before[1]):
         raise observe.Refusal("CONFLICT", "OBSERVATION_CONFLICT")
+    # Snapshot validates v2 expected immutable IDs before either replay or GET.
     # Replay never invokes the observer, even if the remote state has changed.
     collected = None if prior is not None else observe.collect(
         args, claim, prepare, journal, observer, initial=initial, observation_id=args.observation_id)

@@ -143,7 +143,8 @@ def validate_store(db: sqlite3.Connection) -> None:
     names = {row["name"] for row in objects}
     versions = {1: TABLES, 2: TABLES | {"binding_acks"},
                 3: TABLES | {"binding_acks", "claim_intents"},
-                4: TABLES | {"binding_acks", "claim_intents", "claim_observations"}}
+                4: TABLES | {"binding_acks", "claim_intents", "claim_observations"},
+                5: TABLES | {"binding_acks", "claim_intents", "claim_observations"}}
     if names not in versions.values() or any(row["type"] != "table" for row in objects):
         raise JournalError("unsupported journal schema")
     meta = db.execute("SELECT * FROM meta").fetchall()
@@ -168,6 +169,8 @@ def validate_store(db: sqlite3.Connection) -> None:
         for row in db.execute("SELECT * FROM claim_intents"):
             request = decode_intent(row["request"])
             validate_claim_intent(request)
+            if request["schema_version"] == 2 and meta[0]["version"] != 5:
+                raise JournalError("identity-bound intent requires journal version 5")
             if (row["operation_id"] != request["operation_id"] or row["operation_id"] in seen
                     or request["store_id"] != meta[0]["store_id"]
                     or row["request_sha256"] != fingerprint(request)):
@@ -284,7 +287,7 @@ def decode_intent(raw: str) -> dict[str, Any]:
 
 
 def validate_claim_intent(request: dict[str, Any]) -> None:
-    """Pure, packaged v1 publication-intent validation; no consumer imports or effects."""
+    """Pure, packaged publication-intent validation; no consumer imports or effects."""
     def fields(value, keys):
         if type(value) is not dict or set(value) != set(keys.split()):
             raise JournalError("unsupported claim intent fields")
@@ -304,8 +307,11 @@ def validate_claim_intent(request: dict[str, Any]) -> None:
         except ValueError as exc:
             raise JournalError("invalid claim intent timestamp") from exc
 
-    fields(request, "schema_version action operation_id store_id claim comment comment_sha256 binding")
-    if type(request["schema_version"]) is not int or request["schema_version"] != 1 or request["action"] != "claim-publication":
+    if type(request) is not dict or type(request.get("schema_version")) is not int or request["schema_version"] not in {1, 2}:
+        raise JournalError("unsupported claim intent version/action")
+    extra = " identity_observation public_text_declaration" if request["schema_version"] == 2 else ""
+    fields(request, "schema_version action operation_id store_id claim comment comment_sha256 binding" + extra)
+    if request["action"] != "claim-publication":
         raise JournalError("unsupported claim intent version/action")
     token(request["operation_id"], r"[0-9a-f]{32}")
     token(request["store_id"], r"[0-9a-f]{32}")
@@ -337,6 +343,29 @@ def validate_claim_intent(request: dict[str, Any]) -> None:
             "<!-- native-claim:v1 " + canonical(claim) + " -->\n")
     if request["comment"] != body or hashlib.sha256(body.encode("utf-8")).hexdigest() != request["comment_sha256"]:
         raise JournalError("claim intent public body differs")
+    if request["schema_version"] == 2:
+        observed = request["identity_observation"]
+        fields(observed, "schema_version actor_id actor_node_id actor_login repository_id repository_node_id issue_id issue_node_id observed_at remote_coverage")
+        declaration = request["public_text_declaration"]
+        fields(declaration, "schema_version reviewer approved_body_sha256 public_text_approval")
+        for item in (observed, declaration):
+            if type(item["schema_version"]) is not int or item["schema_version"] != 1:
+                raise JournalError("unsupported identity declaration version")
+        for key in ("actor_id", "repository_id", "issue_id"):
+            number(observed[key])
+        for key in ("actor_node_id", "repository_node_id", "issue_node_id"):
+            token(observed[key], r"[A-Za-z0-9_+/=-]{1,256}")
+        token(observed["actor_login"], login)
+        token(declaration["reviewer"], login)
+        if "--" in declaration["reviewer"]:
+            raise JournalError("invalid declared reviewer")
+        stamp(observed["observed_at"])
+        token(observed["observed_at"], r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
+        if (observed["actor_login"] != claim["actor"]
+                or observed["remote_coverage"] != "repeated_identity_gets"
+                or declaration["public_text_approval"] != "DECLARED_UNAUTHENTICATED"
+                or declaration["approved_body_sha256"] != request["comment_sha256"]):
+            raise JournalError("identity declaration differs")
     binding = request["binding"]
     fields(binding, "task_id created_at task_sha256 revision generation session_id worker")
     token(binding["task_id"], r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
@@ -387,7 +416,7 @@ def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guar
         reject_reserved_observation_ids(db, claim_intent_identifiers(request))
         if guard is not None:
             guard()
-        if version in {3, 4}:
+        if version in {3, 4, 5}:
             prior = db.execute("SELECT request FROM claim_intents WHERE operation_id=?", (request["operation_id"],)).fetchone()
             if prior:
                 if prior[0] != raw:
@@ -403,6 +432,10 @@ def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guar
         if version in {1, 2}:
             db.execute("CREATE TABLE claim_intents (operation_id TEXT PRIMARY KEY NOT NULL, request TEXT NOT NULL, request_sha256 TEXT NOT NULL)")
             db.execute("UPDATE meta SET version=3")
+        if request["schema_version"] == 2 and version != 5:
+            if version in {1, 2, 3}:
+                db.execute("CREATE TABLE claim_observations (observation_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT NOT NULL REFERENCES claim_intents(operation_id), request_sha256 TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
+            db.execute("UPDATE meta SET version=5")
         db.execute("INSERT INTO claim_intents VALUES(?,?,?)", (request["operation_id"], raw, fingerprint(request)))
         validate_store(db)
         if guard is not None:
@@ -457,6 +490,9 @@ def validate_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any]) 
             or receipt["intent_request_sha256"] != row[1] or row[1] != fingerprint(request)
             or summary["issue_number"] != request["claim"]["issue"]):
         raise JournalError("claim observation intent differs")
+    if request["schema_version"] == 2 and any(
+            summary[key] != request["identity_observation"][key] for key in ("repository_id", "issue_id")):
+        raise JournalError("claim observation immutable target differs")
     if receipt["status"] == "VISIBLE_MATCH":
         if (type(summary["comment_id"]) is not int or not 1 <= summary["comment_id"] <= 2**63 - 1
                 or summary["comment_sha256"] != request["comment_sha256"]
@@ -500,7 +536,7 @@ def reject_reserved_observation_ids(db: sqlite3.Connection, identifiers) -> None
     Caller validates the store and retains its transaction/coordinator fences.
     Legacy versions have no observation namespace and retain their behavior.
     """
-    if db.execute("SELECT version FROM meta").fetchone()[0] != 4:
+    if db.execute("SELECT version FROM meta").fetchone()[0] not in {4, 5}:
         return
     reserved = {row[0] for row in db.execute("SELECT observation_id FROM claim_observations")}
     if reserved.intersection(identifiers):
@@ -509,7 +545,7 @@ def reject_reserved_observation_ids(db: sqlite3.Connection, identifiers) -> None
 
 def claim_observation(db: sqlite3.Connection, observation_id: str) -> dict[str, Any] | None:
     version = db.execute("SELECT version FROM meta").fetchone()[0]
-    if version not in {3, 4}:
+    if version not in {3, 4, 5}:
         raise JournalError("claim observation requires existing intent schema")
     if version == 3:
         return None
@@ -525,7 +561,7 @@ def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *,
         db.execute("BEGIN IMMEDIATE")
         validate_store(db)
         version = db.execute("SELECT version FROM meta").fetchone()[0]
-        if version not in {3, 4}:
+        if version not in {3, 4, 5}:
             raise JournalError("claim observation requires existing intent schema")
         validate_claim_observation(db, receipt)
         guard()
@@ -534,7 +570,7 @@ def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *,
             if prior != receipt:
                 raise JournalError("conflicting claim observation")
             return "HISTORICAL_REPLAY"
-        count = db.execute("SELECT count(*) FROM claim_observations").fetchone()[0] if version == 4 else 0
+        count = db.execute("SELECT count(*) FROM claim_observations").fetchone()[0] if version in {4, 5} else 0
         if count >= MAX_CLAIM_OBSERVATIONS:
             raise JournalError("claim observation capacity reached")
         if version == 3:

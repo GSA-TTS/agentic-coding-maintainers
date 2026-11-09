@@ -257,7 +257,7 @@ def bind(root: Path, task_id: str, request: dict[str, Any], config_path: Path) -
                 if not (root/"monitor/history.sqlite3").is_file():
                     raise Unverified("existing observation journal required")
                 db = journal.open_store(root/"monitor",writable=True)
-                if db.execute("SELECT version FROM meta").fetchone()[0] in {2, 3, 4} and db.execute(
+                if db.execute("SELECT version FROM meta").fetchone()[0] in {2, 3, 4, 5} and db.execute(
                         "SELECT 1 FROM binding_acks WHERE incarnation=?", (incarnation(record),)).fetchone():
                     raise Unverified("journal acknowledgment exists but authoritative task receipt is missing")
                 observation, as_of = resolve(db,request,config,journal)
