@@ -88,8 +88,14 @@ class ApprovalTest(unittest.TestCase):
                 with mock.patch.object(publisher.termios, "tcgetattr", side_effect=observed_attributes):
                     approval = publisher.collect_approval(value)
                 if after == "expiry":
-                    with mock.patch.object(publisher.time, "monotonic",
-                                           return_value=approval._started + 120):
+                    # Fix both timestamps: (real_start + 120) - real_start can
+                    # round below 120 across a floating-point exponent boundary.
+                    with (mock.patch.object(approval, "_started", 1000.0),
+                          mock.patch.object(publisher.time, "monotonic", return_value=1120.0)):
+                        approval.validate(value)
+                elif after == "before-expiry":
+                    with (mock.patch.object(approval, "_started", 1000.0),
+                          mock.patch.object(publisher.time, "monotonic", return_value=1119.5)):
                         approval.validate(value)
                 elif after == "clock-backwards":
                     with mock.patch.object(publisher.time, "monotonic",
@@ -200,6 +206,7 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(self.interaction("silent", short_deadline=True)[0], "APPROVAL_EXPIRED")
 
     def test_age_revalidated_after_interaction(self):
+        self.assertEqual(self.interaction(after="before-expiry")[0], "APPROVED")
         for after in ("expiry", "clock-backwards", "unmeasurable"):
             with self.subTest(after=after):
                 self.assertEqual(self.interaction(after=after)[0], "APPROVAL_EXPIRED")
