@@ -88,7 +88,9 @@ environment, head and observed result. Run required repository checks (including
 `make check` here) before requesting review. If execution is blocked, preserve
 that limitation rather than marking the check passed.
 
-For every delivered PR provide:
+Draft and refresh the PR body using the canonical
+[PR/MR description guidance](PR-DESCRIPTIONS.md). Keep detailed evidence linked
+from the concise description. For every delivered PR provide:
 
 - PR URL, owning repo, default-branch base and exact reviewed head;
 - scope/acceptance result and integration order, including unmet prerequisites;
