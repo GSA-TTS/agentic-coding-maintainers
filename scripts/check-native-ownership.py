@@ -146,7 +146,9 @@ def validate_base_task(task, bound=False):
     text(task["state"])
     require(task["state"] in STATES)
     text(task["kind"])
-    require(task["kind"] in {"implementation", "review", "monitor"})
+    require(task["kind"] in {"implementation", "review", "monitor", "intake"})
+    if task["kind"] == "intake":
+        require(not any(task[key] for key in ("branch", "worktree", "owned_paths", "restricted_paths")))
     single_line(task["scope"], 500)
     require(task["scope_key"] == hashlib.sha256(task["scope"].encode("utf-8")).hexdigest())
     for key in ("owner", "repo", "branch", "worktree", "base_sha", "head_sha", "reviewed_sha",
@@ -318,10 +320,25 @@ def validate_assignment_dispatch(task):
     if "assignment_dispatch" not in task:
         return
     marker = task["assignment_dispatch"]
+    extra = {"action", "grant_id", "target", "logical_key"} if type(marker) is dict and marker.get("version") == 2 else set()
     fields(marker, {"version", "phase", "operation_id", "attempt_id", "store_id", "intent_sha256",
-                    "original_sha256", "original_revision", "implementation_head"})
-    require(type(marker["version"]) is int and marker["version"] == 1
+                    "original_sha256", "original_revision", "implementation_head"} | extra)
+    require(type(marker["version"]) is int and marker["version"] in {1, 2}
             and marker["phase"] in {"pending", "settled"})
+    if marker["version"] == 2:
+        require(task["kind"] == "intake" and marker["action"] in {"issue-create", "assignees-add"})
+        matches(marker["grant_id"], HEX32)
+        matches(marker["logical_key"], HEX64)
+        keys = {"repository", "repository_id", "repository_node_id"}
+        if marker["action"] == "assignees-add":
+            keys |= {"issue", "issue_id", "issue_node_id"}
+        fields(marker["target"], keys)
+        require(marker["target"]["repository"] == task["repo"])
+        for key in keys - {"repository"}:
+            if key.endswith("node_id"):
+                matches(marker["target"][key], re.compile(r"[A-Za-z0-9_+/=-]{1,256}"))
+            else:
+                integer(marker["target"][key], 1, MAX_INT64)
     for key in ("operation_id", "attempt_id", "store_id"):
         matches(marker[key], HEX32)
     for key in ("intent_sha256", "original_sha256"):

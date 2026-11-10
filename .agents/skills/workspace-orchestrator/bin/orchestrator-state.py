@@ -335,8 +335,10 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
         raise UnknownError(f"task state is invalid: {raw['state']!r}")
     if raw["scope_key"] != scope_key(safe_scope(str(raw["scope"]))):
         raise UnknownError("task scope hash does not match scope")
-    if raw["kind"] not in {"implementation", "review", "monitor"}:
+    if raw["kind"] not in {"implementation", "review", "monitor", "intake"}:
         raise UnknownError("task kind is invalid")
+    if raw["kind"] == "intake" and (raw["branch"] or raw["worktree"] or raw["owned_paths"] or raw["restricted_paths"]):
+        raise UnknownError("intake cannot own an implementation branch, worktree or paths")
     for field in ("owned_paths", "restricted_paths", "acceptance_criteria", "dependencies", "reviewers", "findings", "validation"):
         if not isinstance(raw[field], list) or len(raw[field]) > 200 or any(not isinstance(v, str) or len(v) > 1000 for v in raw[field]):
             raise UnknownError(f"task field {field!r} is invalid or oversized")
@@ -627,12 +629,31 @@ def validate_assignment_dispatch(record):
     marker = record.get("assignment_dispatch")
     if "assignment_dispatch" not in record:
         return
+    extra = {"action", "grant_id", "target", "logical_key"} if type(marker) is dict and marker.get("version") == 2 else set()
     if (record["schema_version"] != BOUND_SCHEMA or type(marker) is not dict
             or set(marker) != {"version", "phase", "operation_id", "attempt_id", "store_id",
-                               "intent_sha256", "original_sha256", "original_revision", "implementation_head"}
-            or type(marker["version"]) is not int or marker["version"] != 1
+                               "intent_sha256", "original_sha256", "original_revision", "implementation_head"} | extra
+            or type(marker["version"]) is not int or marker["version"] not in {1, 2}
             or marker["phase"] not in {"pending", "settled"}):
         raise UnknownError("invalid assignment reservation")
+    if marker["version"] == 2:
+        if (marker["action"] not in {"issue-create", "assignees-add"} or record["kind"] != "intake"
+                or type(marker["grant_id"]) is not str or re.fullmatch(r"[0-9a-f]{32}", marker["grant_id"]) is None
+                or type(marker["logical_key"]) is not str or re.fullmatch(r"[0-9a-f]{64}", marker["logical_key"]) is None):
+            raise UnknownError("invalid standing grant marker")
+        target = marker["target"]
+        keys = {"repository", "repository_id", "repository_node_id"}
+        if marker["action"] == "assignees-add":
+            keys |= {"issue", "issue_id", "issue_node_id"}
+        if type(target) is not dict or set(target) != keys or target["repository"] != record["repo"]:
+            raise UnknownError("invalid standing grant target")
+        for key in keys - {"repository"}:
+            value = target[key]
+            if key.endswith("node_id"):
+                if type(value) is not str or re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", value) is None:
+                    raise UnknownError("invalid standing grant target node")
+            elif type(value) is not int or not 0 < value <= MAX_GENERATION:
+                raise UnknownError("invalid standing grant target number")
     for key, length in (("operation_id", 32), ("attempt_id", 32), ("store_id", 32),
                         ("intent_sha256", 64), ("original_sha256", 64), ("implementation_head", 40)):
         if type(marker[key]) is not str or re.fullmatch(r"[0-9a-f]{" + str(length) + "}", marker[key]) is None:
@@ -712,6 +733,11 @@ def assignment_release(root, reserved):
     finally:
         db.close()
     final = copy.deepcopy(current)
+    if request["version"] == 2 and settlement["outcome"] == "ISSUE_CREATED_OBSERVED":
+        if final["kind"] != "intake" or final["tracker_type"] != "none" or final["tracker_number"] != 0:
+            raise UnknownError("created issue binding already changed")
+        final["tracker_type"] = "issue"
+        final["tracker_number"] = settlement["issue"]["number"]
     final["assignment_dispatch"]["phase"] = "settled"
     final["revision"] += 1
     final["updated_at"] = now()
@@ -1678,7 +1704,7 @@ def parser() -> argparse.ArgumentParser:
     create = sub.add_parser("create")
     create.add_argument("task_id")
     create.add_argument("--scope", required=True)
-    create.add_argument("--kind", choices=("implementation", "review", "monitor"), required=True)
+    create.add_argument("--kind", choices=("implementation", "review", "monitor", "intake"), required=True)
     create.add_argument("--repo", default="")
     create.add_argument("--branch", default="")
     create.add_argument("--worktree", default="")

@@ -118,7 +118,7 @@ def snapshot(args, claim, prepare, journal, observation_id=None):
             version, store_id = db.execute("SELECT version,store_id FROM meta").fetchone()
             # Journal schema is independent of the task's schema-3 fence above.
             # Intent-bearing versions are read-only; this path never migrates.
-            preflight.require(version in {3, 4, 5, 6}, "UNSUPPORTED_JOURNAL_SCHEMA")
+            preflight.require(version in {3, 4, 5, 6, 7}, "UNSUPPORTED_JOURNAL_SCHEMA")
             if observation_id is not None:
                 journal.validate_observation_id(db, observation_id)
             if args.store_id is not None and args.store_id != store_id:

@@ -12,6 +12,10 @@ The operator approved this design and its pilot defaults on 2026-11-10; an actua
 grant still requires a separate human activation through the trusted controller
 channel. This policy PR itself requires human approval of its exact merge head.
 
+The [synthetic executor candidate](STANDING-GRANT-EXECUTOR.md) implements the first
+issue-create/additive-assignment vertical. Its installation, isolated qualification
+and human grant activation remain separate gates; this document activates none.
+
 Every merge requires an explicit human decision, superseding this repository's
 former solo-agent-review-only merge exception. GitHub's temporary zero-review
 setting is not merge authority. Existing commit, normal task-branch push and

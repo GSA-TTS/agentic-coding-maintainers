@@ -22,6 +22,34 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Synthetic standing-grant executor candidate
+
+Issue #68 implementation on canonical base
+`5d2c0a2b58ea7ba725ec0ce61044b523652482ff` (2026-11-10) adds journal v7
+definitions/selection, explicitly discriminated standing-grant requests in the
+existing typed outbox, and permanent version-2 core markers. Narrow intake tasks
+own no implementation resources; confirmed create settlement binds their tracker
+before additive assignment. The consumer controller binds real terminal activation
+to the clean implementation/policy and actual admission; runtime resolves authority
+from the fixed journal. Budgets, deduplication and unknown-target history survive
+renewal. Linux-only clock continuity refuses unsupported platforms. Legacy typed
+rows remain byte-preserved and manual assignment retains its terminal requirement.
+The candidate and fixtures await isolated primary validation and independent review;
+no grant or live endpoint has been activated. Original source hashes are preserved.
+
+Review rework adds human-controlled qualification installation/revocation in the
+shared journal. Canonical private report/transcript artifact bytes and exact scope
+are checked before and after a real TTY assessment, then selected durably. Only
+offline-reviewed one-use synthetic live-pilot authority is supported; hashes are
+not proof of execution or production qualification. Caller evidence hashes alone
+cannot activate it. Human challenge digests include full effective limits and workflow/cost scope. Durable
+NOT_SENT terminal evidence releases remote quota without deleting history, and
+cumulative risk is conservatively repository-wide across objective changes.
+Security review rework preserves and resumes durable same-epoch revoke requests,
+checks explicit recovery revision before effects, and fences manual assignment
+against all pending creates in its repository, including marker-only failures.
+Sandbox fixtures exercise pinned pre-migration readers and retained UNKNOWN guards.
+
 ### Scoped autonomy policy contract
 
 Issue #66 policy slice on canonical base

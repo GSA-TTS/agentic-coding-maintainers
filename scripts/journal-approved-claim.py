@@ -54,7 +54,7 @@ def lookup(args, claim, prepare, journal):
             journal.validate_store(db)
             version, store_id = db.execute("SELECT version,store_id FROM meta").fetchone()
             rows = db.execute("SELECT request,request_sha256 FROM claim_intents WHERE operation_id=?",
-                              (claim["operation_id"],)).fetchall() if version in {3, 4, 5, 6} else []
+                              (claim["operation_id"],)).fetchall() if version in {3, 4, 5, 6, 7} else []
             prior = journal.decode_intent(rows[0][0]) if rows else None
             preflight.require(db.file_identity == (os.fstat(fd).st_dev, os.fstat(fd).st_ino),
                               "CHANGED_DURING_READ")
@@ -182,7 +182,7 @@ def record(args, claim, prepare, core, journal, intent, approval, observer):
                     journal.validate_claim_intent(request)
                     rows = db.execute("SELECT request,request_sha256 FROM claim_intents WHERE operation_id=?",
                                       (claim["operation_id"],)).fetchall() if db.execute(
-                                          "SELECT version FROM meta").fetchone()[0] in {3, 4, 5, 6} else []
+                                          "SELECT version FROM meta").fetchone()[0] in {3, 4, 5, 6, 7} else []
                     if rows:
                         preflight.require(len(rows) == 1 and tuple(rows[0]) == (
                             journal.canonical(request), journal.fingerprint(request)), "CHANGED_DURING_READ")

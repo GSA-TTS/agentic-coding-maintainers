@@ -97,11 +97,11 @@ def unique(pairs):
     return result
 
 
-def decode(raw):
+def decode(raw, *, listing=False):
     try:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
                            parse_constant=lambda _: (_ for _ in ()).throw(Refusal("INVALID_JSON")))
-        require(type(value) is dict, "INCOMPLETE_RESPONSE")
+        require(type(value) is (list if listing else dict), "INCOMPLETE_RESPONSE")
         return value
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Refusal("INVALID_JSON") from exc
@@ -171,7 +171,7 @@ class Transport:
             and "--" not in repository.split("/")[0]
             and ".." not in repository.split("/")[1] and not repository.endswith("."),
             "REPOSITORY_INVALID")
-        require(positive(number), "ISSUE_NUMBER_INVALID")
+        require(number is None or positive(number), "ISSUE_NUMBER_INVALID")
         require(type(token) is str and re.fullmatch(r"(?:ghp|gho)_[A-Za-z0-9]{36,255}", token),
                 "UNSUPPORTED_CREDENTIAL")
         require(not any(os.environ.get(key) for key in (
@@ -179,7 +179,7 @@ class Transport:
             "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE")), "ROUTING_OR_TLS_OVERRIDE_REFUSED")
         self.repository, self.number = repository, number
         self.repo_path = "/repos/" + repository
-        self.issue_path = self.repo_path + "/issues/" + str(number)
+        self.issue_path = self.repo_path + "/issues/" + str(number) if number is not None else None
         self._token = token
         self._context = ssl.create_default_context()
         self._remaining = MAX_BYTES
@@ -197,9 +197,11 @@ class Transport:
         self.http_status = None
         require(not self._closed, "TRANSPORT_CLOSED")
         allowed = {"/user", self.repo_path, self.issue_path}
+        listing = re.fullmatch(re.escape(self.repo_path) + r"/issues\?state=all&per_page=100&page=([1-9]|10)", path)
         assignable = re.fullmatch(re.escape(self.repo_path) + "/assignees/(" + LOGIN + ")", path)
-        require((method == "GET" and (path in allowed or assignable) and body is None)
-                or (method == "POST" and path == self.issue_path + "/assignees"
+        require((method == "GET" and (path in allowed or assignable or listing) and body is None)
+                or (method == "POST" and (path == self.repo_path + "/issues" and self.number is None
+                    or self.issue_path is not None and path == self.issue_path + "/assignees")
                     and type(body) is bytes), "ENDPOINT_REFUSED")
         if method == "POST":
             require(not self._post_attempted, "POST_REPLAY_REFUSED")
@@ -229,7 +231,7 @@ class Transport:
                 # RFC 9110 10.2.2 / 15.3.2: Location on the expected POST 201
                 # describes the created resource. It is inert metadata here,
                 # never a redirect or an endpoint for the follow-up observation.
-                require(not {"link", "content-encoding"} & fields.keys()
+                require("content-encoding" not in fields and ("link" not in fields or listing is not None)
                         and ("location" not in fields or (method == "POST" and response.status == 201)),
                          "ROUTING_OR_INCOMPLETE_RESPONSE")
                 # Any rate-limit instruction ends this run. Never sleep/retry a POST.
@@ -265,7 +267,7 @@ class Transport:
                 media = fields.get("content-type", "").split(";", 1)[0].strip()
                 require(media in {"application/json", "application/vnd.github.raw+json"},
                         "CONTENT_TYPE_REFUSED")
-                return decode(raw), fields
+                return decode(raw, listing=listing is not None), fields
         except Refusal as exc:
             exc.http_status = self.http_status
             raise
@@ -298,8 +300,8 @@ class Transport:
         require(len(set(ids)) == len(ids), "ASSIGNEES_INCOMPLETE")
         return sorted(ids)
 
-    def fresh(self, observed):
-        """Fresh actor, target, credential scopes, push permission and assignability."""
+    def fresh_repository(self, observed):
+        """Repository authority independent of a positive issue number."""
         user, headers = self._request("GET", "/user")
         require(user.get("type") == "User" and positive(user.get("id"))
                 and user["id"] == observed["actor_id"]
@@ -318,6 +320,11 @@ class Transport:
         require("repo" in scopes or (not repo["private"] and "public_repo" in scopes),
                 "CREDENTIAL_SCOPE_UNPROVEN")
         self._request("GET", self.repo_path + "/assignees/" + observed["actor_login"])
+
+    def fresh(self, observed):
+        """Fresh actor, target, credential scopes, push permission and assignability."""
+        require(self.number is not None, "ISSUE_NUMBER_INVALID")
+        self.fresh_repository(observed)
         ids = self.issue(observed)
         require(observed["actor_id"] in ids or len(ids) < 10, "ASSIGNEE_CAPACITY_EXHAUSTED")
         return ids
@@ -328,6 +335,71 @@ class Transport:
         value, _ = self._request("POST", self.issue_path + "/assignees",
                                  payload(observed["actor_login"]))
         self.validate_issue(value, observed)
+
+    def complete_issues(self):
+        """Bounded complete all-state traversal, never search-absence authority.
+
+        Link values are validated against fixed-origin numeric page URLs and are
+        never followed. Concurrent remote changes remain a snapshot limitation.
+        """
+        result, seen = [], set()
+        prefix = self.repo_path + "/issues?state=all&per_page=100&page="
+        for page in range(1, 11):
+            values, headers = self._request("GET", prefix + str(page))
+            require(len(values) <= 100, "ISSUE_LIST_INCOMPLETE")
+            relations = {}
+            if "link" in headers:
+                for part in headers["link"].split(","):
+                    match = re.fullmatch(r'\s*<' + re.escape(API + prefix) + r'([1-9][0-9]{0,5})>; rel="(next|last|first|prev)"\s*', part)
+                    require(match is not None and match[2] not in relations, "ISSUE_LIST_INCOMPLETE")
+                    relations[match[2]] = int(match[1])
+                require(all(number <= 10 for number in relations.values()), "ISSUE_LIST_INCOMPLETE")
+                require("next" not in relations or relations["next"] == page + 1, "ISSUE_LIST_INCOMPLETE")
+            for value in values:
+                require(type(value) is dict and positive(value.get("id")) and positive(value.get("number"))
+                        and value.get("repository_url") == API + self.repo_path
+                        and value.get("url") == API + self.repo_path + "/issues/" + str(value["number"])
+                        and value.get("state") in {"open", "closed"}
+                        and type(value.get("title")) is str and type(value.get("body")) in {str, type(None)}
+                        and value["id"] not in seen, "ISSUE_LIST_INCOMPLETE")
+                seen.add(value["id"])
+                result.append(value)
+            if "next" not in relations:
+                require(len(values) < 100 and ("last" not in relations or relations["last"] == page), "ISSUE_LIST_INCOMPLETE")
+                return result
+        raise Refusal("ISSUE_LIST_INCOMPLETE")
+
+    def create(self, expected, observed):
+        require(self.number is None and type(expected) is dict and set(expected) == {"title", "body"}
+                and all(type(expected[key]) is str for key in expected), "ENDPOINT_REFUSED")
+        value, headers = self._request("POST", self.repo_path + "/issues", canonical(expected).encode("ascii"))
+        require(positive(value.get("number")) and positive(value.get("id")), "ISSUE_IDENTITY_OR_STATE_CHANGED")
+        number = value["number"]
+        require("location" not in headers or headers["location"] == API + self.repo_path + "/issues/" + str(number),
+                "ISSUE_IDENTITY_OR_STATE_CHANGED")
+        self.number, self.issue_path = number, self.repo_path + "/issues/" + str(number)
+        return self.created_issue(value, expected, observed)
+
+    def created_issue(self, value, expected, observed):
+        author = value.get("user")
+        require(type(author) is dict and author.get("type") == "User"
+                and positive(author.get("id")) and author["id"] == observed["actor_id"]
+                and author.get("node_id") == observed["actor_node_id"]
+                and author.get("login") == observed["actor_login"], "ACTOR_IDENTITY_CHANGED")
+        require(type(value.get("node_id")) is str and re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", value["node_id"]),
+                "ISSUE_IDENTITY_OR_STATE_CHANGED")
+        ids = self.validate_issue(value, {"issue_id": value.get("id"), "issue_node_id": value["node_id"]})
+        # Creation is text-only; unexpected assignment cannot confer setup authority.
+        require(ids == [], "CREATE_ASSIGNEES_CHANGED")
+        require(all(value.get(key) == expected[key] for key in ("title", "body")), "ISSUE_IDENTITY_OR_STATE_CHANGED")
+        return {key: value[key] for key in ("id", "node_id", "number", "title", "body")}
+
+    def observe_created(self, created, expected, observed):
+        value, _ = self._request("GET", self.issue_path)
+        require(value.get("id") == created["id"] and value.get("node_id") == created["node_id"],
+                "ISSUE_IDENTITY_OR_STATE_CHANGED")
+        require(self.created_issue(value, expected, observed) == created, "ISSUE_IDENTITY_OR_STATE_CHANGED")
+        return created
 
 
 def actual_result(prior_ids, result_ids, actor_id):

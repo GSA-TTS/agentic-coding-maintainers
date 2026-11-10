@@ -1,9 +1,9 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-b226b4dd849346df0a713cfa504466616386c16f85a215297a851933de35e4de  ./PROVENANCE.md
+e449b656e9c769c14c86ffd829cd90acb4d17689635e2a4512bdd626aed4140b  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
-16c5cbc7dcc583d50241e213fcc3790f8b920a3435b50a91d1285acbb4d702b6  ./bin/assignment-journal.py
-c6870d5fc9d025f83567416bd2de889f6c959c6719aba642588a6bc2411f9535  ./bin/candidate-binding.py
+92bc2fb40047b179b5b3863b266262efc30f1a1fdcf876db678b4e944becaa96  ./bin/assignment-journal.py
+8642ff2fcc6670adabcff247df168d367103c989b357c12d28b0215dde050738  ./bin/candidate-binding.py
 c5d6a343f20765c2ac73c4447fce1968fa96bb9c84d19d869603454d6ced7143  ./bin/execution-observe.py
 9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
 d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foreground-admission.py
@@ -11,10 +11,10 @@ d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foregrou
 e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foreground-delivery.py
 55df01c80de182298ab9d6e7026f50755058396bb21bb3c5e39940439970fab8  ./bin/foreground-repair.py
 8a57114282fb1afe9e6135bbae31f46c70e0fdaa32b084da2c71ec5cf3194fcc  ./bin/foreground-review.py
-15de2daa85dfe275f2d02a66a4cdc224b47bca92181bc949ff22d0224950f5d6  ./bin/monitor-journal.py
+c5158a618e59c2b244de32b66e2036715205a2da4e2848e2fa8a88bb3c12cdde  ./bin/monitor-journal.py
 da6efdd36dd0f16f9a4de3a88ade80add80d94c50ec16863e2210869c557129a  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
-8460f0e7200083339d0ef88e6f9ea13137eaf3ada49d85a0e9de755ec820bbed  ./bin/orchestrator-state.py
+edf3483155181b7aea4e5fd66d0387cd2f682feb0aa4b3ee470df155bff78b5f  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 758f61822f30af9c1d0b8013fcd8e98c2c8d1d48bb4500dd722580cb9d8942fe  ./bin/repair-apply.py
 66c78fbc691bf58a8d0f78aa83eb3b968c3eb4b0e08e90e2c7dfcd27fc1afeed  ./bin/repair-proposal.py
@@ -28,6 +28,7 @@ f19900a2f33673adccfa5b668859a9b3a7393275d066f5d8775aee28f45cc153  ./bin/review-p
 7308b5b1ab52c83eaa33a60568aa379831384085c14141557f327e09d76b81b8  ./bin/review-reservation.py
 33d5e96d08adf79e91c298d62bb08c53d1d4dec4f5e0725e031020d13fd261ab  ./bin/review-run.py
 c4d0b8d520adf30b5489dc8a4f782daf451956f4ba9498fc105988ff04ccf930  ./bin/review-source-map.py
+a22354e3f979a6fc823ac7ac039d20528a831be7d4e0ea27e1f2baaec67788d6  ./bin/standing-grant.py
 046083dca2865f063041a8078c9f7e64374148c3817a90003f57cd5f03fa3d32  ./docs/CANDIDATE-BINDING.md
 3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
 bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTION-OBSERVER.md
