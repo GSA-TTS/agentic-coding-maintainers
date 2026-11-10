@@ -777,20 +777,15 @@ def reserve_first(root: Path, group: str, count: int, metadata: dict[str, Any]) 
     raise BusyError(f"no {group} capacity available")
 
 
+_observation_spec = importlib.util.spec_from_file_location(
+    "runtime_observation", Path(__file__).resolve().with_name("runtime-observation.py"))
+_observation = importlib.util.module_from_spec(_observation_spec)
+_observation_spec.loader.exec_module(_observation)
+
+
 def process_identity(pid: int, *, environment: dict[str, str] | None = None) -> tuple[str, str | None]:
-    try:
-        value = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart="], check=False,
-            capture_output=True, text=True, timeout=3, env=environment,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "unknown", None
-    if value.returncode == 1 and value.stderr.strip():
-        return "unknown", None
-    if value.returncode not in (0, 1):
-        return "unknown", None
-    text = value.stdout.strip()
-    return ("alive", text) if text else ("absent", None)
+    """Compatibility wrapper: callers and tests patch or call this module attribute."""
+    return _observation.process_identity(pid, environment=environment)
 
 
 def worker_metadata(task_id: str, owner: str, pid: int) -> dict[str, Any]:
