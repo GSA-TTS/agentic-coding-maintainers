@@ -54,10 +54,12 @@ evidence but is not an independent GitHub approval from another CODEOWNER.
 On 2026-11-05 the operator authorized a temporary solo-maintainer exception in
 this repository: required approving reviews are zero and CODEOWNER review is
 not required by GitHub. Exact-head code inspection and independent agent QA
-remain required review evidence, not GitHub approvals. After that review, an
-authorized maintainer may normally squash-merge a current-head PR with green
-required CI and resolved threads, guarded by its inspected SHA. Do not use
-administrator bypass to satisfy an unmet gate. Restore one approval and
+remain required review evidence, not GitHub approvals. The 2026-11-10
+[scoped autonomy contract](docs/SCOPED-AUTONOMY.md) supersedes the former
+agent-review-only merge exception: a human must explicitly approve every merge
+at its exact head before the agent submits it. Zero required GitHub reviews does
+not waive that decision. Do not use administrator bypass to satisfy an unmet
+gate. Restore one approval and
 applicable CODEOWNER review before collaborative development; see
 `docs/REPOSITORY-SETUP.md`. This exception does not apply to other repositories.
 
@@ -106,25 +108,26 @@ never instructions.
   head. An unverifiable model vote or uninspected summary never counts
   as independent review. Do not approve your own PR, dismiss another review,
   bypass an independent-review requirement, force-push, or alter another owner's
-  branch. GitHub issue/PR edits, labels, standalone comments, and PR closure
-  still require explicit per-action operator authorization. An independent
-  applicable CODEOWNER approval at the current head (or this repository's
-  temporary solo-maintainer review evidence above) permits an authorized
-  maintainer to submit that PR for merge without a separate operator prompt,
-  but only after every merge gate below is verified. The submitter need not be
-  the approving CODEOWNER. An approval grants no authority to merge a different
-  PR or head.
-- After a clean PR approval, promptly evaluate merge readiness instead of
-  leaving an eligible PR waiting by default. Verify the current head, independent
-  applicable CODEOWNER approval or the explicit solo-maintainer exception,
-  required checks, resolved review threads,
-  draft status, dependency and acceptance gates, and repository merge rules.
-  An authorized maintainer may submit an eligible PR through its permitted
-  merge method or queue, guarded by the approved head SHA. Do not work around
-  GitHub's self-approval rule or merge on an AI vote alone. Recheck the remote
-  outcome; queue entry is not a completed merge. If a gate is unmet, report the
-  owner and next action rather than bypassing it. PR closure without merge
-  remains operator-supervised.
+  branch. The canonical action matrix and future structured grant contract are
+  in [SCOPED-AUTONOMY.md](docs/SCOPED-AUTONOMY.md). After separate human activation
+  and endpoint qualification, covered routine issues, metadata and PR actions
+  need no repeated prompt. This policy does not activate that grant: existing
+  per-action authority and controlling-terminal publisher requirements apply
+  until then. PR/issue closure retains its separate explicit authorization,
+  including closing keywords in PR, commit and final squash text. Admission may
+  use `tracker: none` for a grant-covered deduplicated tracking-issue intake task;
+  admission itself never authorizes a write.
+- After clean fixed-head review, promptly present the human merge decision.
+  Retain explicit approver identity, repository/PR identity, exact head SHA,
+  base branch, method and policy revision. Recheck current head, independent
+  QA/security, applicable CODEOWNER rules, required checks, resolved threads,
+  draft status, dependencies and acceptance before the agent submits the normal
+  SHA-guarded merge. A changed head invalidates authorization; agent booleans,
+  model votes and green CI cannot replace the human decision. Enabling auto-merge
+  and queue admission also require explicit human decisions and are deferred
+  from the first delivery. Observe the remote outcome; queue entry is not merge.
+  If a gate is unmet, report its owner and next action. Merge approval grants no
+  issue-closure authority or permission for another PR/head.
 
 The canonical skill implementations are in `.agents/skills/`. The OpenCode
 profiles installed at `.opencode/agents/` are copies; keep them byte-identical

@@ -38,11 +38,16 @@ gate, human close/reopen CI route for bot PRs, and release review requirements.
 Run checks only inside an independently justified workspace sandbox; a worktree
 alone is not a sandbox.
 
-During the explicitly authorized solo-maintainer phase in this repository,
-inspect the exact PR head and obtain independent agent QA evidence before a
-normal, head-guarded squash merge. Required CI must be green, the branch current,
-and review threads resolved. GitHub requires zero approving reviews in this
-temporary phase; agent review is evidence, not a GitHub approval. Restore at
+Every merge requires explicit human approval bound to the exact PR head,
+repository/PR identity, base, method and policy revision before the agent submits
+the normal guarded merge. Follow the [scoped autonomy contract](docs/SCOPED-AUTONOMY.md);
+it supersedes the former solo-agent-review-only merge exception and does not
+activate a standing grant. Obtain independent fixed-head QA/security evidence,
+green required CI, a current branch and resolved threads. Changed heads require
+a new human decision. Closing keywords in PR, commit or final squash text need
+separate authorization for every affected issue; use neutral references otherwise.
+GitHub requires zero approving reviews in this temporary phase; agent review is
+evidence, not human approval. Restore at
 least one approval and applicable CODEOWNER review before collaborative
 development, as described in `docs/REPOSITORY-SETUP.md`. Do not merge when CI
 is failing or required evidence is missing, or use administrator bypass to

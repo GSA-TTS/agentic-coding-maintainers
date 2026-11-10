@@ -28,10 +28,17 @@ Operator scope and steering: $ARGUMENTS
    Ask only for missing scope, ambiguous ownership or an action outside that
    authority. More restrictive current steering wins. This command grants no
    new commit, push, PR creation, review-publication or merge permission.
+   Resolve any scoped grant from the consumer's canonical authority: policy
+   adoption is not activation. Existing per-action approval mechanisms apply
+   until separately qualified support and human activation; covered routine
+   actions then proceed without repeated prompts. Check expiry/revocation,
+   budgets, exact fields/ref and downstream effects. Preserve historical UNKNOWN
+   and paused work; do not reinterpret old approval as a new grant. This packaged
+   command exports no maintainer-specific action matrix or pilot defaults.
    At foreground decision boundaries, apply the guide's **Foreground selection
    order**: check terminal PR state first (merged/closed leaves the actionable
    queue, even with UNKNOWN mergeability); evaluate eligible approved/green
-   merges against all existing gates before changed-head/new-evidence re-review,
+   merge decisions against all existing gates before changed-head/new-evidence re-review,
    then new non-draft reviews, then appropriate ready implementation. Capture a
    finite re-review snapshot at pass start; new arrivals cannot extend/restart
    it. Admit at least one eligible waiting new review before the next pass when
@@ -41,7 +48,9 @@ Operator scope and steering: $ARGUMENTS
    Record selection and skip reasons, blockers, owners, next actions and carried
    obligations in existing `next_action`/`validation` fields. Only recorded operator
    urgency or a verified security advisory may outrank routine reviews; retain
-   evidence, owner and scope. Immediately recheck the approved head and use the
+   evidence, owner and scope. Present the exact-head human decision required by
+   step 7; priority grants no merge, queue or closure authority. Immediately
+   recheck the approved head and use the
    expected-SHA guard for authorized merge submission: one attempt per PR per pass
    at most, with later retries requiring changed evidence or operator direction.
    Observe queues for at most 10 minutes per pass, then release the observer slot
@@ -80,7 +89,15 @@ Operator scope and steering: $ARGUMENTS
    required, with applicable CODEOWNER/ruleset requirements intact. `Ready for
    human review`, approval, queue entry and observed merge are distinct states.
    A failed, absent or skipped required check is not green. Recheck live gates
-   before any authorized remote action and observe its result.
+    before any authorized remote action and observe its result.
+    For every merge, retain an explicit human decision binding approver identity,
+    repository/PR identity, exact head SHA, base, method and policy revision.
+    Changed heads invalidate it; agent booleans and green CI cannot self-authorize.
+    The agent submits only the approved normal SHA-guarded merge after all current
+    gates pass. Auto-merge enablement and queue admission need explicit human
+    decisions too. Issue/PR closure requires separate authority; inspect closing
+    keywords in PR descriptions, commits reaching the base and final squash text,
+    name every affected issue and report those effects in the human request.
 8. Continue safe independent main-based batches while the human reviews earlier
    PRs. A waiting approval occupies no live worker slot once its worker has
    finished and been reconciled. Preserve its evidence and next action. Report

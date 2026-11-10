@@ -55,31 +55,48 @@ Use a qualified OpenCode/acq adapter for real workers and an explicitly fake
 adapter for deterministic protocol tests. Probe actual start, observation,
 collection and cancellation capabilities before claiming them. Session slot
 accounting is distinct from independent process identity and termination proof.
-Workers receive source and bounded task effects, without controller state,
-accepted evidence, active policy or GitHub credentials. Candidate instructions
-cannot redefine that external boundary. Self-maintenance edits a candidate
-worktree and requires independent promotion of the installed controller.
+In a protected-broker stage, workers receive source and bounded task effects,
+without controller state, accepted evidence, active policy or GitHub credentials.
+A cooperative trusted-host pilot cannot promise that boundary against hostile
+same-account code: that account may obtain credentials outside the executor.
+Candidate execution still requires independent isolation. Self-maintenance edits
+a candidate worktree; installing its trusted controller or policy requires a
+separate human decision even after the source PR merges.
 
-Capabilities are independent: observe, admit, publish review, push owned branch,
-open PR, create issue, edit designated metadata, link dependencies, approve,
-integrate, and close a verified delivered issue. Routine effects within explicit
-standing authority need no repeated confirmation. Labels and model output do
-not grant authority. Sensitive policy, identity, isolation, CI and verifier
-changes retain their independent human/governance gate.
+Resolve action classes and grant fields from the consuming workspace's canonical
+authority, not from this packaged guide. Routine effects within an explicitly
+activated scoped grant need no repeated confirmation; adoption of a policy or
+command does not activate that grant. Existing per-action approval mechanisms
+remain required until separately qualified support and human activation. Admission
+may precede a tracking issue only when consumer authority permits that bootstrap;
+it never independently grants a write. Labels and model output are not authority.
+Retain action, task, publisher, repository, fields/ref, lifetime, revocation,
+budget and downstream-effect bindings; preserve authorization-source distinctions
+and old evidence when extending the existing coordinator and journal.
 
-The executor uses scoped GitHub App installation credentials and current native
-rules. It cannot self-approve, bypass CODEOWNERS, force-push or manufacture an
-independent reviewer. An enabled automated integration lane additionally needs a
-required eligibility check bound to the designated App. Submission, approval,
-queue admission, merge and downstream delivery are separate observations.
+In human-reviewed delivery every merge needs an explicit human decision binding
+approver identity, repository/PR identity, exact head, base, method and policy
+revision. A changed head invalidates it; green CI and agent QA alone never
+authorize merge. Auto-merge enablement and queue admission also need explicit
+human decisions. Closing issues, including through PR/commit/final-squash closing
+keywords, requires separate authorization naming every affected issue. The agent
+submits the approved normal SHA-guarded method only after current native rules,
+checks, review and acceptance gates pass, then observes the result. Agent booleans
+cannot self-authorize or supply independent review. The consumer controls actual
+activation; this skill does not export maintainer-repository policy or defaults.
 
 ## Rollout and rollback
 
 1. Private review/repair with a frozen positive/adversarial corpus.
-2. Durable PR observation and separately enabled current-head publication.
-3. Qualified current-policy integration and bounded grooming.
-4. Explicitly activated eligible autonomous-delivery class.
-5. Two-repository consumer delivery, including partial release/pin recovery.
+2. Consumer-approved policy, then a typed executor reusing coordinator/journal;
+   separately qualify each endpoint with refusal and interrupted-dispatch tests.
+3. Explicit human activation of a finite cooperative pilot grant; covered routine
+   actions are prompt-free, while every merge retains its human decision.
+4. Separately promote a protected credential broker under a protected account or
+   VM. No worker access to credentials/active policy, token-return endpoint,
+   arbitrary URLs, shell or GraphQL. Token permissions alone cannot fence merges;
+   enforce typed endpoints/refs and native rules. App setup is human-controlled.
+5. Broaden consumer scope only through separately approved qualification and grants.
 
 Until implemented and qualified, service commands, remote transports and
 migration are unavailable. Do not advertise them from this decision document.
@@ -88,6 +105,15 @@ packet tooling does not migrate existing task JSON. A future state migration
 requires quiescence, private backup/manifest, dry-run validation and a rollback
 that preserves evidence written after migration; checking out older code is
 insufficient.
+
+Expiry/revocation stops new dispatch, never observation or preservation of issued
+work. Retain UNKNOWN history and target fences; current desired-state satisfaction
+does not prove historical completion. Do not replay unknown creates/comments/merges
+or clear reservations by timeout. Any future capacity release requires qualified
+producer containment and action-specific reconciliation. Fresh body/ETag comparison
+detects drift but provides no atomic unsafe-write guarantee against concurrent
+human edits. Endpoint fixtures and an explicit consumer grant remain necessary;
+documentation tests cannot prove enforcement.
 
 ## Rejected alternatives
 

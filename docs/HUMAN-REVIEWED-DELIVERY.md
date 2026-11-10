@@ -23,6 +23,15 @@ branch and allowed effects. Continue admitted work and select further bounded
 tasks inside that scope without asking the human to choose every task again.
 Routine actions already covered by standing authority need no repeated prompt.
 
+Use the [scoped autonomy contract](SCOPED-AUTONOMY.md) as the canonical action
+matrix and future grant definition. Its approved pilot defaults are a design,
+not an activated grant. Existing per-action and publisher TTY requirements
+continue until separately qualified support and human activation. After that
+activation, covered tracking issues, metadata and PR work are prompt-free within
+the objective. An admitted intake task may use `tracker: none` to deduplicate and
+create its tracking issue; bind implementation to the returned immutable issue ID.
+Preserve #154's UNKNOWN evidence/reservation and #158's paused status.
+
 Authority is action-specific: permission to push does not imply permission to
 open a PR, publish a review or merge. Follow `AGENTS.md` and any narrower current
 instructions. Ask when an intended effect lacks authority or scope/ownership is
@@ -107,9 +116,18 @@ passing. Static checks, protocol fixtures and a running process do not prove
 runtime fanout or whole-candidate readiness.
 
 Recheck live head, checks and review state before any authorized remote action.
-After human approval, evaluate dependency, CODEOWNER, thread, draft and merge
-rules promptly. Merge only under applicable authority at the approved head;
-approval alone does not grant a new merge capability. Observe the actual remote
-result. Approval, queue entry, merge and downstream delivery remain distinct.
+Present one compact human merge request binding approver identity, repository/PR
+identity, exact head SHA, base, method and policy revision, with current evidence
+and every closure/deletion effect. Every merge requires this explicit decision;
+the former solo-agent-review-only exception no longer supplies authority. Inspect
+PR descriptions, all commits reaching the base and final squash text for closing
+keywords; separate authorization must name every affected issue, including
+cross-repository targets. Merge approval alone never authorizes closure.
+After the human decision, promptly recheck dependencies, CODEOWNER, threads,
+draft status, CI, acceptance and merge rules; the agent submits only the approved
+normal SHA-guarded merge. Changed heads invalidate the decision. Agent booleans
+or model votes cannot replace it. Auto-merge enablement and queue admission also
+need their own human decisions and are deferred from the first delivery. Observe
+the actual remote result. Approval, queue entry, merge and delivery remain distinct.
 Continue independent batches while the human reviews prior PRs, retaining honest
 blocked/UNVERIFIED states and foreground-only monitoring claims.
