@@ -30,6 +30,17 @@ selection or reauthorization of every covered write. Ask when scope, ownership o
 the intended action lacks authority. Current narrower operator steering controls;
 admission itself grants no remote capability.
 
+Use the consumer's canonical action matrix and grant contract, if adopted; this
+skill supplies no maintainer-specific policy, repository IDs or pilot grant.
+Policy adoption is not activation. Existing per-action approval requirements
+continue until grant support is qualified and a human separately activates it.
+Covered routine actions then need no repeated prompts. Recheck current grant,
+task fences, exact fields/ref, expiry/revocation, durable budgets and downstream
+effects before dispatch. Preserve historical UNKNOWN and paused work; a new
+grant cannot reinterpret old evidence. A cooperative same-account host pilot is
+not protection against hostile host code; a protected broker is a later distinct
+boundary, and candidate execution always requires independent isolation.
+
 For human-reviewed delivery, keep automated GitHub App/review publication parked
 and retain native review evidence for human approval. Use multiple independently
 reviewable default-branch-based PRs with explicit integration order. A dependent
@@ -333,14 +344,20 @@ runtime read of the linked document.
    bind it to the inspected commit after rechecking the remote head and verify
    the submitted review's commit afterward.
    Do not claim independent sign-off from an unverifiable or failed reviewer.
-   Evaluate merge readiness after a clean approval. With an independent
-   applicable CODEOWNER approval at the current head, an authorized maintainer
-   may submit the eligible PR for merge under the consumer's applicable
-   authority; the submitter need not be the approving CODEOWNER. Guard the
-   submission by that approved head SHA. Human approval remains required in
-   human-reviewed delivery mode. PR closure requires its own applicable
-   authorization. A queue entry is not a completed merge; check the owning
-   repository for the terminal result.
+    Evaluate merge readiness promptly and present the human decision. In
+    human-reviewed delivery, bind explicit human approver identity,
+    repository/PR identity, exact head SHA, base, method and policy revision.
+    A changed head invalidates that authorization; agent booleans, model votes
+    and green CI alone cannot authorize merge. Recheck applicable CODEOWNER and
+    native rules, CI, threads, draft status, dependencies and acceptance before
+    submitting the normal SHA-guarded merge under consumer authority. Auto-merge
+    enablement and queue admission also require explicit human decisions.
+    PR closure needs its own authorization. Issue closure needs separate
+    authorization naming every affected issue, including closing keywords in
+    PR descriptions, commits reaching the base and final squash text. Report
+    those effects in the human request. A queue entry is not a completed merge;
+    check the owning repository for the terminal result. This guide changes no
+    native repository review count and grants no activation authority.
 
 ### Legacy finding dispositions
 

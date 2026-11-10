@@ -22,6 +22,22 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Scoped autonomy policy contract
+
+Issue #66 policy slice on canonical base
+`2f079ef3380ee4f138102b4875c0a77098c302fb` (2026-11-10): service/operator guidance
+and the start command resolve scoped grants from consumer authority, distinguish
+policy adoption from activation, and require an exact-head human decision in
+human-reviewed delivery before agent merge submission. Closure side effects
+include commit and final squash text. Cooperative host and future protected-broker
+boundaries are explicit. Maintainer action defaults stay in consumer
+`docs/SCOPED-AUTONOMY.md`, not in this reusable package. The consumer's
+`tests/scoped-autonomy-contract-test.py` checks structural/scenario documentation
+contracts and command parity; it does not implement or prove executor enforcement.
+No grant, publisher TTY bypass or historical UNKNOWN release is activated.
+Original import history and `SOURCE-SHA256SUMS` are preserved; canonical hashes
+bind the edited packaged documents and provenance.
+
 ### Assignment-first adapter candidate
 
 Issue #117 candidate based on canonical revision
