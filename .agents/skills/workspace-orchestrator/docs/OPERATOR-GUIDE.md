@@ -55,6 +55,60 @@ task/session IDs and outcomes; specialist analysis supplements mandatory review.
 Unavailable dispatch is UNVERIFIED coverage, not a simulated review. A finished,
 reconciled worker can release its slot while its PR awaits human approval.
 
+## Foreground selection order
+
+Use each foreground reconciliation pass to select work at decision boundaries;
+preserve in-flight owners rather than interrupting every running task. This is
+operator guidance, not a scheduler or runtime enforcement, and grants no new
+authority. Existing ownership, capacity, review and remote-action gates apply.
+
+1. **Check terminal state first** in the owning repository. Remove merged or
+   closed PRs from the actionable queue; `UNKNOWN` mergeability on a terminal PR
+   is not a blocker. An unverifiable terminal state is not proof of completion.
+2. **Evaluate approved, green PRs for a human merge decision before review work.** Approval and
+   green CI alone are insufficient: verify the current head, applicable human /
+   independent CODEOWNER approval, required checks, resolved threads, non-draft
+   status, dependency and acceptance gates, and repository merge rules under the
+   consumer's authority. Retain the explicit human merge decision required by
+   the review section below; approval and priority do not grant queue admission
+   or issue-closure authority. Immediately before an authorized submission, recheck
+   the inspected/approved head and use the expected-SHA guard and permitted merge
+   method or queue. Make at most one merge submission attempt per PR per pass;
+   a retry in a later pass requires changed evidence or explicit operator
+   direction. Observe the result; queue entry never means merged. Bound queue
+   observation to at most 10 minutes per pass, then release the observer slot
+   with the observed queue state and next action retained. Later reconciliation
+   checks terminal state again; do not leave a background observer running.
+3. **Re-review changed heads or substantive new evidence for prior findings**
+   from a finite snapshot captured at the start of the pass. New arrivals do not
+   extend or restart that batch. Skip unchanged waiting heads without new
+   evidence; distinguish owner repair from actionable reviewer work. After this
+   bounded batch, admit at least one eligible waiting new review before the next
+   pass when capacity permits. If capacity prevents that admission, retain the
+   obligation across passes and satisfy it before starting another re-review
+   batch when capacity becomes available.
+4. **Review new, non-draft, unreviewed PRs.** Operator-designated urgency or a
+   verified security advisory may outrank routine reviews; record the evidence,
+   owner and scope. Otherwise tie-break by dependency unblocking, then waiting
+   age and review effort. Priority never bypasses review or erases the waiting
+   new-review obligation.
+5. **Admit appropriate ready implementation** only when higher classes have no
+   actionable work or cannot consume available capacity. Blocked items must not
+   idle independent lanes or starve reviews; preserve reserved review capacity.
+
+For each admission, retain the existing task scope and selection reason. For
+each skipped higher-priority item, record the skip reason, blocker, responsible
+owner and next action using existing `next_action` / `validation` fields. Retain
+any unfulfilled new-review obligation there too; no new schema is needed.
+
+| Scenario | Foreground decision |
+|---|---|
+| Merged PR reports `UNKNOWN` mergeability | Reconcile the terminal result; do not block actionable work on mergeability. |
+| Approved, green PR and review work both wait | Verify gates and present the required human merge decision first; submit only after authorization, guarded by its approved head. |
+| Changed heads keep arriving while a new review waits | Finish the finite snapshot without restarting; admit a waiting new review before another pass, or carry the obligation until capacity allows before another re-review batch. |
+| Higher-priority PR needs owner repair or human approval | Record the skip reason, owner and next action; continue eligible reviews and independent implementation that fits available capacity. |
+| Submitted PR remains queued | Observe for at most 10 minutes this pass, then release the observer with queue state and next action; recheck terminal state later, with no resubmission absent changed evidence or operator direction. |
+
 ## Startup
 
 1. Reconcile live configured repository/project state and local task state:
