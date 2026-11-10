@@ -40,8 +40,13 @@ Protect `main` with a ruleset that:
 The operator authorized the temporary approval settings on 2026-11-05 for this
 repository only. Review is enforced by the maintainer workflow rather than a
 GitHub approval count: inspect the exact head, obtain independent agent QA
-evidence, verify green required CI and resolved threads, then normally
-squash-merge guarded by that head SHA. An agent review is not a GitHub approval.
+evidence, and verify green required CI and resolved threads. The additional
+[human merge decision](SCOPED-AUTONOMY.md) must identify the approver,
+repository/PR, exact head SHA, target base branch, merge method and applicable
+policy revision before an agent submits the normal SHA-guarded squash merge.
+A changed head requires renewed authorization. Neither zero required GitHub
+approvals nor agent review evidence substitutes for this human decision. These
+workflow requirements do not change the native zero-review setting.
 Administrator bypass is not part of this workflow.
 
 Before collaborative development, restore these pull-request parameters on
