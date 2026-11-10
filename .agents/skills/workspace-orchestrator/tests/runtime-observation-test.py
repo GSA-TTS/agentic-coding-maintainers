@@ -4,10 +4,13 @@
 import importlib.util
 import inspect
 import os
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -58,25 +61,44 @@ class RealObservationTests(unittest.TestCase):
         self.assertEqual((status, bool(start)), ("alive", True))
         self.assertEqual(core.process_identity(child.pid, environment=env), (status, start))
 
+    def read_grandchild_pid(self, stream, seconds=10):
+        """Bounded read of one pid line; fail with a clear message, never block."""
+        deadline = time.monotonic() + seconds
+        data = b""
+        while b"\n" not in data:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([stream], [], [], remaining)[0]:
+                self.fail("timed out waiting for the grandchild pid")
+            chunk = os.read(stream.fileno(), 64)
+            if not chunk:
+                self.fail("child exited without reporting a grandchild pid")
+            data += chunk
+        try:
+            return int(data.split(b"\n", 1)[0])
+        except ValueError:
+            self.fail("malformed grandchild pid output")
+
     def test_an_observation_is_about_one_pid_not_its_descendants(self):
         # A live child says nothing about a grandchild; descendant termination
         # needs separate evidence that this module does not and must not supply.
         code = ("import subprocess,sys;"
                 "g=subprocess.Popen([sys.executable,'-I','-B','-c','import time;time.sleep(60)']);"
                 "print(g.pid,flush=True);g.wait()")
+        # A private session makes the parent's process group cover the grandchild,
+        # so cleanup does not depend on having learned the grandchild pid.
         parent = subprocess.Popen([sys.executable, "-I", "-B", "-c", code], stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE, text=True)
-        grandchild = int(parent.stdout.readline())
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
 
         def cleanup():
-            parent.kill()
+            for action in (lambda: os.killpg(parent.pid, signal.SIGKILL), parent.kill):
+                try:
+                    action()
+                except OSError:
+                    pass
             parent.wait()
             parent.stdout.close()
-            try:
-                os.kill(grandchild, 9)
-            except ProcessLookupError:
-                pass
         self.addCleanup(cleanup)
+        grandchild = self.read_grandchild_pid(parent.stdout)
         parent.kill()
         parent.wait()
         self.assertEqual(observation.process_identity(parent.pid), ("absent", None))

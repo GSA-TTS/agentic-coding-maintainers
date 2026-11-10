@@ -1,11 +1,11 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-7145f4fc104ce61f89d96fec49df16c1795a7b7a5cb745312a4f06488ee9f206  ./PROVENANCE.md
+b76129a300bed8a27ff425c30321c607a94f2c7f64a19a5c2c3e1223064d1a48  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 16c5cbc7dcc583d50241e213fcc3790f8b920a3435b50a91d1285acbb4d702b6  ./bin/assignment-journal.py
 c6870d5fc9d025f83567416bd2de889f6c959c6719aba642588a6bc2411f9535  ./bin/candidate-binding.py
 c5d6a343f20765c2ac73c4447fce1968fa96bb9c84d19d869603454d6ced7143  ./bin/execution-observe.py
-9d52a149542d769ef9f6da21fd2f2569cfd8abc91f91f5d635da5f6c32b81ddd  ./bin/execution-plan.py
+80e78603112ceed7e8ddfaee58051ff3810682abfbbe33f85709ae577b2e20f3  ./bin/execution-plan.py
 d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foreground-admission.py
 96968c4758a2c51af1a0ac836f0ed41a69ad423a4a9633a69a8f30177327e61a  ./bin/foreground-adopt.py
 e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foreground-delivery.py
@@ -36,7 +36,7 @@ bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTI
 2cc85ad8018eddaec39479868728e052e45840c5528a8d2048debc1e638a776b  ./docs/FOREGROUND-DELIVERY.md
 3f7310f422ed1260c5464d31790679e6a4315f1460ddb517e1f62649a48b3214  ./docs/LIVE-REVIEW-REPAIR.md
 ba8d134ae3a0dba93249f97823032760a745aacf0b251a8e87a0ce1e53228382  ./docs/MAINTAINER-SERVICE.md
-7f01277eb8a7e0f484c41098b6202f52840b8daca68331d3b07b2e591283fd86  ./docs/OPERATOR-GUIDE.md
+daac1873f27302650bffd6a80ee8f100821d395e87a632613b6316430382d6d0  ./docs/OPERATOR-GUIDE.md
 a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-REPAIR.md
 353a1e25f31e484253ccaceedfa72f5c6284156f9f9c0f380a664961b7a11a74  ./docs/REVIEW-ACCEPTANCE.md
 5da200894e5cd4544a00795f59cb559b86976607e011b10a8d8a6ef7537c0696  ./docs/REVIEW-COLLECTION.md
@@ -56,7 +56,7 @@ d7d452edc6a4072bca8ffffcbaaefcaa9cc89150312c1bea6f84f9df9c4f79dd  ./profiles/ope
 d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 10c4282def67c1f8fe05af3b5d5e1e27b10548f7531d44c667ce70cab16ab607  ./tests/candidate-binding-test.py
 507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py
-088c2edbc8305b2a1d49f389fccec47f27403dd34b74a90e625b2b44c8ceccff  ./tests/execution-plan-test.py
+014abb62e34f59636db9bb79aba3e18092f41b3fa3e6e93e89d3617fd7dbe992  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
 68a769e6c16f28321581bf109f0fb4341676d93f3e996935d94931d5ebfd963a  ./tests/foreground-admission-cases.py
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
@@ -83,4 +83,4 @@ f23a3c65205e4f516ada032b5bea554c8e58a3d1cd7999f5f840b00b8621b18b  ./tests/review
 26ae85a438c8ba8e6ff30be79147eecc5db009ac585805f502cfdb82cd2f786b  ./tests/review-packet-test.py
 01cd0620783fe018e446b3323a7abbad7f9e60ff89144ac58f7c88d249b5648b  ./tests/review-reservation-test.py
 47884a2338d1db1fab1ef4106859c8556d0f4b66702c1bba3e72991ad1cd6375  ./tests/review-run-test.py
-ae5a0c5ed4a8ba00db98a762eee414def1c240780d99606303176cfd2e1e14cc  ./tests/runtime-observation-test.py
+2f378747d51f78d58b5f14f7ab2f2a5e79bd6ef147699525ffa786a609932dfd  ./tests/runtime-observation-test.py

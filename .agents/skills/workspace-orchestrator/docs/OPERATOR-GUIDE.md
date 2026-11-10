@@ -272,8 +272,15 @@ through `orchestrator-state.py`'s `process_identity`. An `alive`, `absent` or
 `unknown` result describes that one PID only. It does not prove that descendants
 stopped, that a worker session or conversation is live, or that capacity may be
 released; existing stop and recovery guards still decide. Installed copies must
-carry both files. Rationale: `docs/decisions/0001-extract-process-observation.md`
-in the maintainers repository (proposed; not part of the synced skill).
+carry both files: a copy missing `runtime-observation.py` fails with an ordinary
+Python import error when the core loads, not a structured `Unknown` result.
+`execution-plan` also hashes this module as a controller module. Plans admitted
+before that change have a seven-module controller record; their bytes are
+retained unchanged but they no longer match the current controller, so execution
+dispatch and assessment report them as UNVERIFIED until a new review generation
+and plan are admitted. Rationale is recorded in the maintainers repository at
+`docs/decisions/0001-extract-process-observation.md`, which is not part of the
+synced skill.
 
 Never infer health from an OpenCode database `running` or `completed` field
 alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
