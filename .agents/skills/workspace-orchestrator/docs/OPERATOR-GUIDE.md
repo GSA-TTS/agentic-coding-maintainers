@@ -266,6 +266,15 @@ worker or missing worktree becomes `Blocked`. Corrupt records, failed process
 inspection, malformed locks, ownership mismatch, or unreadable state produce
 exit `3` / `Unknown`; nothing is stolen or repaired automatically.
 
+Process inspection is implemented in `bin/runtime-observation.py` (one bounded
+`ps -p <pid> -o lstart=` probe, three-second timeout) and exposed unchanged
+through `orchestrator-state.py`'s `process_identity`. An `alive`, `absent` or
+`unknown` result describes that one PID only. It does not prove that descendants
+stopped, that a worker session or conversation is live, or that capacity may be
+released; existing stop and recovery guards still decide. Installed copies must
+carry both files. Rationale: `docs/decisions/0001-extract-process-observation.md`
+in the maintainers repository (proposed; not part of the synced skill).
+
 Never infer health from an OpenCode database `running` or `completed` field
 alone. On v1, a subprocess aborted by CLI exit can be recorded `completed` with
 `User aborted the command` buried in output.

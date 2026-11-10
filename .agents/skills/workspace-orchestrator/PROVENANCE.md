@@ -204,3 +204,22 @@ using existing actual core/intent/receipt/REST/binding fixtures. Execution is
 reserved for an independently justified isolated guest; static inspection is
 not passing runtime evidence. Original source history and `SOURCE-SHA256SUMS`
 remain unchanged; `CANONICAL-SHA256SUMS` binds the adapted skill assets.
+
+## Runtime process observation extraction
+
+Issue #161 (follow-up to merged proposal #138) based on canonical revision
+`2f079ef3380ee4f138102b4875c0a77098c302fb`: the `ps -p <pid> -o lstart=` process
+probe moves unchanged into sibling `bin/runtime-observation.py`.
+`orchestrator-state.py` loads it by path next to itself, like its other sibling
+modules, and keeps a `process_identity` wrapper with the same signature so
+existing callers, monkeypatches and the consumer adapters are unaffected. Status
+mapping, the three-second bound, timeout/launch-error handling and environment
+forwarding are byte-for-byte the prior behavior; no new status, schema, adapter,
+privilege or registry is introduced. Worker metadata, assignment reservation,
+and stop/recovery guards are unchanged. A process observation is not descendant
+termination proof. Installed copies must include the new sibling; its absence
+fails module load closed. The offline fixture `tests/runtime-observation-test.py`
+is registered in `Makefile`; its execution belongs in the primary's isolated
+environment. Original source history and `SOURCE-SHA256SUMS` remain unchanged;
+`CANONICAL-SHA256SUMS` binds the adapted files. Rationale: `docs/decisions/0001-extract-process-observation.md`
+in the maintainers repository (not part of the synced skill).
