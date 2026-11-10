@@ -1123,6 +1123,89 @@ def release_capacity(root: Path, record: dict[str, Any]) -> None:
     record["worker"] = None
 
 
+def complete_intake(root: Path, current: dict[str, Any], journal, db) -> dict[str, Any]:
+    """Coordinator-held, settlement-backed completion; resumable intent before releases.
+
+    No synthetic review/head or implementation acceptance. Reconstruct the exact
+    post-assignment task from immutable journal evidence on every invocation.
+    Partial releases are allowed only after the exact durable Done intent.
+    """
+    require_assignment_settled(current)
+    if read_task(root, current["task_id"], allow_bound=True) != current:
+        raise UnknownError("intake completion task changed")
+    if (current["kind"] != "intake" or current["state"] != "Claimed"
+            or current["transition_intent"] not in {None, "Done"}
+            or current.get("transition_recovery", {}).get("phase") == "pending"):
+        raise BusyError("intake completion requires claimed intake")
+    journal.validate_store(db)
+    typed = journal.assignment_journal()
+    marker = current.get("assignment_dispatch", {})
+    request = typed.get(db, "assignment_requests", marker.get("operation_id"))
+    if request is None or request["version"] != 2 or request["binding"]["action"] != "assignees-add":
+        raise BusyError("intake completion requires additive assignment settlement")
+    terminal = typed.get(db, "assignment_settlements", request["settlement_id"])
+    if terminal is None or terminal["outcome"] not in {"ASSIGNMENT_CONFIRMED_OBSERVED", "SATISFIED_NO_POST"}:
+        raise BusyError("intake assignment not satisfied")
+    # validate_store validates the linked confirmed create and issue identity;
+    # the assignment request cannot bind a caller-chosen issue or another intake.
+    original = copy.deepcopy(request["reserved_task"])
+    original["assignment_dispatch"]["phase"] = "settled"
+    original["revision"] += 1
+    original["updated_at"] = current["updated_at"]
+    pending = current["transition_intent"] == "Done"
+    expected = copy.deepcopy(original)
+    if pending:
+        expected["transition_intent"] = "Done"
+        expected["revision"] += 1
+    if current != expected or current["revision"] > MAX_GENERATION - 2:
+        raise UnknownError("intake completion exact settlement binding changed")
+    require_execution_stopped(current)
+    require_repair_settled(current, root=root)
+    if not pending:
+        verify_reservations(root, current)
+    # Check all retained leases before any deletion. Missing leases only mean a
+    # recoverable partial release when the exact intent is already durable.
+    worker = current["worker"]
+    leases = [(root / "slots" / f"{current['leases']['global_slot']}.lock", worker),
+              (root / "scopes" / f"{current['scope_key']}.lock", {
+                  "schema_version": SCHEMA, "task_id": current["task_id"], "scope": current["scope"],
+                  "token": current["leases"]["scope_token"]})]
+    if current["leases"]["implementation_lane"] is not None or worker is None:
+        raise UnknownError("intake completion ownership invalid")
+    for path, owner in leases:
+        if path.is_symlink():
+            raise UnknownError("intake completion lease symlink")
+        if path.exists():
+            if read_json(path / "owner.json", "intake completion lease", strict=True) != owner:
+                raise UnknownError("intake completion lease changed")
+        elif not pending:
+            raise UnknownError("intake completion lease missing without intent")
+    # Prove journal durability before committing the completion intent.
+    fd = os.open(journal.check_path(root / "monitor"), os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != db.file_identity:
+            raise UnknownError("intake completion journal changed")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    record = copy.deepcopy(current)
+    if not pending:
+        record["transition_intent"] = "Done"
+        write_task(root, record, allow_bound=True)
+    release_capacity(root, record)
+    release_dir(root / "scopes" / f"{record['scope_key']}.lock", record["leases"]["scope_token"])
+    for parent in (root / "slots", root / "scopes"):
+        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    record["state"], record["transition_intent"] = "Done", None
+    write_task(root, record, allow_bound=True)
+    return record
+
+
 def release_implementation_lane(root: Path, record: dict[str, Any]) -> None:
     require_assignment_settled(record)
     worker = record.get("worker") or {}

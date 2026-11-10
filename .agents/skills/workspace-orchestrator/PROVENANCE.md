@@ -49,6 +49,17 @@ Security review rework preserves and resumes durable same-epoch revoke requests,
 checks explicit recovery revision before effects, and fences manual assignment
 against all pending creates in its repository, including marker-only failures.
 Sandbox fixtures exercise pinned pre-migration readers and retained UNKNOWN guards.
+Post-`3dcc043ef6596438057f02cf561012cb41322621` QA rework packages byte-exact
+pre-migration sources as inert hash-manifested consumer fixtures, independent of
+shallow Git history. Intake completion uses its immutable settlement chain and a
+durable completion intent before releasing leases, with explicit resumable fences.
+Required qualification cases include executor-level code drift, expiry, daily
+budget exhaustion and interrupted completion. Validation remains sandbox-only.
+Repeated typed-journal validation uses bounded lazy process-local caches for
+trusted fixed-path module instances. No journal rows, selectors, clock samples,
+authorization decisions or validation results are cached; validator attributes
+remain live. A warm-loader fixture checks capacity revalidation and changed active
+selection before a subsequent action.
 
 ### Scoped autonomy policy contract
 

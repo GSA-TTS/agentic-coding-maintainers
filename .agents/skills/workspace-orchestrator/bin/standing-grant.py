@@ -14,13 +14,14 @@ import math
 import re
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 
 TABLES = ("standing_grants", "standing_selector", "standing_qualifications", "standing_qualification_selector")
 REPOSITORY = "GSA-TTS/agentic-coding-maintainers"
 REPOSITORY_ID = 1422648445
 ACTIONS = {"issue-create", "assignees-add"}
-QUALIFICATION_CASES = frozenset("create_bind_assign no_active_grant no_tty wrong_target wrong_fields wrong_epoch revocation_before_launch revocation_inflight budgets_restart clock_rollback unknown_no_replay marker_commit_failure legacy_v6_unknown_preserved manual_tty_required".split())
+QUALIFICATION_CASES = frozenset("create_bind_assign intake_complete intake_complete_interrupted changed_implementation_head expired_before_reservation expired_after_reservation confirmed_settlement_after_expiry executor_daily_budget no_active_grant no_tty wrong_target wrong_fields wrong_epoch revocation_before_launch revocation_inflight budgets_restart clock_rollback unknown_no_replay marker_commit_failure legacy_v6_unknown_preserved manual_tty_required".split())
 
 
 class Invalid(Exception):
@@ -32,7 +33,10 @@ def require(condition, reason="STANDING_GRANT_UNVERIFIED"):
         raise Invalid(reason)
 
 
+@lru_cache(maxsize=1)
 def typed():
+    # Cache this fixed source module, not any selector, grant or validation.
+    # Loading is lazy, after this module's own initialization has completed.
     spec = importlib.util.spec_from_file_location("grant_typed", Path(__file__).with_name("assignment-journal.py"))
     require(spec is not None and spec.loader is not None)
     module = importlib.util.module_from_spec(spec)

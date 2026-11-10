@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 
 TABLES = ("assignment_requests", "assignment_attempts", "assignment_evidence", "assignment_settlements")
@@ -59,7 +60,13 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode("ascii")).hexdigest()
 
 
+@lru_cache(maxsize=4)
 def module(name):
+    # Trusted code only, never a DB row/result/authority cache. These modules do
+    # not call this loader during import, so assignment <-> standing imports
+    # finish before the reverse edge is requested. Keep live module attributes
+    # (including fixture patches) rather than capturing validator callables.
+    require(name in {"monitor-journal", "standing-grant", "orchestrator-state"})
     spec = importlib.util.spec_from_file_location("assignment_" + name, Path(__file__).with_name(name + ".py"))
     require(spec is not None and spec.loader is not None)
     value = importlib.util.module_from_spec(spec)

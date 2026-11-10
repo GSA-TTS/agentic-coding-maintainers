@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import uuid
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -601,6 +602,7 @@ def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *,
     return "HISTORICAL_RECORDED"
 
 
+@lru_cache(maxsize=1)
 def assignment_journal():
     # Journal v6 delegates typed evidence validation here. Evidence documents v1
     # and v2 coexist; opening/validating a store never upgrades immutable rows.

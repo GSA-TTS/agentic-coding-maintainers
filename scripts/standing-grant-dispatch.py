@@ -349,6 +349,27 @@ def recover(args):
         return finish(store, request, receipt, outcome, recovering=True, observed_ids=observed_ids)
 
 
+def complete(args):
+    """Local completion only; no active grant or credential required."""
+    os.environ.pop("GH_TOKEN", None)
+    adapter, _, _ = modules()
+    store, _ = make_store(args, adapter)
+    adapter.implementation_head(args.implementation_head)
+    with store.locked() as db:
+        task = store.task()
+        adapter.require(task["revision"] == args.expected_revision, "REVISION_MISMATCH")
+        worker = task["worker"]
+        adapter.require(worker is not None and worker["worker_id"] == args.expected_worker_id
+                        and worker["session_id"] == args.expected_session_id and worker["generation"] == args.expected_generation,
+                        "OWNERSHIP_CHANGED")
+        adapter.require(task.get("assignment_dispatch", {}).get("implementation_head") == args.implementation_head,
+                        "IMPLEMENTATION_HEAD_CHANGED")
+        if task["transition_intent"] is None:
+            store.ownership(task)
+        final = store.core.complete_intake(store.root, task, store.journal, db)
+        return {"status": "INTAKE_COMPLETED", "reservation": "settled", "revision": final["revision"]}
+
+
 def arguments(*, controller=False):
     adapter, _, _ = modules()
 
@@ -362,7 +383,7 @@ def arguments(*, controller=False):
             setattr(namespace, self.dest, values)
 
     parser = Parser(allow_abbrev=False)
-    parser.add_argument("action", choices=("activate", "revoke", "install-qualification", "revoke-qualification") if controller else ("issue-create", "assignees-add", "settle"))
+    parser.add_argument("action", choices=("activate", "revoke", "install-qualification", "revoke-qualification") if controller else ("issue-create", "assignees-add", "settle", "complete"))
     for key in ("authority-root", "invoking-root", "implementation-head", "expected-epoch"):
         parser.add_argument("--" + key, required=True, action=Once)
     if controller:

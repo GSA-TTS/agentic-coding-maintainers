@@ -1,0 +1,35 @@
+{
+  "source_revision": "5d2c0a2b58ea7ba725ec0ce61044b523652482ff",
+  "files": [
+    {
+      "file": "orchestrator-state.py.txt",
+      "source_path": ".agents/skills/workspace-orchestrator/bin/orchestrator-state.py",
+      "sha256": "8460f0e7200083339d0ef88e6f9ea13137eaf3ada49d85a0e9de755ec820bbed",
+      "size": 98376
+    },
+    {
+      "file": "reservation-history.py.txt",
+      "source_path": ".agents/skills/workspace-orchestrator/bin/reservation-history.py",
+      "sha256": "d9cebce6eae187a6f50598e0605dc135b53e5c1fe7379691a960db2dded56837",
+      "size": 1311
+    },
+    {
+      "file": "monitor-journal.py.txt",
+      "source_path": ".agents/skills/workspace-orchestrator/bin/monitor-journal.py",
+      "sha256": "15de2daa85dfe275f2d02a66a4cdc224b47bca92181bc949ff22d0224950f5d6",
+      "size": 47032
+    },
+    {
+      "file": "assignment-journal.py.txt",
+      "source_path": ".agents/skills/workspace-orchestrator/bin/assignment-journal.py",
+      "sha256": "16c5cbc7dcc583d50241e213fcc3790f8b920a3435b50a91d1285acbb4d702b6",
+      "size": 18351
+    },
+    {
+      "file": "check-native-ownership.py.txt",
+      "source_path": "scripts/check-native-ownership.py",
+      "sha256": "d4cf4238f55ea6898ab7dbfe8cd0cf38a1969552ee7ce04077b2cf27fb452889",
+      "size": 23665
+    }
+  ]
+}

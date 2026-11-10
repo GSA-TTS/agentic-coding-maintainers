@@ -16,6 +16,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -45,24 +46,19 @@ class ExecutorTests(unittest.TestCase):
         self.adapter, self.publisher, self.grant = dispatch.modules()
         self.parts = self.adapter.modules()
         self.adapter.modules = lambda: self.parts
+        self.real_implementation_head = self.adapter.implementation_head
         self.adapter.implementation_head = lambda head: head
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(dispatch, "modules", return_value=(self.adapter, self.publisher, self.grant)).start()
         task = copy.deepcopy(self.local.task)
         old_scope = task["scope_key"]
         old_lane = task["leases"]["implementation_lane"]
-        task.update(kind="intake", state="Claimed", branch="", worktree="", owned_paths=[], restricted_paths=[],
-                    repo=self.grant.REPOSITORY, scope=self.grant.REPOSITORY + ":intake:synthetic:fixture",
-                    tracker_type="none", tracker_number=0)
-        task["scope_key"] = self.parts[1].scope_key(task["scope"])
-        task["leases"]["implementation_lane"] = None
         shutil.rmtree(self.local.state / "scopes" / (old_scope + ".lock"))
         if old_lane is not None:
             shutil.rmtree(self.local.state / "implementation" / (str(old_lane) + ".lock"))
-        owner = {"schema_version": 2, "task_id": task["task_id"], "scope": task["scope"], "token": task["leases"]["scope_token"]}
-        self.parts[1].acquire_dir(self.local.state / "scopes" / (task["scope_key"] + ".lock"), owner)
-        self.local.write(self.local.task_path, task)
-        self.parts[1].validate_record(task, allow_bound=True)
+        shutil.rmtree(self.local.state / "slots" / (str(task["leases"]["global_slot"]) + ".lock"))
+        shutil.rmtree(self.local.task_path.parent)
+        self.admit_intake(task["task_id"], "fixture")
         self.args.action, self.args.expected_epoch, self.args.operation_id = "activate", 0, None
         self.definition = {"version": 1, "grant_id": "a" * 32, "objective": "synthetic", "work_item": "fixture",
                            "repository": self.grant.REPOSITORY, "repository_id": self.grant.REPOSITORY_ID,
@@ -112,7 +108,8 @@ class ExecutorTests(unittest.TestCase):
                 fixture.assertEqual(observed["actor_id"], 11)
                 self.no_locks()
                 fixture.assertEqual(fixture.task()["assignment_dispatch"]["phase"], "pending")
-                fixture.assertEqual(len(fixture.requests()), 1)
+                fixture.assertTrue(any(row["binding"]["operation_id"] == fixture.task()["assignment_dispatch"]["operation_id"]
+                                       for row in fixture.requests()))
                 with fixture.trace.open("a") as stream:
                     stream.write("CREATE\n")
                 if fixture.before_create is not None:
@@ -150,6 +147,24 @@ class ExecutorTests(unittest.TestCase):
 
         mock.patch.object(self.parts[-1], "Transport", HTTP).start()
 
+    def admit_intake(self, task_id, work_item):
+        core = self.parts[1]
+        create = SimpleNamespace(task_id=task_id, scope=self.grant.REPOSITORY + ":intake:synthetic:" + work_item,
+            kind="intake", repo=self.grant.REPOSITORY, worktree="", branch="", base_sha="", head_sha="",
+            owned_path=[], restricted_path=[], acceptance=["Synthetic issue created and publisher assigned"], dependency=[],
+            tracker_type="none", tracker_number=0, next_action="Create synthetic tracking issue")
+        core.command_create(create, self.local.state)
+        claim = SimpleNamespace(task_id=task_id, owner="fixture-intake-owner", pid=self.fixture.worker.pid,
+                                session_id="fixture-intake-session", expected_revision=0, expected_generation=0)
+        with mock.patch.dict(os.environ, self.real_environment, clear=True):
+            task = core.command_claim(claim, self.local.state)
+        self.local.task_path = core.task_path(self.local.state, task_id)
+        self.args.task_id = task_id
+        self.args.expected_revision = task["revision"]
+        self.args.expected_worker_id = task["worker"]["worker_id"]
+        self.args.expected_session_id = task["worker"]["session_id"]
+        self.args.expected_generation = task["worker"]["generation"]
+
     def make_qualification_artifacts(self):
         t = self.parts[3]
         report = {"version": 1, "scope": self.grant.qualification_scope(self.definition),
@@ -160,12 +175,12 @@ class ExecutorTests(unittest.TestCase):
                   "assessment": "OFFLINE_FIXTURES_ONLY_HUMAN_MUST_ASSESS_ARTIFACT_MEANING"}
         transcript = b"Synthetic isolated executor transcript; fixture data, not live qualification.\n"
         raw = t.canonical(report).encode("ascii")
-        self.manifest = {"version": 1, "qualification_id": "9" * 32, "mode": "OFFLINE_REVIEWED_ONE_USE_LIVE_PILOT",
+        self.manifest = {"version": 1, "qualification_id": hashlib.sha256(self.definition["work_item"].encode()).hexdigest()[:32], "mode": "OFFLINE_REVIEWED_ONE_USE_LIVE_PILOT",
                          "human_identity": "fixture-human", "scope": report["scope"],
                          "report": {"name": "report.json", "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)},
                          "transcript": {"name": "transcript.txt", "sha256": hashlib.sha256(transcript).hexdigest(), "size": len(transcript)}}
         evidence = self.local.state / "qualification-evidence"
-        evidence.mkdir(mode=0o700)
+        evidence.mkdir(mode=0o700, exist_ok=True)
         self.evidence_dir = evidence / self.manifest["qualification_id"]
         self.evidence_dir.mkdir(mode=0o700)
         for name, content in (("report.json", raw), ("transcript.txt", transcript)):
@@ -245,13 +260,21 @@ class ExecutorTests(unittest.TestCase):
     def activate(self):
         self.install()
         self.args.proposal = self.grant_proposal
-        self.args.expected_epoch = 0
+        db = self.parts[2].open_store(self.fixture.fixture.monitor)
+        try:
+            self.args.expected_epoch = self.grant.selector(db)["epoch"] if db.execute("SELECT count(*) FROM standing_selector").fetchone()[0] else 0
+        finally:
+            db.close()
         self.assertEqual(self.human()["status"], "GRANT_ACTIVATED")
-        self.args.expected_epoch = 1
+        self.args.expected_epoch += 1
 
     def install(self):
         self.args.proposal = self.qualification_proposal
-        self.args.expected_epoch = 0
+        db = self.parts[2].open_store(self.fixture.fixture.monitor)
+        try:
+            self.args.expected_epoch = self.grant.qualification_selector(db)["epoch"] if db.execute("SELECT version FROM meta").fetchone()[0] == 7 else 0
+        finally:
+            db.close()
         result = self.human("install-qualification")
         self.assertEqual(result.get("status"), "OFFLINE_QUALIFICATION_INSTALLED_FOR_ONE_USE_LIVE_PILOT", result)
 
@@ -264,9 +287,189 @@ class ExecutorTests(unittest.TestCase):
         requests = self.requests()
         self.assertEqual(len(requests), 2)
         self.assertTrue(all(row["authorization"]["source"] == "STANDING_GRANT" and "approval" not in row for row in requests))
+        self.complete_intake()
+        self.assertEqual(self.task()["state"], "Done")
+        self.assertEqual(self.task()["head_sha"], "")
+        self.assertEqual(self.task()["reviewers"], [])
         self.assertEqual(self.human("revoke")["status"], "GRANT_REVOKED_QUIESCENT")
         with self.assertRaises(Exception):
             self.runtime("assignees-add")
+
+    def complete_intake(self):
+        before = self.task()
+        self.args.expected_revision = before["revision"]
+        with mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("completion must not GET")):
+            result = dispatch.complete(self.args)
+        self.assertEqual(result["status"], "INTAKE_COMPLETED")
+        self.assertIsNone(self.task()["worker"])
+        self.assertFalse((self.local.state / "slots" / (str(before["leases"]["global_slot"]) + ".lock")).exists())
+        self.assertFalse((self.local.state / "scopes" / (before["scope_key"] + ".lock")).exists())
+
+    def test_intake_completion_resumes_partial_lease_release(self):
+        self.activate()
+        self.runtime("issue-create")
+        self.runtime("assignees-add")
+        core = self.parts[1]
+        release = core.release_dir
+
+        def fail_scope(path, token):
+            if path.parent.name == "scopes":
+                raise OSError("fixture interruption after slot release")
+            return release(path, token)
+
+        self.args.expected_revision = self.task()["revision"]
+        with mock.patch.object(core, "release_dir", side_effect=fail_scope):
+            with self.assertRaises(OSError):
+                dispatch.complete(self.args)
+        pending = self.task()
+        self.assertEqual(pending["transition_intent"], "Done")
+        self.assertFalse((self.local.state / "slots" / (str(pending["leases"]["global_slot"]) + ".lock")).exists())
+        self.complete_intake()
+
+    def test_intake_completion_requires_successful_assignment(self):
+        self.activate()
+        self.runtime("issue-create")
+        self.args.expected_revision = self.task()["revision"]
+        before = self.local.task_path.read_bytes()
+        with self.assertRaises(self.parts[1].BusyError):
+            dispatch.complete(self.args)
+        self.assertEqual(self.local.task_path.read_bytes(), before)
+
+    def test_intake_completion_accepts_satisfied_no_post(self):
+        self.activate()
+        self.runtime("issue-create")
+        self.scenario = "present"
+        self.assertEqual(self.runtime("assignees-add")["status"], "SATISFIED_NO_POST")
+        self.complete_intake()
+        self.assertEqual(self.trace.read_text(), "CREATE\n")
+
+    def test_warm_module_loaders_preserve_live_validation_and_selector_fences(self):
+        self.activate()
+        self.runtime("issue-create")
+        journal = self.parts[2]
+        db = journal.open_store(self.fixture.fixture.monitor)
+        try:
+            journal.validate_store(db)  # Warm every retained-request validator.
+            cached_typed = journal.assignment_journal()
+            # A live validator patch must be observed, not bypassed by a cached
+            # validation outcome or a captured function pointer.
+            with mock.patch.object(cached_typed, "CAPACITY", 0):
+                with self.assertRaises(cached_typed.Invalid):
+                    journal.validate_store(db)
+            journal.validate_store(db)
+        finally:
+            db.close()
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with store.locked() as db:
+            selected = self.grant.selector(db)
+            selected["state"] = "paused"
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                self.grant.put_selector(db, selected)
+            store.durable(db)
+        with self.assertRaisesRegex(self.grant.Invalid, "GRANT_INACTIVE_OR_EPOCH_CHANGED"):
+            self.runtime("assignees-add")
+        self.assertEqual(self.trace.read_text(), "CREATE\n")
+        self.assertEqual(len(self.requests()), 1)
+
+    def expired_clock(self):
+        db = self.parts[2].open_store(self.fixture.fixture.monitor)
+        try:
+            selected = self.grant.selector(db)
+            record = self.grant.get(db, selected["grant_id"])
+        finally:
+            db.close()
+        amount = record["definition"]["lifetime_seconds"] + 1
+        return {key: value + amount if key in {"wall", "elapsed", "awake"} else value for key, value in record["activated"].items()}
+
+    def test_expired_before_reservation_zero_post(self):
+        self.activate()
+        before = self.local.task_path.read_bytes()
+        with mock.patch.object(self.grant, "clock", return_value=self.expired_clock()):
+            with self.assertRaisesRegex(self.grant.Invalid, "GRANT_EXPIRED"):
+                self.runtime("issue-create")
+        self.assertEqual(self.local.task_path.read_bytes(), before)
+        self.assertEqual(self.requests(), [])
+        self.assertFalse(self.trace.exists())
+
+    def test_expiry_after_reservation_settles_not_sent(self):
+        self.activate()
+        expired = self.expired_clock()
+        reserve = self.parts[3].reserve
+
+        def expire_after_commit(db, request):
+            reserve(db, request)
+            patcher = mock.patch.object(self.grant, "clock", return_value=expired)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        with mock.patch.object(self.parts[3], "reserve", side_effect=expire_after_commit):
+            self.assertEqual(self.runtime("issue-create")["status"], "NOT_SENT")
+        self.assertEqual(self.task()["assignment_dispatch"]["phase"], "settled")
+        self.assertFalse(self.trace.exists())
+
+    def test_confirmed_get_settlement_after_expiry(self):
+        self.activate()
+        self.scenario = "get-failed"
+        self.assertEqual(self.runtime("issue-create")["reservation"], "pending")
+        self.scenario = "success"
+        self.args.operation_id = self.requests()[0]["binding"]["operation_id"]
+        self.args.expected_revision = self.task()["revision"]
+        with (mock.patch.object(self.grant, "clock", return_value=self.expired_clock()),
+              mock.patch.dict(os.environ, {"GH_TOKEN": "synthetic"}, clear=True)):
+            self.assertEqual(dispatch.recover(self.args)["status"], "ISSUE_CREATED_OBSERVED")
+        self.assertEqual(self.trace.read_text(), "CREATE\n")
+
+    def test_actual_clean_checkout_verifier_refuses_changed_implementation(self):
+        self.activate()
+        checkout = self.local.root / "implementation-probe"
+        installed = checkout / ".agents/skills/workspace-orchestrator/bin"
+        installed.parent.mkdir(parents=True)
+        shutil.copytree(SOURCE / ".agents/skills/workspace-orchestrator/bin", installed)
+        (checkout / "scripts").mkdir()
+        (checkout / "scripts/assignment-dispatch.py").write_bytes((SOURCE / "scripts/assignment-dispatch.py").read_bytes())
+        env = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+
+        def git(*args):
+            return subprocess.check_output(["/usr/bin/git", "-C", str(checkout), *args], env=env, stderr=subprocess.DEVNULL).decode().strip()
+
+        git("init")
+        git("add", ".")
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "test: clean fixture")
+        head = git("rev-parse", "HEAD")
+        self.args.implementation_head = head
+        with mock.patch.object(self.adapter, "__file__", str(checkout / "scripts/assignment-dispatch.py")):
+            self.assertEqual(self.real_implementation_head(head), head)
+            (checkout / "scripts/assignment-dispatch.py").write_text("changed fixture bytes\n")
+            with mock.patch.object(self.adapter, "implementation_head", self.real_implementation_head):
+                with self.assertRaises(Exception):
+                    self.runtime("issue-create")
+        self.assertFalse(self.trace.exists())
+        self.assertEqual(self.requests(), [])
+
+    def test_real_executor_five_creates_exhaust_repository_daily_budget(self):
+        for index in range(6):
+            if index:
+                self.assertEqual(self.human("revoke")["status"], "GRANT_REVOKED_QUIESCENT")
+                self.assertEqual(self.human("revoke-qualification")["status"], "QUALIFICATION_REVOKED")
+                item = "fixture-" + str(index)
+                self.admit_intake("intake-budget-" + str(index), item)
+                self.definition.update(grant_id=hashlib.sha256(item.encode()).hexdigest()[32:], work_item=item,
+                                       title="Synthetic standing-grant tracking fixture: " + item)
+                self.make_qualification_artifacts()
+                Path(self.grant_proposal).write_text(self.parts[3].canonical(self.definition))
+            self.activate()
+            if index == 5:
+                before = self.local.task_path.read_bytes()
+                with self.assertRaisesRegex(Exception, "DAILY_BUDGET_EXHAUSTED"):
+                    self.runtime("issue-create")
+                self.assertEqual(self.local.task_path.read_bytes(), before)
+            else:
+                self.runtime("issue-create")
+                self.runtime("assignees-add")
+                self.complete_intake()
+        self.assertEqual(self.trace.read_text().count("CREATE\n"), 5)
+        self.assertEqual(len(self.requests()), 10)
 
     def test_no_active_grant_ignores_proposal_and_environment(self):
         with mock.patch.dict(os.environ, {"APPROVED": "true", "STANDING_GRANT": self.args.proposal}):
@@ -480,16 +683,21 @@ class ExecutorTests(unittest.TestCase):
         revision = "5d2c0a2b58ea7ba725ec0ce61044b523652482ff"
         target = self.local.root / "pinned-readers"
         target.mkdir(mode=0o700)
-        environment = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                       "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"}
-        git = ["/usr/bin/git", "-c", "protocol.allow=never", "-c", "core.hooksPath=" + os.devnull, "-C", str(SOURCE)]
-        for name in ("orchestrator-state.py", "reservation-history.py", "monitor-journal.py", "assignment-journal.py"):
-            raw = subprocess.check_output(git + ["show", revision + ":.agents/skills/workspace-orchestrator/bin/" + name],
-                                          env=environment, stderr=subprocess.DEVNULL, timeout=5)
+        packaged = SOURCE / "tests/fixtures/standing-grant-legacy"
+        manifest = json.loads((packaged / "manifest.json").read_text())
+        self.assertEqual(manifest["source_revision"], revision)
+        expected = {".agents/skills/workspace-orchestrator/bin/" + name for name in (
+            "orchestrator-state.py", "reservation-history.py", "monitor-journal.py", "assignment-journal.py")}
+        expected.add("scripts/check-native-ownership.py")
+        self.assertEqual({entry["source_path"] for entry in manifest["files"]}, expected)
+        self.assertEqual(len(manifest["files"]), len(expected))
+        for entry in manifest["files"]:
+            name = Path(entry["source_path"]).name
+            self.assertEqual(entry["file"], name + ".txt")
+            raw = (packaged / entry["file"]).read_bytes()
+            self.assertEqual(len(raw), entry["size"])
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"])
             (target / name).write_bytes(raw)
-        raw = subprocess.check_output(git + ["show", revision + ":scripts/check-native-ownership.py"],
-                                      env=environment, stderr=subprocess.DEVNULL, timeout=5)
-        (target / "check-native-ownership.py").write_bytes(raw)
         return target
 
     def test_pinned_premigration_readers_refuse_v7_and_marker_versions(self):

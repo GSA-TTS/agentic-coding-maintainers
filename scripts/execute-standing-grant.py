@@ -16,7 +16,7 @@ def main():
     try:
         adapter.require(sys.flags.isolated and sys.dont_write_bytecode, "ISOLATED_PYTHON_REQUIRED")
         args = dispatch.arguments()
-        output = dispatch.recover(args) if args.action == "settle" else dispatch.dispatch(args)
+        output = {"settle": dispatch.recover, "complete": dispatch.complete}.get(args.action, dispatch.dispatch)(args)
     except Exception as exc:
         output = publisher.public_failure(exc)
     return publisher.emit_result(output)

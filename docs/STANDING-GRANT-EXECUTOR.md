@@ -60,8 +60,8 @@ own no branch, worktree or paths and stay `Claimed` during publication. Use scop
 `GSA-TTS/agentic-coding-maintainers:intake:<objective>:<work_item>` and initially
 `tracker: none`. The controller does not admit or claim tasks for callers.
 
-The only runtime actions are `issue-create`, `assignees-add` (publisher self-assignment),
-and `settle`. Text is a fixed synthetic template selected at activation; runtime
+The runtime actions are `issue-create`, `assignees-add` (publisher self-assignment),
+`settle`, and local-only `complete`. Text is a fixed synthetic template selected at activation; runtime
 accepts no title, body, labels, milestone, target number, grant file or approval
 flag. The current repository restriction is immutable ID `1422648445` at the fixed
 GitHub API origin. Classic PAT/OAuth credentials and fresh push/assignability
@@ -139,6 +139,23 @@ create request/settlement, verifies identity and existing assignees, then uses t
 additive endpoint. It accepts no caller issue identity. Complete the intake and
 admit implementation separately against the returned tracker; there is no task-kind
 morph and no intake branch/worktree reservation to conflict with implementation.
+
+`execute-standing-grant.py complete` completes only a claimed intake with the exact
+durable confirmed-create and successful additive-assignment (or satisfied-no-POST)
+settlement chain. It compares the explicit task revision/session/worker fences,
+requires the unchanged post-settlement task and exact leases, and writes a durable
+`Done` transition intent before releasing global/scope reservations. No fabricated
+head, reviewer or implementation acceptance is needed. On interruption, repeat
+`complete` with the current explicit revision: only that exact settlement-backed
+intent permits already-released leases; conflicting owners fail closed. Generic
+cooperative recovery never silently completes it. Completion uses no network and
+does not require an unexpired grant.
+
+Compatibility fixtures include inert, byte-pinned production sources under
+`tests/fixtures/standing-grant-legacy/`. Tests verify their source manifest before
+materializing Python in sandbox temporary directories; shallow CI needs no history
+fetch. Qualification cases now include actual executor changed-code/expiry/daily
+budget refusals and interrupted intake completion, in addition to migration guards.
 
 `settle --operation-id <retained-operation>` never posts. It can acknowledge an
 already durable terminal result or repeat a GET for a confirmed create whose
