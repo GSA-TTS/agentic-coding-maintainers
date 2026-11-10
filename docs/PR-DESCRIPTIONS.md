@@ -89,7 +89,12 @@ Verify issue and ADR identity, content and relevance in the owning repository.
 Use fully qualified references such as `owner/repository#123` or a full issue
 URL; use a repository-qualified URL for an ADR, preferably at the inspected
 revision. Use closing keywords only when the change completes the referenced
-scope; use a neutral reference for partial or dependent work. Omit optional
+scope **and** a separate explicit human authorization names every affected issue,
+including cross-repository targets. Merge approval alone does not authorize
+closure. Check all commit text reaching the base, including the final squash
+message, as well as the PR description; list closure effects in the human merge
+request under the [scoped autonomy contract](SCOPED-AUTONOMY.md). Use a neutral
+reference for partial, dependent or closure-unauthorized work. Omit optional
 references when none apply. Flag missing mandatory context and follow the
 governing prerequisite/authorization process; never invent a reference or create
 an issue merely to fill a description field.

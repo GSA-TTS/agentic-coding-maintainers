@@ -6,6 +6,17 @@ parked. Issue #116 ownership and #117 intent/observer work are separate dependen
 their retained evidence does not implement this publisher. First delivery is one
 human-approved assignment runner end to end; claim-comment delivery follows review.
 
+The [scoped autonomy contract](SCOPED-AUTONOMY.md) specifies a future separately
+activated grant path. It does not change this runner's current per-action
+controlling-terminal approval or add an override. A future typed executor must
+record `STANDING_GRANT` distinctly, reusing coordinator/journal fences and
+preserving old rows; it must never fabricate terminal evidence. Its endpoint
+qualification and human activation are separate from this policy. Existing #154
+remains UNKNOWN with its evidence and pending reservation intact; #158 remains
+paused, and its manual-pilot approval cannot be reused as a standing grant. New
+pilot work needs a fresh admission and separate grant. Future supervised
+containment is not an implemented release path for these historical records.
+
 ## Publisher and approval
 
 Choose the exact current authenticated human user as first publisher. Fresh

@@ -1,0 +1,60 @@
+{
+  "fixture_kind": "synthetic-inactive-contract-example",
+  "identity": {
+    "grant_id": "fixture-grant",
+    "policy_revision": "synthetic-policy-revision",
+    "policy_digest": "synthetic-policy-digest",
+    "activator_id": "synthetic-human",
+    "activation_evidence": "NONE: inactive example"
+  },
+  "target": {
+    "repository_id": 101,
+    "api_origin": "https://api.github.com",
+    "publisher_id": 202
+  },
+  "objective": {
+    "name": "synthetic documentation task",
+    "exclusions": ["administration", "release", "deployment"],
+    "task": "synthetic-intake",
+    "tracker": "none",
+    "incarnation": "synthetic-incarnation",
+    "owner": "synthetic-owner",
+    "session": "synthetic-session",
+    "generation": 1,
+    "revision": 1
+  },
+  "scope": {
+    "actions": ["read-admit", "issue-create", "assignees-add"],
+    "fields": ["title", "body", "assignees"],
+    "owned_paths": ["docs/synthetic-example.md"],
+    "branch_prefix": "task/synthetic-",
+    "ref": "refs/heads/task/synthetic-example",
+    "labels": [],
+    "assignee_ids": [202],
+    "workflow_cost_scope": "NONE: requires real activation review"
+  },
+  "lifetime": {
+    "activated_at": null,
+    "expires_at": null,
+    "revocation_state": "INACTIVE",
+    "renewal_authority": "synthetic-human"
+  },
+  "budgets": {
+    "implementation_lanes": 2,
+    "total_workers": 6,
+    "issues_per_utc_day": 5,
+    "metadata_per_utc_day": 20,
+    "unresolved_per_target": 1,
+    "new_unresolved_per_grant": 3,
+    "duration_hours": 24,
+    "durable_counters_and_reservations": "NONE: no dispatch permitted"
+  },
+  "evidence": {
+    "authorization_source": "STANDING_GRANT",
+    "payload_digest": "synthetic-digest",
+    "operation_id": "synthetic-operation",
+    "attempt_id": "synthetic-attempt",
+    "task_fences": "synthetic-only",
+    "public_text": "repository facts and synthetic fixtures only"
+  }
+}
