@@ -5,11 +5,13 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
 spec = importlib.util.spec_from_file_location("execution_plan", BIN / "execution-plan.py")
@@ -131,6 +133,100 @@ class PlanTests(unittest.TestCase):
         self.record = saved
         self.record["execution_observations"]["execution"]["controller_sha256"] = "f" * 64
         self.assertEqual(plan.assess(self.record, self.state)["status"], "UNVERIFIED")
+
+    def install_copy(self):
+        """Hash controller modules from a private copy so one sibling can change in isolation.
+
+        Only the manifest reads the copy; modules are still loaded from BIN.
+        """
+        installed = self.root / "installed"
+        shutil.copytree(BIN, installed, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        original = plan.controller_manifest
+
+        def manifest():
+            with mock.patch.object(plan, "__file__", str(installed / "execution-plan.py")):
+                return original()
+        patcher = mock.patch.object(plan, "controller_manifest", manifest)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return installed
+
+    def test_controller_manifest_binds_the_process_observation_module(self):
+        self.assertIn("runtime-observation.py", plan.MODULES)
+        manifest = plan.controller_manifest()
+        self.assertEqual(manifest["runtime-observation.py"], plan.digest((BIN / "runtime-observation.py").read_bytes()))
+        self.assertEqual(set(manifest), set(plan.MODULES))
+        self.admit()
+        (frozen,) = self.record["execution_plans"].values()
+        self.assertEqual(frozen["controller"], manifest)
+
+    def test_probe_only_change_invalidates_applicable_execution_evidence(self):
+        installed = self.install_copy()
+        self.execution()
+        attempt = self.record["execution_observations"]["execution"]
+        self.assertEqual(plan.assess(self.record, self.state)["execution"]["correctness"]["status"], "PASS")
+        self.assertEqual(plan.dispatch_plan(self.record, self.state, "execution", self.sha), self.plan_id)
+        observer_digest = plan.controller_manifest()["execution-observe.py"]
+        probe = installed / "runtime-observation.py"
+        original = probe.read_bytes()
+        probe.write_bytes(original + b"\n# probe-only change\n")
+        # The observer's own hash is unchanged, so only the probe binding can detect this.
+        self.assertEqual(plan.controller_manifest()["execution-observe.py"], observer_digest)
+        self.assertEqual(attempt["controller_sha256"], observer_digest)
+        result = plan.assess(self.record, self.state)
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertNotEqual(result["execution"].get("correctness", {}).get("status"), "PASS")
+        self.assertFalse(result["candidate_ready"])
+        self.assertFalse(result["delivery_credit"])
+        with self.assertRaisesRegex(Exception, "controller or owner differs"):
+            plan.dispatch_plan(self.record, self.state, "execution", self.sha)
+        probe.write_bytes(original)
+        self.assertEqual(plan.assess(self.record, self.state)["execution"]["correctness"]["status"], "PASS")
+
+    def legacy_record(self):
+        """Rebuild the retained plan as admitted before the probe was a controller module."""
+        self.execution()
+        old_id = self.plan_id
+        legacy = self.record["execution_plans"].pop(old_id)
+        del legacy["controller"]["runtime-observation.py"]
+        legacy_id = plan.digest(plan.canonical(legacy))
+        self.assertNotEqual(legacy_id, old_id)
+        self.record["execution_plans"][legacy_id] = legacy
+        self.record["execution_observations"]["execution"]["execution_plan"] = legacy_id
+        return legacy_id, legacy
+
+    def test_legacy_plan_bytes_are_preserved_but_never_current(self):
+        legacy_id, legacy = self.legacy_record()
+        before = copy.deepcopy(self.record)
+        self.assertEqual(set(legacy["controller"]), set(plan.LEGACY_MODULES))
+        plan.validate_plans(self.record, self.state)
+        self.assertEqual(plan.digest(plan.canonical(legacy)), legacy_id)
+        # The historical ledger entry is neither rewritten nor treated as binding the new module.
+        self.assertEqual(self.record, before)
+        self.assertEqual(plan.assess(self.record, self.state)["status"], "UNVERIFIED")
+        with self.assertRaisesRegex(Exception, "controller or owner differs"):
+            plan.dispatch_plan(self.record, self.state, "execution", self.sha)
+        with self.assertRaisesRegex(Exception, "already frozen"):
+            plan.admit(self.record, {**self.request, "operation_id": "again", "expected_revision": self.record["revision"]},
+                       self.state, self.packet, {self.sha: self.raw})
+        self.assertEqual(self.record, before)
+
+    def test_plan_controller_shapes_other_than_current_or_legacy_are_refused(self):
+        for mutate in (
+            lambda controller: controller.pop("execution-observe.py"),
+            lambda controller: controller.update({"unexpected.py": "a" * 64}),
+            lambda controller: (controller.pop("runtime-observation.py"), controller.pop("review-run.py")),
+            lambda controller: controller.update({"runtime-observation.py": "not-a-digest"}),
+        ):
+            self.setUp()
+            self.admit()
+            plan_id, frozen = next(iter(self.record["execution_plans"].items()))
+            mutate(frozen["controller"])
+            del self.record["execution_plans"][plan_id]
+            self.record["execution_plans"][plan.digest(plan.canonical(frozen))] = frozen
+            with self.assertRaises(Exception):
+                plan.validate_plans(self.record, self.state)
+            self.assertEqual(plan.assess(self.record, self.state)["status"], "UNVERIFIED")
 
     def test_no_empty_evidence_pass_or_invented_cases(self):
         self.request["payload"]["obligations"]["correctness"] = []

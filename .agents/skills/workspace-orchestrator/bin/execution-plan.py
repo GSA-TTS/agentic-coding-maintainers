@@ -18,8 +18,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-MODULES = ("execution-plan.py", "execution-observe.py", "orchestrator-state.py", "review-collect.py",
-           "review-evidence.py", "review-run.py", "review-accept.py")
+MODULES = ("execution-plan.py", "execution-observe.py", "orchestrator-state.py", "runtime-observation.py",
+           "review-collect.py", "review-evidence.py", "review-run.py", "review-accept.py")
+# Plans admitted before process observation moved out of orchestrator-state.py never bound
+# runtime-observation.py. Their retained bytes stay valid ledger entries, but they can never
+# equal the current manifest, so dispatch and assessment refuse them.
+LEGACY_MODULES = tuple(name for name in MODULES if name != "runtime-observation.py")
 
 
 class Unverified(Exception):
@@ -159,7 +163,9 @@ def validate_plans(record: dict[str, Any], root: Path) -> None:
             raise Unverified("plan mutation chronology is invalid")
         revisions.add(plan["resulting_revision"])
         operation_ids.add(request["operation_id"])
-        e.fields(plan["controller"], set(MODULES))
+        controller = plan["controller"]
+        e.fields(controller, set(MODULES) if isinstance(controller, dict) and "runtime-observation.py" in controller
+                 else set(LEGACY_MODULES))
         for sha in plan["controller"].values():
             e.hash_value(sha)
         operations = requirements(request["payload"], generation, e)
