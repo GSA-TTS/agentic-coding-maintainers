@@ -204,3 +204,19 @@ using existing actual core/intent/receipt/REST/binding fixtures. Execution is
 reserved for an independently justified isolated guest; static inspection is
 not passing runtime evidence. Original source history and `SOURCE-SHA256SUMS`
 remain unchanged; `CANONICAL-SHA256SUMS` binds the adapted skill assets.
+
+## Foreground priority guidance clarification
+
+Issue #162 documentation change based on canonical revision
+`2f079ef3380ee4f138102b4875c0a77098c302fb`: the operator guide and packaged
+start command clarify terminal-state-first selection, eligible merge before
+re-review/new review/implementation, finite re-review batches and a carried
+new-review fairness obligation. Queue observation is capped at 10 minutes per
+pass; merge submission is capped at one attempt per PR per pass, with later
+retries requiring changed evidence or operator direction. Existing fields retain
+selection/skip reasons, blockers, owners and next actions. Five guide scenarios
+illustrate the prose; no scheduler, runtime enforcement, schema, permission or
+new test is introduced. The installed start command mirrors the packaged copy.
+This is a canonical documentation adaptation, not a new upstream import or a
+claim of runtime validation. Original import history and `SOURCE-SHA256SUMS`
+remain unchanged; regenerate `CANONICAL-SHA256SUMS` for the completed assets.

@@ -28,6 +28,24 @@ Operator scope and steering: $ARGUMENTS
    Ask only for missing scope, ambiguous ownership or an action outside that
    authority. More restrictive current steering wins. This command grants no
    new commit, push, PR creation, review-publication or merge permission.
+   At foreground decision boundaries, apply the guide's **Foreground selection
+   order**: check terminal PR state first (merged/closed leaves the actionable
+   queue, even with UNKNOWN mergeability); evaluate eligible approved/green
+   merges against all existing gates before changed-head/new-evidence re-review,
+   then new non-draft reviews, then appropriate ready implementation. Capture a
+   finite re-review snapshot at pass start; new arrivals cannot extend/restart
+   it. Admit at least one eligible waiting new review before the next pass when
+   capacity permits; carry that obligation across capacity-limited passes and
+   satisfy it before another re-review batch. Preserve in-flight owners and
+   reserved review capacity; blocked items must not idle independent lanes.
+   Record selection and skip reasons, blockers, owners, next actions and carried
+   obligations in existing `next_action`/`validation` fields. Only recorded operator
+   urgency or a verified security advisory may outrank routine reviews; retain
+   evidence, owner and scope. Immediately recheck the approved head and use the
+   expected-SHA guard for authorized merge submission: one attempt per PR per pass
+   at most, with later retries requiring changed evidence or operator direction.
+   Observe queues for at most 10 minutes per pass, then release the observer slot
+   with queue state and next action; queue entry is not merge completion.
 3. Plan multiple small, independently reviewable PRs from verified current
    `main` (or the repository's default branch). Record base SHA, acceptance
    criteria, owned/restricted paths, dependencies and integration order. Keep
