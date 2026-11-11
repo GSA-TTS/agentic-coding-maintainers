@@ -27,16 +27,23 @@ Nothing here is accepted until a human maintainer accepts it.
 - **Static only.** Every row is from reading source at the pinned SHA. No inventoried
   code, test or build was executed; no row asserts runtime behavior. "Derived" means
   it follows from cited lines combined; "inferred" means it needs interpretation.
+- **Citations are to the pinned SHA.** Line numbers are those of the file at `159bc1f`.
+  For files this change does not touch they equal the working tree. The `Makefile` is the
+  exception: this change adds one test line, so a pin citation `Makefile:91` is line 92 at
+  the candidate HEAD. `tests/task-store-inventory-test.py` checks ranges against the pinned
+  blob when the pin is reachable in git, and against the working tree otherwise.
 - **Citation convention.** A `path:N` or `path:N-M` citation is a full citation. A bare
   `:N-M` citation resolves against the row's own path (the first path in the Consumer or
   Test cell, or the path of the same ID in the access tables). `tests/task-store-inventory-test.py`
   checks only that cited files exist and ranges fit the file; it cannot check that a
-  line still says what the row claims, so refresh rows when cited files change.
+  line still says what the row claims, so refresh rows when the pin is advanced.
 - **Unmerged item, not inventoried.** Will's PR GSA-TTS/agentic-coding-maintainers#168 (head
   `392e501384cc7ee2084f90d573c6351321278d35`, reported by the operator; the owning
   repository is assumed to be this one and was not verified) is not main source and was not fetched or read. See U4 and D8.
-- **Authority.** GitHub issues and PRs remain the authority for tracker state. The local
-  task record is coordination state only; see the Authority boundary table.
+- **Authority.** The portable-team proposal states that GitHub issues are authoritative
+  and locally cached issue metadata is an optimization (documented; see the Authority
+  boundary table). This draft preserves that statement and does not extend it to the
+  `tracker_*` task fields, whose semantics this inventory did not establish.
 
 **Basis vocabulary** (used in the Basis and Kind columns): `observed` (cited line says
 it), `derived` (follows from cited lines), `inferred` (interpretation, evidence cited),
@@ -61,7 +68,8 @@ task\.json|ORCHESTRATOR_STATE_DIR|\.orchestrator|orchestrator-state|CoordinatorL
 
 **Exclusions (so completeness is not claimed).** Pattern-bounded and tracked-files-only:
 not found are path strings built dynamically, consumers that receive a `record` dict from
-a caller without touching storage (they appear only as extension-key consumers), untracked
+a caller without touching storage (the sweep pattern cannot find them; the ones listed here
+were found by reading call chains and a `record[`/`record.get(` sweep of the skill `bin/`, and others may be missing from the tables), untracked
 files, `.orchestrator/` runtime state, other repositories and installed copies, git
 history, and `.scratch/` files other than those cited. This is not a proof of completeness.
 
@@ -106,7 +114,7 @@ means `read_task`/`validate_record` called without `allow_bound`, so schema 3 is
 | S1 | `.agents/skills/workspace-orchestrator/bin/candidate-binding.py` | `:71-72` `:210-221` `:228-255` `:278-279` `:309` | read; write; lock; derive (incarnation from `scope_token`); fsync task file | default (1, 2) | two sections (`:230` `:248`) around an external poll lock (`:238-245`) | derived |
 | S2 | `.agents/skills/workspace-orchestrator/bin/execution-observe.py` | `:299-302` `:372-375` `:385-387` `:418-424` `:437` `:450-467` `:481-487` | read; write; enumerate (`glob`); lock; hash; derive | default | three separate sections (`:385` `:450` `:481`) with a subprocess between | derived |
 | S3 | `.agents/skills/workspace-orchestrator/bin/execution-plan.py` | `:21-26` `:51-52` `:167-168` `:274` `:336-359` | hash (controller manifest); read; write; lock | default | write path locked (`:352`); assessment reads twice unlocked (`:341-343`) | derived |
-| S4 | `.agents/skills/workspace-orchestrator/bin/foreground-delivery.py` | `:33-40` `:230` `:309-316` `:544-547` `:564-588` | read (raw bytes via `task_path`, then `validate_record`); write twice; lock; derive (process identity `:581`) | default | `:565` | derived |
+| S4 | `.agents/skills/workspace-orchestrator/bin/foreground-delivery.py` | `:33-40` `:230` `:309-316` `:544-547` `:564-588` | read (raw bytes via `task_path`, then `validate_record`); write (one final write, or repair `persist` callbacks); lock; derive (process identity `:581`) | default | `:565` | derived |
 | S5 | `.agents/skills/workspace-orchestrator/bin/foreground-repair.py` | `:5` `:202-208` `:260-274` | derive (replicates `write_task` size/revision fields); no storage I/O | n/a | caller holds (`:5`) | observed |
 | S6 | `.agents/skills/workspace-orchestrator/bin/foreground-adopt.py` | `:270-272` `:280` `:292-297` | read (`verify_reservations`); in-memory mutation | default (record from caller) | caller holds | derived |
 | S7 | `.agents/skills/workspace-orchestrator/bin/foreground-review.py` | `:185` `:191` `:99-100` `:121` | read (`verify_reservations`); own `review-packets/` store | default (record from caller) | caller holds | derived |
@@ -121,6 +129,7 @@ means `read_task`/`validate_record` called without `allow_bound`, so schema 3 is
 | S16 | `.agents/skills/workspace-orchestrator/bin/runtime-observation.py` | `:15-28` | derive (process identity) | n/a | n/a | observed |
 | S17 | `.agents/skills/workspace-orchestrator/bin/monitor-journal.py` | `:48-49` `:375-383` | derive (task digest and worker shape bound into claim intents); no storage I/O (A1) | 3 (worker has `session_id`, `generation`) | n/a | derived |
 | S18 | `.agents/skills/workspace-orchestrator/bin/foreground-admission.py` | `:43` `:58` | derive; no storage I/O (A1); called from S4 (`foreground-delivery.py:512`) | default (record from S4) | caller holds | derived |
+| S19 | `.agents/skills/workspace-orchestrator/bin/review-handoff.py` | `:195-215` `:240` | derive (reads `foreground_control` receipts and `runtime_collections` of a caller-supplied record); no storage I/O of its own | default (record from S4 `foreground-delivery.py:453` or S13 `review-reservation.py:202`) | caller holds (`:196`) | derived |
 
 ## Consumers: root scripts and wrappers
 
@@ -137,14 +146,14 @@ means `read_task`/`validate_record` called without `allow_bound`, so schema 3 is
 | R9 | `scripts/publish-github-assignment.py` | `:94-99` `:143-148` | derive (validates `task_binding` field set); no storage I/O | n/a | n/a | derived |
 | R10 | `scripts/evaluate-workflow.py` | `:27-29` `:48-56` `:61-80` `:84-110` `:130` | enumerate (descriptor walk); read; derive (imports core validator) | 1, 2 (default; bound fails) | none | observed |
 | R11 | `scripts/review-workspace-preflight.py` | `:3-5` `:38-48` `:185-198` `:257-261` `:316-336` `:383-384` | enumerate; read (snapshots whole `tasks/` and reservation trees); derive (own schema copy) | {1, 2} (`:260`); 3 reported unsupported | none | observed |
-| R12 | `Makefile` (check target), `scripts/sync-agentic-workspace.sh`, `scripts/import-workspace-orchestrator.sh` | `Makefile:91` `scripts/sync-agentic-workspace.sh:39-43` `scripts/import-workspace-orchestrator.sh:11-13` `scripts/import-workspace-orchestrator.sh:46` | hash (skill package manifest); no task I/O | n/a | n/a | observed |
+| R12 | `Makefile` (check target), `scripts/sync-agentic-workspace.sh`, `scripts/import-workspace-orchestrator.sh` | `Makefile:91` (at the pin) `scripts/sync-agentic-workspace.sh:39-43` `scripts/import-workspace-orchestrator.sh:11-13` `scripts/import-workspace-orchestrator.sh:46` | hash (skill package manifest); no task I/O | n/a | n/a | observed |
 | W1 | `bin/orchestrator-state.sh` | `:3-7` `:27-45` | derive (authority root); exec; no storage I/O | n/a | n/a | observed |
 | W2 | `.agents/skills/workspace-orchestrator/run.sh` and `.agents/skills/workspace-orchestrator/bin/orchestrator-state.sh:10` | `:13` | dispatch only | n/a | n/a | observed |
 
 ## Consumer assumptions
 
 Keyed by ID from the three tables above. "Extension keys" lists quoted record keys found
-by grep (`record["key"]`/`setdefault("key"` forms); other access forms may exist.
+by grep (`record["key"]`/`.get("key"`/`setdefault("key"` forms); other access forms may exist, so every list in this column is non-exhaustive.
 
 | ID | Durability / atomicity | Extension keys | Failure mode | Coupling | Tests | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -163,21 +172,22 @@ by grep (`record["key"]`/`setdefault("key"` forms); other access forms may exist
 | S1 | explicit task-file and directory fsync after write (`:210-221`) | `candidate_binding` | prints `REFUSED` (exit 4) or `UNVERIFIED` (exit 3) | storage layout (fsync of `task_path`); lifecycle rule | T7 | `:210-221` `:311-317` |
 | S2 | each write through `write_task`; DISPATCHING made durable before spawn (`:443`) | `execution_observations` | JSON `UNVERIFIED`, exit 3 (`:490-493`) | storage layout (enumerates `tasks/`); process identity; hash binding | T8 | `:423-424` `:443` `:490-493` |
 | S3 | via `write_task` | `execution_plans`, `execution_observations`, `review_protocol`, `runtime_collections` | JSON `UNVERIFIED`, exit 3 | hash binding (controller manifest); lifecycle rule | T9 | `:21-26` `:274` |
-| S4 | two writes in one locked run (`persist` callback and final) | `foreground_control`, `foreground_initialized`, `repair_proposals`, `repair_protocol`, `review_protocol`, `runtime_collections`, `collected_review_acceptances` | JSON `UNVERIFIED`, exit 3 (`:590-594`) | storage layout (raw `task_path` read bypasses `read_task`); process identity | T5 T6 | `:567-568` `:581` `:590-594` |
+| S4 | persist callback runs twice for `apply-owner-proposal` and once for reconcile (`.agents/skills/workspace-orchestrator/bin/foreground-repair.py:299-311` `.agents/skills/workspace-orchestrator/bin/foreground-repair.py:324-338`); other actions use one final `write_task` (`.agents/skills/workspace-orchestrator/bin/foreground-delivery.py:588`). Single locked section | `foreground_control`, `foreground_initialized`, `repair_proposals`, `repair_protocol`, `review_protocol`, `runtime_collections`, `collected_review_acceptances` | JSON `UNVERIFIED`, exit 3 (`:590-594`) | storage layout (raw `task_path` read bypasses `read_task`); process identity | T5 T6 | `:567-568` `:581` `:590-594` |
 | S5 | n/a; projects the write budget (900,000 canonical bytes, then `serialized_json`) | `foreground_repairs` and S4's keys | `Unverified` | durability (copies `write_task` limits) | T14 | `:202-208` |
 | S6 | n/a | `foreground_control`, `foreground_repairs`, `repair_proposals`, `repair_protocol`, `review_protocol`, `legacy_finding_dispositions` | `Unverified` | lifecycle rule; reservation ownership | T14 | `:280` `:292-297` |
 | S7 | n/a | `foreground_control`, `review_protocol` | `Unverified` | reservation ownership; lease shape | T14 | `:185` `:191` |
-| S8 | three persists (`:326` `:333` `:365`); first is a fence before the first file write | `repair_protocol`, `review_protocol` | JSON `UNVERIFIED`, exit 3 | lifecycle rule; hash binding (`controller_sha256`) | T10 | `:322` `:326` |
-| S9 | via `write_task` | `repair_proposals`, `repair_protocol`, `review_protocol`, `runtime_collections` | JSON `UNVERIFIED`, exit 3 | lease shape (`global_slot`, `implementation_lane` must be int) | none located | `:35-36` |
+| S8 | three persists (`:326` `:333` `:365`); first is a fence before the first file write | `repair_protocol`, `review_protocol` | JSON `UNVERIFIED`, exit 3 | lifecycle rule; hash binding (`controller_sha256`) | T10 T12 | `:322` `:326` |
+| S9 | via `write_task` | `repair_proposals`, `repair_protocol`, `review_protocol`, `runtime_collections` | JSON `UNVERIFIED`, exit 3 | lease shape (`global_slot`, `implementation_lane` must be int) | T27 T5 T12 | `:35-36` |
 | S10 | via `write_task` | `collected_review_acceptances`, `review_protocol`, `runtime_collections` | JSON `UNVERIFIED`, exit 3 | lifecycle rule | T15 | `:171-178` |
 | S11 | artifact store fsynced (`:251`); record via `write_task` | `review_protocol`, `review_reservations`, `runtime_collections` | JSON `UNVERIFIED`, exit 3 | lifecycle rule | T15 | `:240-254` |
 | S12 | via `write_task` | `review_protocol`, `foreground_*`, `repair_*`, `runtime_collections`, `review_reservations` | JSON `UNVERIFIED`, exit 3 | lifecycle rule; incarnation identity | T15 | `:689-707` |
-| S13 | n/a | `review_reservations`, `review_reservations_initialized`, `foreground_control`, `foreground_repairs` | `Unverified` | lifecycle rule | T13 | `:173-189` |
+| S13 | n/a | non-exhaustive: `review_reservations`, `review_reservations_initialized`, `foreground_control`, `foreground_repairs`, `repair_protocol`, `runtime_collections` (also reads `owner`, `worker`, `task_id`, `revision`) | `Unverified` | lifecycle rule | T13 | `:173-189` |
 | S14 | digest of the full task record is bound into the journal | `assignment_dispatch` | `require()` refusal | schema gates; durability (digest equality) | T24 | `:84-90` `:145` |
-| S15 | own `atomic_json` replaces files without a directory fsync (`:185-200`) | none | `monitor: UNVERIFIED`, return 3 (`:497-503`) | storage layout; process identity (own `ps` probe, `:252-257`); capacity constant (`:259`) | T2 | `:242` `:252-257` `:259` `:497-503` |
+| S15 | own `atomic_json` replaces files without a directory fsync (`:185-200`) | none | `monitor: UNVERIFIED`, return 3 (`:497-503`) | storage layout; process identity (own `ps` probe, `:252-257`); capacity constant (`:259`) | T2 T11 | `:242` `:252-257` `:259` `:497-503` |
 | S16 | n/a | none | `unknown` result | process identity | T16 | `:15-28` |
-| S17 | n/a | none | `JournalError` | schema gates (binding field set) | none located | `:375-383` |
-| S18 | n/a | `foreground_control` | `Unverified` | lifecycle rule | T14 | `foreground-delivery.py:512` |
+| S17 | n/a | none | `JournalError` | schema gates (binding field set) | T25 | `:375-383` |
+| S18 | n/a | non-exhaustive: `foreground_control`, plus the `review_protocol` or `runtime_collections` table named by the request (`foreground-admission.py:37`) | `Unverified` | lifecycle rule | T14 | `foreground-delivery.py:512` |
+| S19 | n/a | `foreground_control`, `runtime_collections` (`:199` `:207`) | `ValueError` from local `require` (`:21-23`); callers convert to `Unverified` | lifecycle rule | T29 | `:195-215` |
 | R1 | read-only; compares file fingerprints before and after (`:447`) | optional bound keys only (`:41`) | fixed reason codes; exit 0, 3 or 4 (`:504`) | storage layout; schema gates; capacity constants (`:170-173`) | T20 | `:41` `:170-173` `:504` |
 | R2 | read-only | via R1 | fixed codes | storage layout (via R1) | T21 | `:37-55` |
 | R3 | read-only; fingerprints retained across reads | via R1 | fixed codes | storage layout; lease paths | T22 | `:69-82` |
@@ -186,7 +196,7 @@ by grep (`record["key"]`/`setdefault("key"` forms); other access forms may exist
 | R6 | no lock, repeated bounded reads (`:66-67`) | via R1 | fixed codes | storage layout | T25 | `:66-67` |
 | R7 | as R4 | via R1 | fixed codes | lifecycle rule | T25 | `:141` |
 | R8 | reserve, durable journal, release ordering (`:289` `:241` `:351`) | `assignment_dispatch` | `Refusal` fixed codes | lifecycle rule; durability; process identity (`:152`) | T24 | `:152` `:289` |
-| R9 | n/a | none | `INVALID_APPROVAL_BINDING` | schema gates (binding field set) | none located | `:94-99` |
+| R9 | n/a | none | `INVALID_APPROVAL_BINDING` | schema gates (binding field set) | T28 | `:94-99` |
 | R10 | read-only; per-record 100,000 byte cap and 500-task cap (`:27-29`) | none | exits 3 with `UNVERIFIED` | storage layout; schema gates | T19 | `:27-29` |
 | R11 | read-only; whole-tree snapshot bounded (4,096 entries) | none | `UNVERIFIED` codes; unknown top-level state entries fail (`:383-384`) | storage layout; capacity constants (`:297`) | T18 | `:383-384` |
 | R12 | n/a | none | manifest diff fails the check | package layout | T26 | `Makefile:91` |
@@ -206,16 +216,16 @@ the file was not shown to be listed in `make test`.
 | T2 | `.agents/skills/workspace-orchestrator/tests/orchestrator-monitor-test.sh` | `:10` `:86-91` | state dir env, `monitor/poll.lock` | observed |
 | T3 | `.agents/skills/workspace-orchestrator/tests/orchestrator-production-worktree-test.sh` | `:13` `:60` | production path `.orchestrator/tasks/<id>/task.json` | observed |
 | T4 | `.agents/skills/workspace-orchestrator/tests/orchestrator-demo.sh` | `:8` `:25` | `task.json` layout | observed |
-| T5 | `.agents/skills/workspace-orchestrator/tests/foreground-delivery-test.py` | `:56` `:344-350` `:556` `:674` | `task.json` path, `CoordinatorLock`, `write_task`, reservation `owner.json` | observed |
-| T6 | `.agents/skills/workspace-orchestrator/tests/foreground-handoff-test.py` | `:31-41` | `task_path` bytes unchanged | observed |
+| T5 | `.agents/skills/workspace-orchestrator/tests/foreground-delivery-test.py` | `:56` `:344-350` `:514` `:521` `:556` `:674` `:1612-1617` | `task.json` path, `CoordinatorLock`, `write_task`, reservation `owner.json`; drives `repair-proposal` through the domain CLI; installs the `*-cases.py` suites (T14) | observed |
+| T6 | `.agents/skills/workspace-orchestrator/tests/foreground-handoff-test.py` | `:18-20` `:31-41` | `task_path` bytes unchanged; installs the `*-cases.py` suites (T14) | observed |
 | T7 | `.agents/skills/workspace-orchestrator/tests/candidate-binding-test.py` | `:37` `:160` `:176` | state dir env, `task.json`, `poll.lock` | observed |
 | T8 | `.agents/skills/workspace-orchestrator/tests/execution-observe-test.py` | `:91` `:170-172` `:179-180` | `active_execution_owner` lease shape, CLI state script | observed |
 | T9 | `.agents/skills/workspace-orchestrator/tests/execution-plan-test.py` | `:82` `:144-158` `:300` | `controller_manifest`, `MODULES` | observed |
 | T10 | `.agents/skills/workspace-orchestrator/tests/repair-apply-test.py` | `:179` `:193` | state dir env, `task.json` | observed |
-| T11 | `.agents/skills/workspace-orchestrator/tests/monitor-journal-test.py` | `:250-257` | runs the core state script against a workspace | observed |
-| T12 | `.agents/skills/workspace-orchestrator/tests/qualify-review-repair.py` | `:55-58` `:136` | `read_task` on `.orchestrator`; guest-only driver, runner not verified | observed |
+| T11 | `.agents/skills/workspace-orchestrator/tests/monitor-journal-test.py` | `:14-18` `:250-257` | loads the journal module; its CLI case runs the core state script and the monitor against a workspace. Does not exercise the claim-intent task binding (S17) | observed |
+| T12 | `.agents/skills/workspace-orchestrator/tests/qualify-review-repair.py` | `:55-58` `:136` | `read_task` on `.orchestrator`; guest-only driver, loaded (not run live) by `qualification-driver-test.py:11`, which `Makefile:27` at the pin lists | observed |
 | T13 | `.agents/skills/workspace-orchestrator/tests/review-reservation-test.py` | `:118` `:315` | `write_task` calls and patches | observed |
-| T14 | `.agents/skills/workspace-orchestrator/tests/foreground-adopt-cases.py` | `:283` `:425-431` | patches `write_task` and `atomic_json`; sibling case files `foreground-admission-cases.py:268` and `foreground-review-cases.py:260`; runner not verified | observed |
+| T14 | `.agents/skills/workspace-orchestrator/tests/foreground-adopt-cases.py` | `:283` `:425-431` | patches `write_task` and `atomic_json`; sibling case files `foreground-admission-cases.py:268` and `foreground-review-cases.py:260`; all three are loaded by `foreground-delivery-test.py:1612-1617` and `foreground-handoff-test.py:18-20`, which `Makefile:18-19` at the pin list | observed |
 | T15 | `.agents/skills/workspace-orchestrator/tests/review-collect-test.py` | `:288-300` | state dir env, `task.json`; same pattern in `review-accept-test.py:150-160` and `review-evidence-test.py:279-291` | observed |
 | T16 | `.agents/skills/workspace-orchestrator/tests/runtime-observation-test.py` | `:30` `:51` `:187-213` | core `process_identity` wrapper, `worker_metadata`, copied-skill loading | observed |
 | T17 | `tests/cooperative-session-binding-test.py` | `:24-37` `:62` `:127` `:133` `:138-153` | embeds an excerpt of a previous core validator; patches `write_task`, `release_dir`; asserts no leftover lock | observed |
@@ -226,8 +236,11 @@ the file was not shown to be listed in `make test`.
 | T22 | `tests/prepare-approved-claim-test.py` | `:173-176` | `TASK_FILE` rewrite | observed |
 | T23 | `tests/shared-authority-admission-test.py` | `:26` `:38` `:74` `:105-107` | wrapper plus `.orchestrator/tasks`, `scopes` | observed |
 | T24 | `tests/assignment-dispatch-test.py` | `:57` `:138` `:530-539` | owner files, lock leftovers, direct calls to release/reserve primitives | observed |
-| T25 | `tests/journal-claim-intent-test.py` | `:392-398` | task path; siblings `tests/journal-approved-claim-test.py:566`, `tests/record-claim-observation-test.py:515`, `tests/observe-claim-intent-test.py:327` | observed |
+| T25 | `tests/journal-claim-intent-test.py` | `:100-103` `:392-398` | asserts the journal `binding` equals `task_sha256`/`created_at`/`worker` of the task (S17 behavior); task path; siblings `tests/journal-approved-claim-test.py:566`, `tests/record-claim-observation-test.py:515`, `tests/observe-claim-intent-test.py:327` | observed |
 | T26 | `tests/import-sync-test.sh` | `:19-22` | copies wrapper and core files; sibling `tests/operating-surface-test.sh:82` runs `reconcile` | observed |
+| T27 | `.agents/skills/workspace-orchestrator/tests/repair-proposal-test.py` | `:9-19` `:24` | loads `repair-proposal.py` and subclasses the `repair-apply-test.py` fixture; calls `p.apply` on an in-memory record. Domain-level CLI use of repair-proposal (`self.domain("repair-proposal", ...)`) is in `foreground-delivery-test.py:514,521` (T5) | observed |
+| T28 | `tests/publish-github-assignment-test.py` | `:39-52` `:226` | builds a fixture `task_binding` and calls `publisher.validate_binding`; no task file is read | observed |
+| T29 | `.agents/skills/workspace-orchestrator/tests/foreground-handoff-test.py` | `:23-27` `:29` `:60` `:92` | `HandoffCLI` drives `export-admitted-review` through the public CLI; also `review-reservation-test.py:339` calls `export_admitted` directly | observed |
 
 ## Adjacent reservation and lock directories
 
@@ -241,8 +254,8 @@ are created lazily by the module named.
 | `scopes/<sha256-of-scope>.lock/owner.json` | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:856` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:894` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1160-1163` | C11 | C6, R1, R3, R6, R7, R8, R11 | observed |
 | `slots/<0-5>.lock/owner.json` | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:29` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1007` | C11 | C6, S15 (`orchestrator-monitor.py:261`), R1, R3, R6, R7, R8 | observed |
 | `implementation/<0-1>.lock/owner.json` | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:30` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1149` | C11 | C6, R1 (bound `Implementing` only, `scripts/check-native-ownership.py:444-446`), R8 | observed |
-| `monitor/` (`poll.lock`, `history.sqlite3`, `checkpoint.json`, `last-failure.json`) | `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:219-228` `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:238` `.agents/skills/workspace-orchestrator/bin/monitor-journal.py:58` | S15 S1 R4 R5 (`scripts/journal-claim-intent.py:102`) | R11 (`scripts/review-workspace-preflight.py:47-48`) | observed |
-| `review-artifacts/` | `.agents/skills/workspace-orchestrator/bin/review-collect.py:240-254` | S11 | S2 S3 S8 S9 S10 | observed |
+| `monitor/` (`poll.lock`, `history.sqlite3`, `checkpoint.json`, `last-failure.json`) | `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:219-228` `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:238` `.agents/skills/workspace-orchestrator/bin/monitor-journal.py:58` | S15 (`.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:426`, writable open; own JSON files `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:390` `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:398`); S1 (`.agents/skills/workspace-orchestrator/bin/candidate-binding.py:259` `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:286`, writable open); R4 (`scripts/journal-claim-intent.py:102-104`); R5 (`scripts/journal-approved-claim.py:156` `scripts/journal-approved-claim.py:164`); R7 (`scripts/record-claim-observation.py:161`); R8 (`scripts/assignment-dispatch.py:98`) | R11 (`scripts/review-workspace-preflight.py:47-48`); S15 status (`.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:482`); R6 (`scripts/observe-claim-intent.py:114`, read-only open); R7 (`scripts/record-claim-observation.py:81`); R5 (`scripts/journal-approved-claim.py:51`); C9 (`.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:685-686`, read-only open in `assignment_release`) | observed |
+| `review-artifacts/` | `.agents/skills/workspace-orchestrator/bin/review-collect.py:240-254` | S11 (`.agents/skills/workspace-orchestrator/bin/review-collect.py:391` `.agents/skills/workspace-orchestrator/bin/review-collect.py:415` `.agents/skills/workspace-orchestrator/bin/review-collect.py:436`); S2 (`.agents/skills/workspace-orchestrator/bin/execution-observe.py:428-429` `.agents/skills/workspace-orchestrator/bin/execution-observe.py:471-472`); S3 (`.agents/skills/workspace-orchestrator/bin/execution-plan.py:227` `.agents/skills/workspace-orchestrator/bin/execution-plan.py:240` `.agents/skills/workspace-orchestrator/bin/execution-plan.py:243`); S8 (`.agents/skills/workspace-orchestrator/bin/repair-apply.py:312-313`); S9 (`.agents/skills/workspace-orchestrator/bin/repair-proposal.py:245-248`) | S2 S3 S8 S9 S10 S5 (`.agents/skills/workspace-orchestrator/bin/foreground-repair.py:294`) | observed |
 | `review-packets/` | `.agents/skills/workspace-orchestrator/bin/foreground-review.py:99-100` | S7 | S7 | observed |
 | `review-handoffs/` | `.agents/skills/workspace-orchestrator/bin/review-reservation.py:149` `.agents/skills/workspace-orchestrator/bin/review-reservation.py:206` | S13 | S13 | observed |
 | `execution-docker-config/` | `.agents/skills/workspace-orchestrator/bin/execution-observe.py:387` | S2 | S2 | observed |
@@ -258,8 +271,9 @@ reported `UNVERIFIED` by preflight. This was not executed.
 
 | Fact | Where it lives | Evidence | Basis |
 | --- | --- | --- | --- |
-| Issue and PR state is authoritative for trackers | GitHub; local `tracker_type`/`tracker_number` are references only | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:349-350` `.scratch/portable-team-as-code/proposal.md:22-25` | observed |
-| Claims, execution attempts and receipts are local coordination facts | task record extension keys | `.scratch/portable-team-as-code/proposal.md:22-25` `docs/NATIVE-OWNERSHIP.md:7-8` | documented |
+| Task-record tracker fields are validated for shape only | `tracker_type` must be `none`, `issue` or `pr` and `tracker_number` a non-negative int; creation also requires number 0 for `none` and positive for `issue`/`pr` | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:349-350` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:852-855` | observed |
+| GitHub issues are authoritative; locally cached issue metadata is an optimization | stated by the proposal for cached issue metadata; it says nothing about `tracker_*` field semantics, and no cited source line states that these fields are references only | `.scratch/portable-team-as-code/proposal.md:22-25` | documented |
+| Claims, execution attempts and operation receipts are distinct from cached issue metadata | proposal statement; the existing store keeps them in the task record | `.scratch/portable-team-as-code/proposal.md:23-25` `docs/NATIVE-OWNERSHIP.md:7-8` | documented |
 | A candidate binding is not remote authority | `candidate_binding.result.remote_authority` is `False` | `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:113` `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:168` | observed |
 | Ownership preflight never authorizes mutation | `mutation_authorized` is `False` | `scripts/check-native-ownership.py:57-59` | observed |
 
@@ -271,8 +285,8 @@ reported `UNVERIFIED` by preflight. This was not executed.
 | F2 | The sequence lock, `read_task`, `verify_reservations`, mutate, `write_task` is repeated in nine skill controllers (S1 to S4, S8 to S12), plus four root scripts take the lock. | `.agents/skills/workspace-orchestrator/bin/repair-apply.py:385-391` `.agents/skills/workspace-orchestrator/bin/review-collect.py:471-476` `.agents/skills/workspace-orchestrator/bin/review-accept.py:173-178` `.agents/skills/workspace-orchestrator/bin/repair-proposal.py:276-281` | derived |
 | F3 | Capacity constants (6 slots, 2 lanes) appear in four places: core, R1 (as maxima 5 and 1), R11 and the monitor. | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:29-30` `scripts/check-native-ownership.py:170-173` `scripts/review-workspace-preflight.py:297` `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:259` | observed |
 | F4 | `orchestrator-state.py` and `execution-observe.py` are in the execution-plan controller manifest; changing either changes the manifest, and a plan whose manifest differs is refused. | `.agents/skills/workspace-orchestrator/bin/execution-plan.py:21-22` `.agents/skills/workspace-orchestrator/bin/execution-plan.py:274` `.agents/skills/workspace-orchestrator/bin/execution-plan.py:306` | derived |
-| F5 | Three consumers read task data without `read_task`: the monitor (`task.json` path built directly), S4 (raw bytes then `validate_record`) and S2's `glob` over `tasks/`. | `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:242` `.agents/skills/workspace-orchestrator/bin/foreground-delivery.py:567-568` `.agents/skills/workspace-orchestrator/bin/execution-observe.py:423` | observed |
-| F6 | R1 and R11 deliberately avoid importing the core; R10 imports it to reuse the validator. | `scripts/check-native-ownership.py:337` `scripts/review-workspace-preflight.py:3-5` `scripts/evaluate-workflow.py:48-56` | observed |
+| F5 | Many readers reach `task.json` without calling `read_task`, in two groups. **(a) Direct file readers of one or more records:** S4 (`task_path` bytes, then `validate_record`); S15 (builds the path itself); R1 (`read_selected`, shared with R2, R3, R4, R5, R6, R7 through `prepare.selected`); R8 (`read_selected`, then core `validate_record`); R10 (descriptor walk, then `validate_record`); R11 (whole-tree snapshot); and the core's own `read_json` paths in admission preflight, recovery, reconcile and `command_list`. **(b) Enumeration-only bypass:** S2 globs `tasks/*/task.json` but then calls `coordinator.read_task` per record (`execution-observe.py:424`). S1, S3, S8 to S12 call `read_task` and are not in either group. | `.agents/skills/workspace-orchestrator/bin/foreground-delivery.py:567-568` `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:242-243` `scripts/check-native-ownership.py:414` `scripts/prepare-task-claim.py:45` `scripts/assignment-dispatch.py:116` `scripts/evaluate-workflow.py:85` `scripts/review-workspace-preflight.py:330` `.agents/skills/workspace-orchestrator/bin/execution-observe.py:423-424` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1387-1388` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1510-1511` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1570` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1665-1666` | observed |
+| F6 | Core-import status of the direct readers. **Do not load the core:** R1 (comment says no state-module import), R11 (docstring says no controller imports), R2 and R3 (load only `check-native-ownership.py`, `native-claim.py`, `prepare-task-claim.py`, `observe-github-claims.py`), and S15 (loads only `monitor-journal.py`); each was checked by `git grep orchestrator-state` finding no load. **Do load the core:** R10 (`evaluate-workflow.py:48-56`), R4 (`journal-claim-intent.py:34`), R5 and R6 and R7 (through `intent.modules()`), R8 (`assignment-dispatch.py:43`). | `scripts/check-native-ownership.py:337` `scripts/review-workspace-preflight.py:3-5` `scripts/prepare-task-claim.py:28-29` `scripts/prepare-approved-claim.py:168-172` `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:405-409` `scripts/evaluate-workflow.py:48-56` `scripts/journal-claim-intent.py:30-35` `scripts/observe-claim-intent.py:33` `scripts/record-claim-observation.py:22` `scripts/journal-approved-claim.py:23-24` `scripts/assignment-dispatch.py:43` | observed |
 | F7 | Only `assignment-journal.py` and `assignment-dispatch.py` outside the core pass `allow_bound=True`. All other controllers refuse schema 3 by default. | `.agents/skills/workspace-orchestrator/bin/assignment-journal.py:133` `scripts/assignment-dispatch.py:117` `docs/NATIVE-OWNERSHIP.md:56-60` | derived |
 | F8 | The monitor runs its own `ps -p <pid> -o lstart=` probe instead of the extracted process-observation module, so GSA-TTS/agentic-coding-maintainers#165's extraction does not cover it. | `.agents/skills/workspace-orchestrator/bin/orchestrator-monitor.py:252-257` `.agents/skills/workspace-orchestrator/bin/runtime-observation.py:15-28` `docs/decisions/0001-extract-process-observation.md:68-80` | observed |
 | F9 | Tests treat `task.json` bytes and core function names as API (patched attributes, byte equality). | `tests/cooperative-session-binding-test.py:138-153` `.agents/skills/workspace-orchestrator/tests/foreground-adopt-cases.py:425-431` `.agents/skills/workspace-orchestrator/tests/foreground-handoff-test.py:31-41` | observed |
@@ -286,15 +300,17 @@ reported `UNVERIFIED` by preflight. This was not executed.
 | U3 | Consumers outside this repository: installed skill copies, downstream `agentic/` copies, host-local scripts | Out of tree | Maintainer lists known installs before any seam rollout |
 | U4 | Will's PR GSA-TTS/agentic-coding-maintainers#168 (head `392e501384cc7ee2084f90d573c6351321278d35`): seam names, callers handled, repository | Reported by the operator, unmerged, not fetched | Read it before choosing names (D8); `.scratch/portable-team-as-code/proposal.md:238-240` asks to adopt existing seams |
 | U5 | Whether persisted records of schema 1 or other extension combinations exist on any host | Host state not inspected | Maintainer survey; affects migration risk |
-| U6 | Whether the `*-cases.py` and `qualify-review-repair.py` files are run by `make test` | Runner link not shown | Check Makefile and importing tests |
+| U6 | Whether `make test` at HEAD still lists the suites that load the `*-cases.py` and `qualify-review-repair.py` files | Resolved at the pin: `Makefile:18-19` and `Makefile:27` list `foreground-handoff-test.py`, `foreground-delivery-test.py` and `qualification-driver-test.py`, which load them (T12, T14). Not re-checked at HEAD | `git show 159bc1f:Makefile \| grep -n 'foreground-\|qualification-driver'` |
 | U7 | Dynamically built paths and non-literal names | Pattern search cannot prove absence | Review by hand during any migration PR |
 | U8 | Operator procedure for a leftover `locks/coordinator.lock` after a crash | Code has no takeover; docs unread | Read `OPERATOR-GUIDE.md` |
 | U9 | Whether `.opencode` copies match skill profiles byte for byte | Not compared | `diff` in the isolated check |
 
 ## PROPOSED: task-store seam (not implemented)
 
-Everything above this heading is observed or derived from source at the pinned SHA.
-Everything below is **recommendation** unless a row says otherwise. It is not approved,
+Rows above this heading carry a Basis value: most are `observed` or `derived` from the
+cited source, but some are `inferred`, `documented` or `unknown`, and the Unknowns table
+lists what was not inspected. Rows below are **recommendation** unless a row says
+otherwise. The proposal is not approved,
 changes no code, moves no code, changes no schema or runtime behavior, and adds no
 Markdown or Git adapter. Kind values: `observed` (cited above), `documented` (a
 repository document states it), `recommendation` (this draft's proposal), `unknown`.
@@ -304,9 +320,9 @@ repository document states it), `recommendation` (this draft's proposal), `unkno
 | Claim | Kind | Evidence |
 | --- | --- | --- |
 | Nine skill controllers repeat state root, lock, read, reservation check, mutate, write | observed | F2; `.agents/skills/workspace-orchestrator/bin/review-collect.py:470-476` |
-| Three controllers hold more than one locked section, or persist more than once per section, so a single-shot "apply" is not enough | observed | `.agents/skills/workspace-orchestrator/bin/execution-observe.py:385` `.agents/skills/workspace-orchestrator/bin/execution-observe.py:450` `.agents/skills/workspace-orchestrator/bin/execution-observe.py:481`; `.agents/skills/workspace-orchestrator/bin/repair-apply.py:326` `.agents/skills/workspace-orchestrator/bin/repair-apply.py:333`; `.agents/skills/workspace-orchestrator/bin/foreground-delivery.py:586-588` |
+| Two distinct shapes defeat a single-shot "apply". **Multi-section** (several separate lock acquisitions in one CLI run, with external work between): S2 (three lock sections, each writing once; the middle one is entered per case) and S1 (a replay read section, then a read and conditional write section around an external poll lock). **Multi-persist within one locked section:** S8 (`apply_repair` persists twice) and S4's repair actions (the `persist` callback is called twice for `apply-owner-proposal`). S2 is multi-section only; each of its sections writes once | observed | `.agents/skills/workspace-orchestrator/bin/execution-observe.py:385` `.agents/skills/workspace-orchestrator/bin/execution-observe.py:450` `.agents/skills/workspace-orchestrator/bin/execution-observe.py:481` `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:230` `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:248` `.agents/skills/workspace-orchestrator/bin/repair-apply.py:326` `.agents/skills/workspace-orchestrator/bin/repair-apply.py:333` `.agents/skills/workspace-orchestrator/bin/foreground-repair.py:299-311` `.agents/skills/workspace-orchestrator/bin/foreground-delivery.py:586-588` |
 | Reservation directories and task writes are ordered together (reserve, then write, release on failure; intent, release, final write) | observed | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1007-1023` `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1151-1166` |
-| Six readers avoid importing the core on purpose | observed | R1, R2, R3, R6, R11, S15 and F6 |
+| Five direct readers do not load the core (R1, R2, R3, R11, S15); R6, R10 and the lock-holding scripts R4, R5, R7, R8 do | observed | F6 |
 | The controller manifest hashes core modules, so a new module must be added to it or its code leaves the hash | observed | F4; `docs/decisions/0001-extract-process-observation.md:99-119` |
 | Tests patch core attributes by name | observed | F9 |
 | An existing precedent: sibling module loaded by path, wrapper retained in the core | documented | `docs/decisions/0001-extract-process-observation.md:68-80` |
@@ -321,7 +337,7 @@ delegates to the code that exists today; no behavior is meant to move or change.
 | --- | --- | --- | --- |
 | `inspect(root, task_id, *, allow_bound=False)` | validated record | direct `read_task` calls (S1, S2, S3, S8 to S12) and raw reads (S4) | Same default refusal of schema 3 as `allow_bound` today (F7) |
 | `list(root, *, allow_bound=False)` | sorted validated records | `command_list`, S2's `glob`, admission and recovery loops | Enumeration is the layout leak in C4 and S2 |
-| `apply(root, task_id, change, *, allow_bound=False)` | runs `change(record, persist)` under the coordinator lock after `verify_reservations`; `persist(record)` is `write_task`; returns `change`'s result | the repeated block of F2, including multi-persist callers via `persist` | Three controllers need more than one persist per section |
+| `apply(root, task_id, change, *, allow_bound=False)` | runs `change(record, persist)` under the coordinator lock after `verify_reservations`; `persist(record)` is `write_task`; returns `change`'s result | the repeated block of F2; multi-persist callers (S4 repair actions, S8) via `persist` | Multi-persist sections need `persist`; multi-section callers (S1, S2) are a separate question (D3) |
 | lock | not exposed separately at first; callers needing separate sections (S1, S2) call `apply` several times | `CoordinatorLock` in controllers | Exposing a bare lock would keep every caller coupled to lock semantics. Revisit only if S1 or S2 cannot be expressed (D3) |
 
 `apply` keeps the lock, the read, `verify_reservations` and `write_task` exactly as in
@@ -329,7 +345,7 @@ the core; the core's own `command_*` functions keep calling its internal functio
 are not migrated. Naming is provisional and defers to any seam already proposed in
 PR GSA-TTS/agentic-coding-maintainers#168 (U4, D8).
 
-### Invariants the seam must preserve (all observed above)
+### Invariants the seam must preserve (each cited to source)
 
 | Invariant | Evidence |
 | --- | --- |
@@ -341,7 +357,7 @@ PR GSA-TTS/agentic-coding-maintainers#168 (U4, D8).
 | Unknown or malformed state stays UNVERIFIED (exit 3), never "healthy" | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1775-1788` |
 | Reservation ownership is checked in both directions before admission or mutation | `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py:1341-1413` |
 | `write_task`, `atomic_json`, `release_dir` and similar remain patchable core attributes | F9 |
-| The record never becomes tracker authority: `remote_authority` stays false and GitHub issue and PR state stays authoritative | `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:168` `.scratch/portable-team-as-code/proposal.md:22-25` |
+| The seam must not change what the record means as authority: `remote_authority` stays false in `candidate_binding`, and the proposal keeps GitHub issues authoritative over cached issue metadata | `.agents/skills/workspace-orchestrator/bin/candidate-binding.py:168` `.scratch/portable-team-as-code/proposal.md:22-25` |
 
 ### What must remain outside the seam
 
@@ -350,7 +366,7 @@ PR GSA-TTS/agentic-coding-maintainers#168 (U4, D8).
 | Lifecycle rules, transitions, recovery receipts, validators and extension-key semantics (C2, C8, C9, C11, C12) | Not storage; moving them is a behavior change | recommendation |
 | Reservation directories `scopes/`, `slots/`, `implementation/` and `locks/` | Ordered together with task writes (see evidence); separate decision (D4) | recommendation |
 | Process identity (C10, S16, S15's own probe, F8) | Runtime-observation concern already extracted in GSA-TTS/agentic-coding-maintainers#165 | documented |
-| Descriptor-based read-only consumers R1, R2, R3, R6, R10, R11 and the monitor S15 | Deliberately independent of the core (F6); a store seam would have to offer a read-only layout contract first (D5) | recommendation |
+| Direct readers that do not load the core: R1, R2, R3, R11 and the monitor S15 (F6). R6 and R10 read task files directly but do load the core, so they are a separate case | Independence of the first five is stated in their own comments or shown by their loaders (F6); a store seam would have to offer a read-only layout contract first (D5). R6, R10 and R8 can route through the seam without losing independence | recommendation |
 | Other `.orchestrator/` stores: `monitor/`, `review-artifacts/`, `review-packets/`, `review-handoffs/` | Not task records (S7, S11, S13, S15) | observed |
 | Journal digest bindings (S14, S17, R4, R5, R9) | They hash whole task records and so depend on exact serialization | recommendation |
 | Any alternate backend (Markdown, Git or other) | Out of scope for GSA-TTS/agentic-coding-maintainers#167; needs its own design after the seam exists | recommendation |
@@ -375,9 +391,9 @@ PR GSA-TTS/agentic-coding-maintainers#168 (U4, D8).
 | 0 | Maintainer decisions D1 to D8; read PR GSA-TTS/agentic-coding-maintainers#168 (U4); read unread docs (U1, U8) | none | this inventory accepted |
 | 1 | Add the module with `inspect`, `list`, `apply` delegating to core functions; add to `MODULES`; update checksums and tests; core keeps its names | none intended; manifest key set changes | step 0 |
 | 2 | Migrate the simplest single-section controllers: S10, S11, S9 | none intended | step 1 |
-| 3 | Migrate S12, S3, S8 (multi-persist via `persist`) | none intended | step 2 |
-| 4 | Migrate S1, S2, S4 (multi-section, raw read) | none intended | step 3; D3 |
-| 5 | Decide the read-only layout contract for R1, R2, R3, R6, R10, R11, S15 | none until decided | D5 |
+| 3 | Migrate S12, S3, S8 (S8 is multi-persist via `persist`) | none intended | step 2 |
+| 4 | Migrate S1, S2 (multi-section; D3), then S4 (multi-persist on repair actions, raw read) | none intended | step 3; D3 |
+| 5 | Decide the read-only layout contract for the core-independent readers R1, R2, R3, R11, S15; decide separately whether core-loading direct readers R6, R8, R10 move to `inspect`/`list` | none until decided | D5 |
 | 6 | Only then discuss a second backend | out of scope here | all of the above |
 
 Per the repository's tracking rule, steps 1 to 5 are blocked work that should each have a
@@ -392,7 +408,7 @@ maintainer decides (D7).
 | D2 | Seam shape: `inspect`, `list`, `apply` only, or also a bare lock | three operations / add lock | three operations |
 | D3 | Can multi-section controllers (S1, S2) use repeated `apply`, or do they need a held lock across external work? Needs reading their control flow with a tester | repeated apply / expose lock | unknown |
 | D4 | Reservation directories inside or outside the first seam | outside / inside | outside |
-| D5 | Read-only independent readers: leave as is, give them a documented layout contract, or route through the seam | leave / contract / route | leave |
+| D5 | Core-independent direct readers (R1, R2, R3, R11, S15): leave as is, give them a documented layout contract, or route through the seam. Core-loading direct readers (R6, R8, R10): route through `inspect`/`list` or leave | leave / contract / route | leave |
 | D6 | New module in the controller manifest (accept the retained-plan effect) or leave the seam unhashed | hash / not hash | hash |
 | D7 | Create tracked issues for steps 1 to 5 now | yes / no | not done |
 | D8 | Align names with PR GSA-TTS/agentic-coding-maintainers#168 before step 1 | adopt its seam / keep these names | read GSA-TTS/agentic-coding-maintainers#168 first (U4) |

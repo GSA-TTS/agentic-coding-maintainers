@@ -7,8 +7,10 @@ document is well formed and that every citation still lands inside an existing f
 does not show that a cited line still says what its row claims.
 """
 
+import functools
 import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -26,7 +28,7 @@ SECTIONS = [
 ]
 PROPOSED_SUBSECTIONS = [
     "Evidence that shapes the seam", "Smallest seam (recommendation)",
-    "Invariants the seam must preserve (all observed above)",
+    "Invariants the seam must preserve (each cited to source)",
     "What must remain outside the seam", "Compatibility and rollback risks",
     "Migration order (recommendation; each step its own reviewed change)",
     "Decisions for the maintainer",
@@ -48,7 +50,7 @@ TABLES = {
     "Unknowns and not inspected": [["ID", "Item", "Why unknown", "Next action"]],
     "Evidence that shapes the seam": [["Claim", "Kind", "Evidence"]],
     "Smallest seam (recommendation)": [["Operation", "Shape", "Replaces", "Justification"]],
-    "Invariants the seam must preserve (all observed above)": [["Invariant", "Evidence"]],
+    "Invariants the seam must preserve (each cited to source)": [["Invariant", "Evidence"]],
     "What must remain outside the seam": [["Item", "Reason", "Basis"]],
     "Compatibility and rollback risks": [["Risk", "Kind", "Evidence", "Mitigation (recommendation)"]],
     "Migration order (recommendation; each step its own reviewed change)": [
@@ -135,7 +137,36 @@ def resolve(path, names):
     return found[0] if len(found) == 1 else None
 
 
+def pin_available():
+    """True when the pinned commit is reachable (a full clone; not a shallow CI checkout)."""
+    try:
+        done = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", PINNED_SHA + "^{commit}"],
+                              capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+PIN = None
+
+
+@functools.lru_cache(maxsize=None)
 def line_count(path):
+    """Line count of the cited file at the pinned SHA when reachable, else the working tree.
+
+    Reading the pinned blob needs only `git cat-file`/`git show`; no repository code runs.
+    A shallow checkout cannot see the pin, so there the check degrades to the working tree
+    (the document says so). A file absent at the pin falls back to the working tree.
+    """
+    global PIN
+    if PIN is None:
+        PIN = pin_available()
+    relative = path.resolve().relative_to(ROOT).as_posix()
+    if PIN:
+        done = subprocess.run(["git", "-C", str(ROOT), "show", f"{PINNED_SHA}:{relative}"],
+                              capture_output=True, timeout=30, check=False)
+        if done.returncode == 0:
+            return len(done.stdout.decode("utf-8", errors="replace").splitlines())
     return len(path.read_bytes().decode("utf-8", errors="replace").splitlines())
 
 
@@ -267,8 +298,10 @@ class TaskStoreInventoryTests(unittest.TestCase):
             for name in ("Basis", "Kind"):
                 if name in header and row[header.index(name)].strip() == "inferred":
                     inferred += 1
-                    cited = any(True for _ in row_citations(row, row_base(row), self.names))
-                    self.assertTrue(cited, (section["title"], row[0]))
+                    base = self.id_base(row[0]) if re.fullmatch(r"[A-Z]\d{1,2}", row[0]) else None
+                    resolved = [path for _, path, _, _ in row_citations(row, base or row_base(row), self.names)]
+                    self.assertTrue(resolved and all(path is not None for path in resolved),
+                                    (section["title"], row[0], "inferred row needs resolvable line evidence"))
         self.assertGreaterEqual(inferred, 1)
 
     def test_classified_rows_cite_evidence_or_an_inventory_id(self):
@@ -299,6 +332,30 @@ class TaskStoreInventoryTests(unittest.TestCase):
                 self.assertIn(ref, tests, (row[0], ref))
             for cell in row[1:]:
                 self.assertTrue(cell.strip(), row[0])
+
+    def test_every_test_row_is_referenced_and_ids_are_unique(self):
+        # An ID may recur across tables (a consumer has an access row and an
+        # assumptions row); within one table it must be unique.
+        for section in self.sections:
+            for table in section["tables"]:
+                ids = [row[0] for row in table["rows"] if re.fullmatch(r"[A-Z]\d{1,2}", row[0])]
+                self.assertEqual(len(ids), len(set(ids)), (section["title"], "duplicate ID in one table"))
+        tests = {row[0] for row in self.by_title["Tests and fixtures"]["tables"][0]["rows"]}
+        referenced = set()
+        for row in self.by_title["Consumer assumptions"]["tables"][0]["rows"]:
+            referenced |= set(re.findall(r"\bT\d{1,2}\b", row[5]))
+        self.assertEqual(tests - referenced, set(), "test rows no consumer row refers to")
+
+    def test_consumer_counts_match_documented_scope(self):
+        counts = {title: len(self.by_title[title]["tables"][0]["rows"]) for title in (
+            "Core store: orchestrator-state.py", "Consumers: skill controllers",
+            "Consumers: root scripts and wrappers", "Tests and fixtures")}
+        self.assertEqual(sum(counts.values()), 12 + 19 + 14 + 29, counts)
+
+    def test_no_stale_overclaims(self):
+        for phrase in ("all observed above", "Everything above this heading is observed",
+                       "Three consumers read task data", "Three controllers hold", "Checkpoint placeholder"):
+            self.assertNotIn(phrase, self.source, phrase)
 
     def test_id_references_resolve(self):
         known = set()
