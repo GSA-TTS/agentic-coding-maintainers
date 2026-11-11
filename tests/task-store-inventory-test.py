@@ -221,7 +221,7 @@ class TaskStoreInventoryTests(unittest.TestCase):
         for match in PERMALINK.finditer(self.source):
             self.assertEqual(match.group(1), PINNED_SHA)
         shas = set(re.findall(r"\b[0-9a-f]{40}\b", self.source))
-        self.assertEqual(shas - {PINNED_SHA}, {"392e501384cc7ee2084f90d573c6351321278d35"})
+        self.assertEqual(shas - {PINNED_SHA}, {"aa37c5542256b21585fd8a924622de7b85ee954d"})
 
     def test_required_sections_in_order(self):
         titles = [s["title"] for s in self.sections if s["level"] == 2]

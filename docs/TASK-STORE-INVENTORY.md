@@ -37,9 +37,12 @@ Nothing here is accepted until a human maintainer accepts it.
   Test cell, or the path of the same ID in the access tables). `tests/task-store-inventory-test.py`
   checks only that cited files exist and ranges fit the file; it cannot check that a
   line still says what the row claims, so refresh rows when the pin is advanced.
-- **Unmerged item, not inventoried.** Will's PR GSA-TTS/agentic-coding-maintainers#168 (head
-  `392e501384cc7ee2084f90d573c6351321278d35`, reported by the operator; the owning
-  repository is assumed to be this one and was not verified) is not main source and was not fetched or read. See U4 and D8.
+- **Post-pin item, not inventoried.** GSA-TTS/agentic-coding-maintainers#168 merged into main as
+  `aa37c5542256b21585fd8a924622de7b85ee954d` after the pin. By its diff stat it touches
+  `scripts/assignment-dispatch.py` (R8) and `scripts/github-assignment-transport.py`, with tests and
+  `docs/CLAIM-PUBLISHER-PROTOCOL.md`. It is not in the pinned source and was not inventoried, so R8's
+  rows may be stale against current main; its changes to R8 settlement and lock handling were not
+  read in detail. It does not introduce a task-store seam. See U4 and D8.
 - **Authority.** The portable-team proposal states that GitHub issues are authoritative
   and locally cached issue metadata is an optimization (documented; see the Authority
   boundary table). This draft preserves that statement and does not extend it to the
@@ -298,7 +301,7 @@ reported `UNVERIFIED` by preflight. This was not executed.
 | U1 | 22 Markdown files matched the pattern; only those cited were read. Unread: skill `SKILL.md`, `PROVENANCE.md`, `docs/{CANDIDATE-BINDING,DURABLE-PR-MONITOR,OPERATOR-GUIDE,REVIEW-COLLECTION,REVIEW-HANDOFF}.md`, both `implementation-worker.md` profiles, `README.md`, `docs/{NATIVE-GITHUB-CLAIMS,REPOSITORY-SETUP,WORKSPACE-CLEANUP}.md` (partially), and `.scratch` research files | Grep listing only | Read before ADR; may add documented lock or recovery procedures |
 | U2 | All runtime behavior (lock contention, crash recovery, fsync outcomes) | Nothing was executed, by constraint | Primary runs the verification commands in an isolated environment |
 | U3 | Consumers outside this repository: installed skill copies, downstream `agentic/` copies, host-local scripts | Out of tree | Maintainer lists known installs before any seam rollout |
-| U4 | Will's PR GSA-TTS/agentic-coding-maintainers#168 (head `392e501384cc7ee2084f90d573c6351321278d35`): seam names, callers handled, repository | Reported by the operator, unmerged, not fetched | Read it before choosing names (D8); `.scratch/portable-team-as-code/proposal.md:238-240` asks to adopt existing seams |
+| U4 | What GSA-TTS/agentic-coding-maintainers#168 (merged as `aa37c5542256b21585fd8a924622de7b85ee954d` after the pin) changed in R8 (`scripts/assignment-dispatch.py`) and whether any other open work proposes a task-store seam | Diff stat and a skim of the diff only; R8 rows are at the pin | Refresh R8 against current main when the pin is advanced (D8); `.scratch/portable-team-as-code/proposal.md:238-240` asks to adopt existing seams |
 | U5 | Whether persisted records of schema 1 or other extension combinations exist on any host | Host state not inspected | Maintainer survey; affects migration risk |
 | U6 | Whether `make test` at HEAD still lists the suites that load the `*-cases.py` and `qualify-review-repair.py` files | Resolved at the pin: `Makefile:18-19` and `Makefile:27` list `foreground-handoff-test.py`, `foreground-delivery-test.py` and `qualification-driver-test.py`, which load them (T12, T14). Not re-checked at HEAD | `git show 159bc1f:Makefile \| grep -n 'foreground-\|qualification-driver'` |
 | U7 | Dynamically built paths and non-literal names | Pattern search cannot prove absence | Review by hand during any migration PR |
@@ -343,7 +346,7 @@ delegates to the code that exists today; no behavior is meant to move or change.
 `apply` keeps the lock, the read, `verify_reservations` and `write_task` exactly as in
 the core; the core's own `command_*` functions keep calling its internal functions and
 are not migrated. Naming is provisional and defers to any seam already proposed in
-PR GSA-TTS/agentic-coding-maintainers#168 (U4, D8).
+any seam proposed in other open work (U4, D8).
 
 ### Invariants the seam must preserve (each cited to source)
 
@@ -388,7 +391,7 @@ PR GSA-TTS/agentic-coding-maintainers#168 (U4, D8).
 
 | Step | Change | Behavior change | Prerequisite |
 | --- | --- | --- | --- |
-| 0 | Maintainer decisions D1 to D8; read PR GSA-TTS/agentic-coding-maintainers#168 (U4); read unread docs (U1, U8) | none | this inventory accepted |
+| 0 | Maintainer decisions D1 to D8; refresh R8 and check other open work for a seam (U4); read unread docs (U1, U8) | none | this inventory accepted |
 | 1 | Add the module with `inspect`, `list`, `apply` delegating to core functions; add to `MODULES`; update checksums and tests; core keeps its names | none intended; manifest key set changes | step 0 |
 | 2 | Migrate the simplest single-section controllers: S10, S11, S9 | none intended | step 1 |
 | 3 | Migrate S12, S3, S8 (S8 is multi-persist via `persist`) | none intended | step 2 |
@@ -411,7 +414,7 @@ maintainer decides (D7).
 | D5 | Core-independent direct readers (R1, R2, R3, R11) and S15 (no direct core load; may reach it transitively for v6 journals with assignment rows): leave as is, give them a documented layout contract, or route through the seam. Core-loading direct readers (R6, R8, R10): route through `inspect`/`list` or leave | leave / contract / route | leave |
 | D6 | New module in the controller manifest (accept the retained-plan effect) or leave the seam unhashed | hash / not hash | hash |
 | D7 | Create tracked issues for steps 1 to 5 now | yes / no | not done |
-| D8 | Align names with PR GSA-TTS/agentic-coding-maintainers#168 before step 1 | adopt its seam / keep these names | read GSA-TTS/agentic-coding-maintainers#168 first (U4) |
+| D8 | Before step 1, re-pin the inventory to current main (post GSA-TTS/agentic-coding-maintainers#168) and adopt any seam already proposed in other open work | re-pin then adopt / keep these names | refresh R8 and check other open work first (U4) |
 
 ## Links
 
@@ -419,7 +422,7 @@ maintainer decides (D7).
 - Process-observation issue: [GSA-TTS/agentic-coding-maintainers#161](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/161)
 - Process-observation change: [GSA-TTS/agentic-coding-maintainers#165](https://github.com/GSA-TTS/agentic-coding-maintainers/pull/165)
 - This inventory: [GSA-TTS/agentic-coding-maintainers#167](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/167)
-- Unmerged, not inventoried: PR GSA-TTS/agentic-coding-maintainers#168, head `392e501384cc7ee2084f90d573c6351321278d35`
+- Post-pin, not inventoried: GSA-TTS/agentic-coding-maintainers#168, merged as `aa37c5542256b21585fd8a924622de7b85ee954d`
 - Precedent decision record: `docs/decisions/0001-extract-process-observation.md`
 
 AI assistance: drafted by Claude Sonnet 5.5 in OpenCode from static reading of the
