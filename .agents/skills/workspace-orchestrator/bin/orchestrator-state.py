@@ -324,7 +324,7 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
     missing = required - raw.keys()
     if missing:
         raise UnknownError(f"task record missing fields: {', '.join(sorted(missing))}")
-    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions", "transition_recovery", "assignment_dispatch"}:
+    if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions", "transition_recovery", "assignment_dispatch", "intake_completion"}:
         raise UnknownError("cooperative core-only task has unsupported retained extensions")
     if raw["schema_version"] not in {SCHEMA, BOUND_SCHEMA} or type(raw["revision"]) is not int or raw["revision"] < 0:
         raise UnknownError("task schema or revision is invalid")
@@ -376,6 +376,7 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
             raise UnknownError("task worker id does not match task")
     validate_cooperative_binding(raw)
     validate_assignment_dispatch(raw)
+    validate_intake_completion(raw)
     validate_transition_recovery(raw)
     if "candidate_binding" in raw:
         path = Path(__file__).resolve().with_name("candidate-binding.py")
@@ -1123,6 +1124,117 @@ def release_capacity(root: Path, record: dict[str, Any]) -> None:
     record["worker"] = None
 
 
+def validate_intake_completion(record):
+    receipt = record.get("intake_completion")
+    if receipt is None and "intake_completion" not in record:
+        return
+    if (record["schema_version"] != BOUND_SCHEMA or record["kind"] != "intake"
+            or type(receipt) is not dict or set(receipt) != {"version", "base_revision", "leases"}
+            or type(receipt["version"]) is not int or receipt["version"] != 1
+            or type(receipt["base_revision"]) is not int or not 0 < receipt["base_revision"] < record["revision"]
+            or type(receipt["leases"]) is not dict or set(receipt["leases"]) != {"slot", "scope"}):
+        raise UnknownError("invalid intake completion receipt")
+    for lease in receipt["leases"].values():
+        if (type(lease) is not dict or set(lease) != {"device", "inode", "phase"}
+                or any(type(lease[key]) is not int or lease[key] < 0 for key in ("device", "inode"))
+                or lease["phase"] not in {"reserved", "cleanup", "released"}):
+            raise UnknownError("invalid intake completion lease receipt")
+    if record["state"] == "Done":
+        if record["transition_intent"] is not None or any(x["phase"] != "released" for x in receipt["leases"].values()):
+            raise UnknownError("incomplete intake release marked done")
+    elif record["state"] != "Claimed" or record["transition_intent"] != "Done":
+        raise UnknownError("intake completion intent changed")
+    revision = receipt["base_revision"] + 1 + sum(
+        {"reserved": 0, "cleanup": 1, "released": 2}[x["phase"]] for x in receipt["leases"].values())
+    if record["revision"] != revision + int(record["state"] == "Done"):
+        raise UnknownError("intake completion phase revision changed")
+
+
+def intake_directory_barrier(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def intake_task_barrier(root, record):
+    """Exact selected bytes plus file AND containing-directory durability."""
+    path = task_path(root, record["task_id"])
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        expected = serialized_json(record)
+        raw = os.read(fd, len(expected) + 1)
+        if raw != expected or before.st_nlink != 1 or before.st_uid != os.getuid() or before.st_mode & 0o077:
+            raise UnknownError("intake intent bytes changed")
+        os.fsync(fd)
+        selected = path.lstat()
+        after = os.fstat(fd)
+        if ((selected.st_dev, selected.st_ino) != (before.st_dev, before.st_ino)
+                or (after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+                   (before.st_size, before.st_mtime_ns, before.st_ctime_ns)):
+            raise UnknownError("intake intent identity changed")
+        intake_directory_barrier(path.parent)
+    finally:
+        os.close(fd)
+
+
+def intake_lease_position(path, tomb, lease, owner):
+    """Authenticate empty cleanup intermediates only by retained physical identity."""
+    present = []
+    for selected in (path, tomb):
+        if selected.is_symlink():
+            raise UnknownError("intake lease symlink")
+        if selected.exists():
+            info = selected.stat()
+            if not selected.is_dir() or (info.st_dev, info.st_ino) != (lease["device"], lease["inode"]):
+                raise UnknownError("intake lease physical identity changed")
+            names = {entry.name for entry in selected.iterdir()}
+            if names == {"owner.json"}:
+                if (selected / "owner.json").is_symlink():
+                    raise UnknownError("intake lease owner symlink")
+                if read_json(selected / "owner.json", "intake lease owner", strict=True) != owner:
+                    raise UnknownError("intake lease owner changed")
+            elif not (selected == tomb and names == set() and lease["phase"] == "cleanup"):
+                raise UnknownError("intake lease contents unverified")
+            present.append(selected)
+    if len(present) > 1 or (lease["phase"] == "released" and present):
+        raise UnknownError("intake lease conflicting locations")
+    if not present and lease["phase"] == "reserved":
+        raise UnknownError("intake lease missing before cleanup intent")
+    if present and present[0] == path and lease["phase"] != "reserved":
+        raise UnknownError("intake lease reappeared after rename")
+    return present[0] if present else None
+
+
+def intake_release_lease(root, record, key, path, owner):
+    lease = record["intake_completion"]["leases"][key]
+    tomb = task_path(root, record["task_id"]).parent / ("intake-" + key + "-release")
+    position = intake_lease_position(path, tomb, lease, owner)
+    intake_task_barrier(root, record)
+    if position == path:
+        os.rename(path, tomb)
+        position = tomb
+    # Repeat both barriers even when recovering a rename or removal whose ack
+    # failed, including an already absent tombstone with durable cleanup intent.
+    intake_directory_barrier(path.parent)
+    intake_directory_barrier(tomb.parent)
+    if lease["phase"] == "reserved":
+        lease["phase"] = "cleanup"
+        write_task(root, record, allow_bound=True)
+    intake_task_barrier(root, record)
+    if position == tomb:
+        if (tomb / "owner.json").exists():
+            os.unlink(tomb / "owner.json")
+        intake_directory_barrier(tomb)
+        os.rmdir(tomb)
+    intake_directory_barrier(tomb.parent)
+    if lease["phase"] != "released":
+        lease["phase"] = "released"
+        write_task(root, record, allow_bound=True)
+
+
 def complete_intake(root: Path, current: dict[str, Any], journal, db) -> dict[str, Any]:
     """Coordinator-held, settlement-backed completion; resumable intent before releases.
 
@@ -1156,8 +1268,12 @@ def complete_intake(root: Path, current: dict[str, Any], journal, db) -> dict[st
     expected = copy.deepcopy(original)
     if pending:
         expected["transition_intent"] = "Done"
-        expected["revision"] += 1
-    if current != expected or current["revision"] > MAX_GENERATION - 2:
+        receipt = current.get("intake_completion")
+        if receipt is None or receipt["base_revision"] != original["revision"]:
+            raise UnknownError("intake completion release receipt missing")
+        expected["intake_completion"] = receipt
+        expected["revision"] = current["revision"]
+    if current != expected or current["revision"] > MAX_GENERATION - 8:
         raise UnknownError("intake completion exact settlement binding changed")
     require_execution_stopped(current)
     require_repair_settled(current, root=root)
@@ -1166,20 +1282,19 @@ def complete_intake(root: Path, current: dict[str, Any], journal, db) -> dict[st
     # Check all retained leases before any deletion. Missing leases only mean a
     # recoverable partial release when the exact intent is already durable.
     worker = current["worker"]
-    leases = [(root / "slots" / f"{current['leases']['global_slot']}.lock", worker),
-              (root / "scopes" / f"{current['scope_key']}.lock", {
+    leases = [("slot", root / "slots" / f"{current['leases']['global_slot']}.lock", worker),
+              ("scope", root / "scopes" / f"{current['scope_key']}.lock", {
                   "schema_version": SCHEMA, "task_id": current["task_id"], "scope": current["scope"],
                   "token": current["leases"]["scope_token"]})]
     if current["leases"]["implementation_lane"] is not None or worker is None:
         raise UnknownError("intake completion ownership invalid")
-    for path, owner in leases:
-        if path.is_symlink():
-            raise UnknownError("intake completion lease symlink")
-        if path.exists():
-            if read_json(path / "owner.json", "intake completion lease", strict=True) != owner:
-                raise UnknownError("intake completion lease changed")
-        elif not pending:
-            raise UnknownError("intake completion lease missing without intent")
+    receipt = copy.deepcopy(current.get("intake_completion", {"version": 1, "base_revision": current["revision"], "leases": {}}))
+    for key, path, owner in leases:
+        if not pending:
+            info = path.lstat()
+            receipt["leases"][key] = {"device": info.st_dev, "inode": info.st_ino, "phase": "reserved"}
+        tomb = task_path(root, current["task_id"]).parent / ("intake-" + key + "-release")
+        intake_lease_position(path, tomb, receipt["leases"][key], owner)
     # Prove journal durability before committing the completion intent.
     fd = os.open(journal.check_path(root / "monitor"), os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -1192,15 +1307,13 @@ def complete_intake(root: Path, current: dict[str, Any], journal, db) -> dict[st
     record = copy.deepcopy(current)
     if not pending:
         record["transition_intent"] = "Done"
+        record["intake_completion"] = receipt
         write_task(root, record, allow_bound=True)
-    release_capacity(root, record)
-    release_dir(root / "scopes" / f"{record['scope_key']}.lock", record["leases"]["scope_token"])
-    for parent in (root / "slots", root / "scopes"):
-        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+    intake_task_barrier(root, record)
+    for key, path, owner in leases:
+        intake_release_lease(root, record, key, path, owner)
+    record["worker"] = None
+    record["leases"]["global_slot"] = None
     record["state"], record["transition_intent"] = "Done", None
     write_task(root, record, allow_bound=True)
     return record

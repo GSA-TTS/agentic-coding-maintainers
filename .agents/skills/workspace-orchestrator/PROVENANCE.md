@@ -60,6 +60,12 @@ trusted fixed-path module instances. No journal rows, selectors, clock samples,
 authorization decisions or validation results are cached; validator attributes
 remain live. A warm-loader fixture checks capacity revalidation and changed active
 selection before a subsequent action.
+Fixed-head `260d3e6` completion review rework re-proves exact task file/parent
+durability before release and binds lease directory identities in a strict
+core/native completion receipt. Whole-directory task-private tombstones plus
+durable cleanup phases permit interrupted owner-unlink/rmdir recovery without
+treating arbitrary empty or reused reservations as owned. Generic releases are
+unchanged; targeted sandbox crash fixtures cover the completion-specific protocol.
 
 ### Scoped autonomy policy contract
 

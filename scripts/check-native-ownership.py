@@ -38,7 +38,7 @@ TASK_FIELDS = {
     "head_sha", "reviewed_sha", "restricted_paths", "acceptance_criteria", "dependencies",
     "reviewers", "findings", "validation", "next_action", "worker", "leases",
     "transition_intent", "rework_count", "revision", "created_at", "updated_at"}
-BOUND_OPTIONAL_FIELDS = {"legacy_finding_dispositions", "transition_recovery", "assignment_dispatch"}
+BOUND_OPTIONAL_FIELDS = {"legacy_finding_dispositions", "transition_recovery", "assignment_dispatch", "intake_completion"}
 WORKER_FIELDS = {"task_id", "owner", "pid", "process_start", "worker_id", "token",
                  "hostname", "created_at"}
 BOUND_WORKER_FIELDS = WORKER_FIELDS | {"session_id", "generation"}
@@ -350,6 +350,28 @@ def validate_assignment_dispatch(task):
                 and task["transition_intent"] is None and task.get("transition_recovery", {}).get("phase") != "pending")
 
 
+def validate_intake_completion(task):
+    if "intake_completion" not in task:
+        return
+    value = task["intake_completion"]
+    fields(value, {"version", "base_revision", "leases"})
+    require(task["kind"] == "intake" and type(value["version"]) is int and value["version"] == 1)
+    integer(value["base_revision"], 1, task["revision"] - 1)
+    fields(value["leases"], {"slot", "scope"})
+    for lease in value["leases"].values():
+        fields(lease, {"device", "inode", "phase"})
+        integer(lease["device"])
+        integer(lease["inode"])
+        require(lease["phase"] in {"reserved", "cleanup", "released"})
+    if task["state"] == "Done":
+        require(task["transition_intent"] is None and all(x["phase"] == "released" for x in value["leases"].values()))
+    else:
+        require(task["state"] == "Claimed" and task["transition_intent"] == "Done")
+    revision = value["base_revision"] + 1 + sum(
+        {"reserved": 0, "cleanup": 1, "released": 2}[x["phase"]] for x in value["leases"].values())
+    require(task["revision"] == revision + int(task["state"] == "Done"))
+
+
 def validate_task(task):
     # No prototype upgrade and no imports of the state module or its plugins.
     schema = task.get("schema_version")
@@ -363,6 +385,7 @@ def validate_task(task):
     validate_base_task(task, bound=True)
     validate_cooperative_binding(task, check_worker_task=False)
     validate_assignment_dispatch(task)
+    validate_intake_completion(task)
     validate_transition_recovery(task)
     validate_legacy_dispositions(task)
 

@@ -11,6 +11,7 @@ import re
 import select
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -310,21 +311,149 @@ class ExecutorTests(unittest.TestCase):
         self.runtime("issue-create")
         self.runtime("assignees-add")
         core = self.parts[1]
-        release = core.release_dir
+        release = core.intake_release_lease
 
-        def fail_scope(path, token):
-            if path.parent.name == "scopes":
+        def fail_scope(root, record, key, path, owner):
+            if key == "scope":
                 raise OSError("fixture interruption after slot release")
-            return release(path, token)
+            return release(root, record, key, path, owner)
 
         self.args.expected_revision = self.task()["revision"]
-        with mock.patch.object(core, "release_dir", side_effect=fail_scope):
+        with mock.patch.object(core, "intake_release_lease", side_effect=fail_scope):
             with self.assertRaises(OSError):
                 dispatch.complete(self.args)
         pending = self.task()
         self.assertEqual(pending["transition_intent"], "Done")
         self.assertFalse((self.local.state / "slots" / (str(pending["leases"]["global_slot"]) + ".lock")).exists())
         self.complete_intake()
+
+    def prepare_completion(self):
+        self.activate()
+        self.runtime("issue-create")
+        self.runtime("assignees-add")
+        self.args.expected_revision = self.task()["revision"]
+        return self.parts[1]
+
+    def test_completion_reproves_replaced_intent_durability_before_release(self):
+        core = self.prepare_completion()
+        atomic = core.atomic_json
+        fsync = core.os.fsync
+
+        def replaced_then_failed(path, record):
+            def fail_parent(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError("fixture parent fsync failed after replace")
+                return fsync(fd)
+            if record.get("intake_completion") and record["transition_intent"] == "Done":
+                with mock.patch.object(core.os, "fsync", side_effect=fail_parent):
+                    return atomic(path, record)
+            return atomic(path, record)
+
+        with mock.patch.object(core, "atomic_json", side_effect=replaced_then_failed):
+            with self.assertRaises(core.AmbiguousWriteError):
+                dispatch.complete(self.args)
+        pending = self.task()
+        self.args.expected_revision = pending["revision"]
+        before = {group: sorted(p.name for p in (self.local.state / group).iterdir()) for group in ("slots", "scopes")}
+        real_fsync = core.os.fsync
+        barrier = core.intake_task_barrier
+        for kind in ("file", "parent"):
+            with self.subTest(kind=kind):
+                def fail(fd):
+                    is_dir = stat.S_ISDIR(os.fstat(fd).st_mode)
+                    if (kind == "parent" and is_dir) or (kind == "file" and not is_dir):
+                        raise OSError("fixture barrier failure")
+                    return real_fsync(fd)
+                def failing_barrier(root, record):
+                    with mock.patch.object(core.os, "fsync", side_effect=fail):
+                        return barrier(root, record)
+                with mock.patch.object(core, "intake_task_barrier", side_effect=failing_barrier):
+                    with self.assertRaises(OSError):
+                        dispatch.complete(self.args)
+                self.assertEqual({group: sorted(p.name for p in (self.local.state / group).iterdir()) for group in before}, before)
+        self.complete_intake()
+
+    def completion_cleanup_crash(self, key, stage):
+        core = self.prepare_completion()
+        unlink, rmdir, rename = core.os.unlink, core.os.rmdir, core.os.rename
+        tomb = self.local.task_path.parent / ("intake-" + key + "-release")
+
+        def interrupted_unlink(path, *args, **kwargs):
+            result = unlink(path, *args, **kwargs)
+            if Path(path) == tomb / "owner.json" and stage == "owner-unlinked":
+                raise OSError("fixture owner unlink acknowledgement lost")
+            return result
+
+        def interrupted_rmdir(path, *args, **kwargs):
+            if Path(path) == tomb and stage == "rmdir-failed":
+                raise OSError("fixture rmdir failed")
+            result = rmdir(path, *args, **kwargs)
+            if Path(path) == tomb and stage == "rmdir-done":
+                raise OSError("fixture rmdir acknowledgement lost")
+            return result
+
+        def interrupted_rename(source, destination, *args, **kwargs):
+            result = rename(source, destination, *args, **kwargs)
+            if Path(destination) == tomb and stage == "renamed":
+                raise OSError("fixture rename acknowledgement lost")
+            return result
+
+        with (mock.patch.object(core.os, "unlink", side_effect=interrupted_unlink),
+              mock.patch.object(core.os, "rmdir", side_effect=interrupted_rmdir),
+              mock.patch.object(core.os, "rename", side_effect=interrupted_rename)):
+            with self.assertRaises(OSError):
+                dispatch.complete(self.args)
+        self.assertEqual(self.task()["transition_intent"], "Done")
+        self.complete_intake()
+        self.assertFalse(tomb.exists())
+
+    def test_completion_slot_owner_unlink_crash(self):
+        self.completion_cleanup_crash("slot", "owner-unlinked")
+
+    def test_completion_scope_owner_unlink_crash(self):
+        self.completion_cleanup_crash("scope", "owner-unlinked")
+
+    def test_completion_slot_rmdir_failure(self):
+        self.completion_cleanup_crash("slot", "rmdir-failed")
+
+    def test_completion_scope_rmdir_failure(self):
+        self.completion_cleanup_crash("scope", "rmdir-failed")
+
+    def test_completion_slot_rename_ack_failure(self):
+        self.completion_cleanup_crash("slot", "renamed")
+
+    def test_completion_scope_rename_ack_failure(self):
+        self.completion_cleanup_crash("scope", "renamed")
+
+    def test_completion_scope_rmdir_ack_failure(self):
+        self.completion_cleanup_crash("scope", "rmdir-done")
+
+    def test_completion_refuses_empty_original_or_foreign_reused_slot(self):
+        core = self.prepare_completion()
+        with mock.patch.object(core, "intake_task_barrier", side_effect=OSError("fixture stop before release")):
+            with self.assertRaises(OSError):
+                dispatch.complete(self.args)
+        task = self.task()
+        slot = self.local.state / "slots" / (str(task["leases"]["global_slot"]) + ".lock")
+        owner_bytes = (slot / "owner.json").read_bytes()
+        (slot / "owner.json").unlink()
+        self.args.expected_revision = task["revision"]
+        with self.assertRaises(core.UnknownError):
+            dispatch.complete(self.args)
+        (slot / "owner.json").write_bytes(owner_bytes)
+        foreign = dict(task["worker"], token="0" * 32)
+        self.local.write(slot / "owner.json", foreign)
+        with self.assertRaises(core.UnknownError):
+            dispatch.complete(self.args)
+        self.assertEqual(json.loads((slot / "owner.json").read_text()), foreign)
+        # Even copied original owner bytes cannot authenticate a newly created
+        # directory after the original inode has been moved elsewhere.
+        parked = self.local.task_path.parent / "parked-original-slot"
+        slot.rename(parked)
+        slot.mkdir(mode=0o700)
+        (slot / "owner.json").write_bytes(owner_bytes)
+        with self.assertRaisesRegex(core.UnknownError, "physical identity changed"):
+            dispatch.complete(self.args)
 
     def test_intake_completion_requires_successful_assignment(self):
         self.activate()

@@ -151,6 +151,16 @@ intent permits already-released leases; conflicting owners fail closed. Generic
 cooperative recovery never silently completes it. Completion uses no network and
 does not require an unexpired grant.
 
+The completion receipt binds the physical device/inode of each owned lease.
+Every invocation rechecks the exact task bytes and selected file identity and
+fsyncs the task file and parent before any lease release. Whole lease directories
+are renamed to task-private `intake-slot-release` / `intake-scope-release`
+tombstones and both parents are fsynced. A durable per-lease cleanup phase precedes
+owner unlink and directory removal. Resume authenticates an empty tombstone by
+its retained physical identity and cleanup phase; an arbitrary empty original
+lease or a foreign/reused slot is never treated as release evidence. Generic
+`release_dir` semantics remain unchanged.
+
 Compatibility fixtures include inert, byte-pinned production sources under
 `tests/fixtures/standing-grant-legacy/`. Tests verify their source manifest before
 materializing Python in sandbox temporary directories; shallow CI needs no history
