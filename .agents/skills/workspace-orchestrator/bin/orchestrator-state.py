@@ -1139,13 +1139,18 @@ def validate_intake_completion(record):
                 or any(type(lease[key]) is not int or lease[key] < 0 for key in ("device", "inode"))
                 or lease["phase"] not in {"reserved", "cleanup", "released"}):
             raise UnknownError("invalid intake completion lease receipt")
+    phases = (receipt["leases"]["slot"]["phase"], receipt["leases"]["scope"]["phase"])
+    progress = {("reserved", "reserved"): 0, ("cleanup", "reserved"): 1,
+                ("released", "reserved"): 2, ("released", "cleanup"): 3,
+                ("released", "released"): 4}
+    if phases not in progress or receipt["base_revision"] > MAX_GENERATION - 6:
+        raise UnknownError("unreachable intake completion progression")
     if record["state"] == "Done":
         if record["transition_intent"] is not None or any(x["phase"] != "released" for x in receipt["leases"].values()):
             raise UnknownError("incomplete intake release marked done")
     elif record["state"] != "Claimed" or record["transition_intent"] != "Done":
         raise UnknownError("intake completion intent changed")
-    revision = receipt["base_revision"] + 1 + sum(
-        {"reserved": 0, "cleanup": 1, "released": 2}[x["phase"]] for x in receipt["leases"].values())
+    revision = receipt["base_revision"] + 1 + progress[phases]
     if record["revision"] != revision + int(record["state"] == "Done"):
         raise UnknownError("intake completion phase revision changed")
 
@@ -1273,7 +1278,10 @@ def complete_intake(root: Path, current: dict[str, Any], journal, db) -> dict[st
             raise UnknownError("intake completion release receipt missing")
         expected["intake_completion"] = receipt
         expected["revision"] = current["revision"]
-    if current != expected or current["revision"] > MAX_GENERATION - 8:
+    # One intent, two phase writes for each lease, then Done: six revisions.
+    # Bind capacity to the original base so an admitted boundary completion
+    # remains resumable as its durable progress consumes those revisions.
+    if current != expected or original["revision"] > MAX_GENERATION - 6:
         raise UnknownError("intake completion exact settlement binding changed")
     require_execution_stopped(current)
     require_repair_settled(current, root=root)

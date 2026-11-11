@@ -363,12 +363,16 @@ def validate_intake_completion(task):
         integer(lease["device"])
         integer(lease["inode"])
         require(lease["phase"] in {"reserved", "cleanup", "released"})
+    phases = (value["leases"]["slot"]["phase"], value["leases"]["scope"]["phase"])
+    progress = {("reserved", "reserved"): 0, ("cleanup", "reserved"): 1,
+                ("released", "reserved"): 2, ("released", "cleanup"): 3,
+                ("released", "released"): 4}
+    require(phases in progress and value["base_revision"] <= MAX_INT64 - 6)
     if task["state"] == "Done":
         require(task["transition_intent"] is None and all(x["phase"] == "released" for x in value["leases"].values()))
     else:
         require(task["state"] == "Claimed" and task["transition_intent"] == "Done")
-    revision = value["base_revision"] + 1 + sum(
-        {"reserved": 0, "cleanup": 1, "released": 2}[x["phase"]] for x in value["leases"].values())
+    revision = value["base_revision"] + 1 + progress[phases]
     require(task["revision"] == revision + int(task["state"] == "Done"))
 
 

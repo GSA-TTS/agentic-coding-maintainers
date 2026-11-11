@@ -160,6 +160,13 @@ owner unlink and directory removal. Resume authenticates an empty tombstone by
 its retained physical identity and cleanup phase; an arbitrary empty original
 lease or a foreign/reused slot is never treated as release evidence. Generic
 `release_dir` semantics remain unchanged.
+Core and native validators permit only slot/scope phase pairs
+`reserved/reserved`, `cleanup/reserved`, `released/reserved`,
+`released/cleanup`, and `released/released`; `Done` requires the last pair.
+Completion reserves six revisions from its original base: one intent, two phase
+writes for each lease, and one final `Done`. Resume consumes the remaining steps
+within that original budget, so an accepted boundary completion can reach the
+revision limit without losing its recovery route.
 
 Compatibility fixtures include inert, byte-pinned production sources under
 `tests/fixtures/standing-grant-legacy/`. Tests verify their source manifest before

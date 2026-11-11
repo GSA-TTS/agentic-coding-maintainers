@@ -66,6 +66,11 @@ core/native completion receipt. Whole-directory task-private tombstones plus
 durable cleanup phases permit interrupted owner-unlink/rmdir recovery without
 treating arbitrary empty or reused reservations as owned. Generic releases are
 unchanged; targeted sandbox crash fixtures cover the completion-specific protocol.
+Fixed-head `4cb2cfa` QA rework restricts both validators to the five reachable
+slot-before-scope phase pairs and binds the six-write revision budget to the
+original completion base. Negative fixtures cover all unreachable combinations
+with empty/absent scope reservations, and boundary fixtures cover interrupted
+completion through the final allowed revision without changing retained history.
 
 ### Scoped autonomy policy contract
 

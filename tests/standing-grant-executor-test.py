@@ -334,6 +334,112 @@ class ExecutorTests(unittest.TestCase):
         self.args.expected_revision = self.task()["revision"]
         return self.parts[1]
 
+    def test_completion_rejects_all_unreachable_phase_pairs_before_effects(self):
+        core = self.prepare_completion()
+        with mock.patch.object(core, "intake_task_barrier", side_effect=OSError("fixture stop before releases")):
+            with self.assertRaises(OSError):
+                dispatch.complete(self.args)
+        original = self.task()
+        scope = self.local.state / "scopes" / (original["scope_key"] + ".lock")
+        parked = self.local.task_path.parent / "fixture-parked-scope"
+        owner = (scope / "owner.json").read_bytes()
+        database = self.fixture.fixture.monitor / "history.sqlite3"
+
+        def lease_snapshot():
+            return {str(path.relative_to(self.local.state)): (path.stat().st_dev, path.stat().st_ino,
+                    path.read_bytes() if path.is_file() else None)
+                    for group in ("slots", "scopes") for path in (self.local.state / group).rglob("*")}
+
+        pairs = (("reserved", "cleanup"), ("reserved", "released"),
+                 ("cleanup", "cleanup"), ("cleanup", "released"))
+        for slot_phase, scope_phase in pairs:
+            for physical in ("empty", "absent"):
+                with self.subTest(slot=slot_phase, scope=scope_phase, physical=physical):
+                    forged = copy.deepcopy(original)
+                    receipt = forged["intake_completion"]
+                    receipt["leases"]["slot"]["phase"] = slot_phase
+                    receipt["leases"]["scope"]["phase"] = scope_phase
+                    # Match the old sum-based validator exactly, so the failure
+                    # must enforce reachability rather than merely revision math.
+                    forged["revision"] = receipt["base_revision"] + 1 + sum(
+                        {"reserved": 0, "cleanup": 1, "released": 2}[phase] for phase in (slot_phase, scope_phase))
+                    core.atomic_json(self.local.task_path, forged)
+                    if physical == "empty":
+                        (scope / "owner.json").unlink()
+                    else:
+                        scope.rename(parked)
+                    self.args.expected_revision = forged["revision"]
+                    task_before, db_before, leases_before = self.local.task_path.read_bytes(), database.read_bytes(), lease_snapshot()
+                    try:
+                        with self.assertRaisesRegex(core.UnknownError, "unreachable intake completion progression"):
+                            core.validate_record(forged, allow_bound=True)
+                        with self.assertRaises(Exception):
+                            self.parts[0].validate_task(forged)
+                        with self.assertRaisesRegex(core.UnknownError, "unreachable intake completion progression"):
+                            dispatch.complete(self.args)
+                        self.assertEqual(self.local.task_path.read_bytes(), task_before)
+                        self.assertEqual(database.read_bytes(), db_before)
+                        self.assertEqual(lease_snapshot(), leases_before)
+                    finally:
+                        if physical == "empty":
+                            (scope / "owner.json").write_bytes(owner)
+                            (scope / "owner.json").chmod(0o600)
+                        else:
+                            parked.rename(scope)
+
+    def test_completion_at_six_revision_boundary_resumes_to_limit(self):
+        self.initialize_boundary_revision(remaining=10)
+        core = self.prepare_completion()
+        base = self.task()["revision"]
+        self.assertEqual(base, core.MAX_GENERATION - 6)
+        release = core.intake_release_lease
+
+        def stop_after_slot(root, record, key, path, owner):
+            if key == "scope":
+                raise OSError("fixture interrupt at base plus three")
+            return release(root, record, key, path, owner)
+
+        with mock.patch.object(core, "intake_release_lease", side_effect=stop_after_slot):
+            with self.assertRaises(OSError):
+                dispatch.complete(self.args)
+        self.assertEqual(self.task()["revision"], base + 3)
+        self.complete_intake()
+        self.assertEqual(self.task()["revision"], core.MAX_GENERATION)
+        self.assertEqual(self.task()["state"], "Done")
+        core.validate_record(self.task(), allow_bound=True)
+        self.parts[0].validate_task(self.task())
+
+    def initialize_boundary_revision(self, remaining):
+        # Fixture initialization precedes qualification, activation and both
+        # immutable request captures. Each real dispatch reserves/settles (+2),
+        # so four revisions are consumed before completion. Do not patch the
+        # shared integer limit (which also validates immutable GitHub IDs).
+        core = self.parts[1]
+        task = self.task()
+        self.assertNotIn("assignment_dispatch", task)
+        task["revision"] = core.MAX_GENERATION - remaining
+        core.validate_record(task, allow_bound=True)
+        self.parts[0].validate_task(task)
+        with core.CoordinatorLock(self.local.state):
+            core.verify_reservations(self.local.state, task)
+            core.atomic_json(self.local.task_path, task)
+        self.args.expected_revision = task["revision"]
+
+    def test_completion_initial_base_above_six_revision_budget_refuses(self):
+        self.initialize_boundary_revision(remaining=9)
+        core = self.prepare_completion()
+        base = self.task()["revision"]
+        self.assertEqual(base, core.MAX_GENERATION - 5)
+        before = self.local.task_path.read_bytes()
+        database = self.fixture.fixture.monitor / "history.sqlite3"
+        db_before = database.read_bytes()
+        with self.assertRaisesRegex(core.UnknownError, "exact settlement binding changed"):
+            dispatch.complete(self.args)
+        self.assertEqual(self.local.task_path.read_bytes(), before)
+        self.assertEqual(database.read_bytes(), db_before)
+        self.assertTrue((self.local.state / "slots" / (str(self.task()["leases"]["global_slot"]) + ".lock")).is_dir())
+        self.assertTrue((self.local.state / "scopes" / (self.task()["scope_key"] + ".lock")).is_dir())
+
     def test_completion_reproves_replaced_intent_durability_before_release(self):
         core = self.prepare_completion()
         atomic = core.atomic_json
