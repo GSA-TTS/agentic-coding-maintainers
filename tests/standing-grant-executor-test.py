@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Sandbox-only integration: real TTY/controller/core/SQLite; injected HTTP."""
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
@@ -129,9 +130,12 @@ class ExecutorTests(unittest.TestCase):
                 fixture.assertEqual({key: created[key] for key in ("title", "body")}, expected)
                 return created
 
-            def fresh(self, observed):
+            def fresh(self, observed, *, admission=True):
                 self.fresh_repository(observed)
                 fixture.assertEqual(observed["issue_id"], 901)
+                if fixture.scenario == "capacity-recovery":
+                    fixture.assertFalse(admission)
+                    return list(range(12, 22))
                 return [11, 12] if fixture.scenario == "present" else [12]
 
             def assign(self, observed):
@@ -141,6 +145,8 @@ class ExecutorTests(unittest.TestCase):
 
             def issue(self, observed):
                 self.no_locks()
+                if fixture.scenario == "assignment-get-failed":
+                    raise OSError("synthetic observation lost")
                 return [11, 12]
 
             def close(self):
@@ -655,12 +661,57 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(dispatch.recover(self.args)["status"], "ISSUE_CREATED_OBSERVED")
         self.assertEqual(self.trace.read_text(), "CREATE\n")
 
+    def test_standing_recovery_observes_full_assignee_set_without_admission(self):
+        self.activate()
+        self.runtime("issue-create")
+        self.scenario = "assignment-get-failed"
+        self.assertEqual(self.runtime("assignees-add")["reservation"], "pending")
+        request = next(row for row in self.requests() if row["binding"]["action"] == "assignees-add")
+        self.args.operation_id = request["binding"]["operation_id"]
+        self.args.expected_revision = self.task()["revision"]
+        self.scenario = "capacity-recovery"
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "synthetic"}, clear=True):
+            self.assertEqual(dispatch.recover(self.args)["status"], "FAILED_ACTUAL_RESULT")
+        self.assertEqual(self.trace.read_text(), "CREATE\nASSIGN\n")
+
+    def test_closed_standing_producer_retains_receipt_after_worker_stops(self):
+        self.activate()
+        self.before_observe = self.fixture.stop_worker
+        self.assertEqual(self.runtime("issue-create")["status"], "ISSUE_CREATED_OBSERVED")
+        self.assertEqual(self.task()["assignment_dispatch"]["phase"], "settled")
+        self.assertEqual(self.trace.read_text(), "CREATE\n")
+
+    def test_standing_closed_receipt_retries_only_settlement_lock_entry(self):
+        self.activate()
+        finish = dispatch.finish
+        locked = self.adapter.Store.locked
+        entries = []
+
+        @contextlib.contextmanager
+        def contended(store):
+            entries.append(True)
+            if len(entries) == 1:
+                raise self.parts[1].BusyError("synthetic entry contention")
+            with locked(store) as db:
+                yield db
+
+        def finish_with_contention(*args, **kwargs):
+            with mock.patch.object(self.adapter.Store, "locked", contended):
+                return finish(*args, **kwargs)
+
+        with mock.patch.object(dispatch, "finish", side_effect=finish_with_contention):
+            self.assertEqual(self.runtime("issue-create")["status"], "ISSUE_CREATED_OBSERVED")
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(self.trace.read_text(), "CREATE\n")
+
     def test_actual_clean_checkout_verifier_refuses_changed_implementation(self):
         self.activate()
         checkout = self.local.root / "implementation-probe"
         installed = checkout / ".agents/skills/workspace-orchestrator/bin"
         installed.parent.mkdir(parents=True)
         shutil.copytree(SOURCE / ".agents/skills/workspace-orchestrator/bin", installed)
+        self.assertEqual((installed / "runtime-observation.py").read_bytes(),
+                         (SOURCE / ".agents/skills/workspace-orchestrator/bin/runtime-observation.py").read_bytes())
         (checkout / "scripts").mkdir()
         (checkout / "scripts/assignment-dispatch.py").write_bytes((SOURCE / "scripts/assignment-dispatch.py").read_bytes())
         env = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}

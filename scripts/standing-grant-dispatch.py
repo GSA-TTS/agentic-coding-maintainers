@@ -178,15 +178,23 @@ def build(store, grant, definition, selected, task, action, prior, current, crea
             "evidence_id": uuid.uuid4().hex, "settlement_id": uuid.uuid4().hex}
 
 
-def guard(store, db, request, *, original=False, recovering=False):
+def guard(store, db, request, *, original=False, recovering=False, closed_receipt=None):
     store.journal.validate_store(db)
     store.typed.validate_request(db, request)
+    if closed_receipt is not None:
+        store.typed.require(not original and not recovering)
+        store.typed.validate_evidence(request, closed_receipt)
+    if recovering:
+        store.typed.require(not original)
+        retained = store.typed.get(db, "assignment_evidence", request["evidence_id"])
+        store.typed.require(retained is not None and retained["completion"] in {"CONFIRMED", "NOT_SENT"})
+        store.typed.validate_evidence(request, retained)
     expected = request["original_task" if original else "reserved_task"]
     store.typed.require(store.task() == expected)
     previous = store.args.expected_revision
     try:
         store.args.expected_revision = expected["revision"]
-        store.ownership(expected, active=not recovering)
+        store.ownership(expected, active=not recovering and closed_receipt is None)
     finally:
         store.args.expected_revision = previous
     if not original:
@@ -195,8 +203,13 @@ def guard(store, db, request, *, original=False, recovering=False):
 
 def finish(store, request, receipt, outcome, *, recovering=False, observed_ids=None):
     t = store.typed
-    with store.locked() as db:
-        guard(store, db, request, recovering=recovering)
+    adapter, _, _ = modules()
+    # Shared bounded entry-contention retry. Never retry validation, persistence,
+    # fsync or release failures after the coordinator has been acquired.
+    with adapter.settlement_lock(store) as db:
+        guard(store, db, request, recovering=recovering, closed_receipt=None if recovering else receipt)
+        if recovering:
+            t.require(t.get(db, "assignment_evidence", request["evidence_id"]) == receipt)
         t.fill(db, "assignment_evidence", request["evidence_id"], receipt)
         store.durable(db)
         if outcome is None:
@@ -207,7 +220,7 @@ def finish(store, request, receipt, outcome, *, recovering=False, observed_ids=N
                     "result_ids": receipt["result_ids"] if observed_ids is None else observed_ids, "issue": receipt["issue"]}
         t.fill(db, "assignment_settlements", request["settlement_id"], terminal)
         store.durable(db)
-        guard(store, db, request, recovering=recovering)
+        guard(store, db, request, recovering=recovering, closed_receipt=None if recovering else receipt)
         final = store.core.assignment_release(store.root, request["reserved_task"])
         return {"status": outcome, "completion": completion, "reservation": "settled", "revision": final["revision"]}
 
@@ -339,7 +352,7 @@ def recover(args):
             observed = grant.observed(definition, {"id": target["issue_id"], "node_id": target["issue_node_id"]})
             client = transport.Transport(definition["repository"], target["issue"], token)
             try:
-                observed_ids = client.fresh(observed)
+                observed_ids = client.fresh(observed, admission=False)
             finally:
                 client.close()
             actual, _ = transport.actual_result(request["binding"]["prior_assignee_ids"], observed_ids, request["binding"]["publisher"]["id"])

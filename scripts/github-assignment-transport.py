@@ -321,12 +321,13 @@ class Transport:
                 "CREDENTIAL_SCOPE_UNPROVEN")
         self._request("GET", self.repo_path + "/assignees/" + observed["actor_login"])
 
-    def fresh(self, observed):
-        """Fresh actor, target, credential scopes, push permission and assignability."""
+    def fresh(self, observed, *, admission=True):
+        """Fresh identity/permissions; assignee capacity gates admission only."""
         require(self.number is not None, "ISSUE_NUMBER_INVALID")
         self.fresh_repository(observed)
         ids = self.issue(observed)
-        require(observed["actor_id"] in ids or len(ids) < 10, "ASSIGNEE_CAPACITY_EXHAUSTED")
+        if admission:
+            require(observed["actor_id"] in ids or len(ids) < 10, "ASSIGNEE_CAPACITY_EXHAUSTED")
         return ids
 
     def assign(self, observed):

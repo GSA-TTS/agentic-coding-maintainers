@@ -71,6 +71,13 @@ slot-before-scope phase pairs and binds the six-write revision budget to the
 original completion base. Negative fixtures cover all unreachable combinations
 with empty/absent scope reservations, and boundary fixtures cover interrupted
 completion through the final allowed revision without changing retained history.
+Integration with main `aa37c5542256b21585fd8a924622de7b85ee954d` retains the
+extracted runtime-observation module and upstream foreground guidance. Standing
+GET-only recovery uses observation rather than admission capacity checks; closed
+standing producers share the upstream bounded settlement-lock entry retry while
+retaining exact task, lease and receipt guards. Current copied-core fixtures copy
+the entire bin directory, including runtime-observation; pinned legacy sources
+remain byte-identical and independent of that later extraction.
 
 ### Scoped autonomy policy contract
 
@@ -270,3 +277,51 @@ using existing actual core/intent/receipt/REST/binding fixtures. Execution is
 reserved for an independently justified isolated guest; static inspection is
 not passing runtime evidence. Original source history and `SOURCE-SHA256SUMS`
 remain unchanged; `CANONICAL-SHA256SUMS` binds the adapted skill assets.
+
+## Runtime process observation extraction
+
+Issue #161 (follow-up to merged proposal #138) based on canonical revision
+`2f079ef3380ee4f138102b4875c0a77098c302fb`: the `ps -p <pid> -o lstart=` process
+probe moves unchanged into sibling `bin/runtime-observation.py`.
+`orchestrator-state.py` loads it by path next to itself, like its other sibling
+modules, and keeps a `process_identity` wrapper with the same signature so
+existing callers, monkeypatches and the consumer adapters are unaffected. Status
+mapping, the three-second bound, timeout/launch-error handling and environment
+forwarding are byte-for-byte the prior behavior; no new status, adapter,
+privilege or registry is introduced. Worker metadata, assignment reservation,
+and stop/recovery guards are unchanged. A process observation is not descendant
+termination proof. Installed copies must include the new sibling; without it the
+core fails at import with an ordinary Python error, not a structured Unknown.
+
+Because the probe used to live in the hashed `orchestrator-state.py`,
+`bin/execution-plan.py` now also lists `runtime-observation.py` in its controller
+modules, so a probe-only change invalidates applicable execution evidence. This
+is a persisted-record compatibility change: the plan `controller` mapping gains a
+key (seven to eight). Retained plans with seven keys stay readable and are neither
+rewritten nor re-addressed, but they never bound the new module, so they cannot
+match the current controller; dispatch and assessment refuse them (UNVERIFIED)
+until a new review generation and plan are admitted. Older validators reject
+eight-key plans, so rollback needs the newer controller or quarantine and re-plan.
+`tests/execution-plan-test.py` covers these cases; `tests/runtime-observation-test.py`
+covers the probe and wrapper and is registered in `Makefile`. Execution of both
+belongs in an independently justified isolated environment; static inspection is
+not passing runtime evidence. Original source history and `SOURCE-SHA256SUMS`
+remain unchanged; `CANONICAL-SHA256SUMS` binds the adapted files. Rationale:
+`docs/decisions/0001-extract-process-observation.md` in the maintainers
+repository (not part of the synced skill).
+
+## Foreground priority guidance clarification
+
+Issue #162 documentation change based on canonical revision
+`2f079ef3380ee4f138102b4875c0a77098c302fb`: the operator guide and packaged
+start command clarify terminal-state-first selection, eligible merge before
+re-review/new review/implementation, finite re-review batches and a carried
+new-review fairness obligation. Queue observation is capped at 10 minutes per
+pass; merge submission is capped at one attempt per PR per pass, with later
+retries requiring changed evidence or operator direction. Existing fields retain
+selection/skip reasons, blockers, owners and next actions. Five guide scenarios
+illustrate the prose; no scheduler, runtime enforcement, schema, permission or
+new test is introduced. The installed start command mirrors the packaged copy.
+This is a canonical documentation adaptation, not a new upstream import or a
+claim of runtime validation. Original import history and `SOURCE-SHA256SUMS`
+remain unchanged; regenerate `CANONICAL-SHA256SUMS` for the completed assets.
