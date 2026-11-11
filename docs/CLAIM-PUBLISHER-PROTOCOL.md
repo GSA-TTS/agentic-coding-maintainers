@@ -95,7 +95,11 @@ Neither additive assignment nor marker creation has an HTTP compare-and-swap her
 Rereads are not a distributed lock; another publisher can race either POST.
 
 Capture **all prior assignees by immutable ID** in the approved assignment request.
-Bound the prior/result sets to ten; require capacity for the actor if absent.
+Bound the prior/result sets to ten; admission requires capacity for the actor if
+absent. GET-only recovery accepts a complete ten-assignee result even when the
+actor is absent: preserved prior IDs yield `FAILED_ACTUAL_RESULT`, while a missing
+prior ID yields `DRIFT`. Identity, permissions, scopes and assignability checks
+remain required; observation does not authorize another POST.
 POST only `{"assignees":["<verified-current-login>"]}` to the issue's
 `/assignees` endpoint. This is additive, not a replacement PATCH. GitHub documents
 preservation of existing users but can silently ignore assignees [1]. If the actor
@@ -269,7 +273,27 @@ GET-only observation after retained confirmed transport; it never posts. These
 recovery paths retain exact task/session/worker/lease bindings. A recorded worker
 need not still be alive when validated journal evidence already proves the
 synchronous transport closed with known completion; missing/UNKNOWN evidence
-never receives that exception. HTTP bodies require exact Content-Length or
+never receives that recovery exception.
+
+The original synchronous `assign` continuation also need not find its recorded
+worker alive **after the actual transport has returned and closed**. It retains
+the result in memory and validates the exact task, request, session, worker,
+generation, leases and physical store before writing evidence. This permits
+retaining known completion after worker death, or retaining UNKNOWN evidence
+without releasing its fence; it is not a caller-supplied termination proof.
+Only settlement coordinator acquisition retries: at most 21 attempts with 100 ms
+between attempts (at most two seconds of requested sleep). Each attempt reselects
+physical storage; no lock is held while waiting. Guard, journal, durability and
+release failures are not retried. There is no network/POST replay.
+
+This is bounded contention tolerance, **not crash-durable in-memory evidence**.
+If contention outlasts the bound, or the dispatcher dies before evidence durability,
+the result may still be lost. The command reports unverified, not durable completion;
+the pending reservation remains fenced. Missing/UNKNOWN journal evidence still
+refuses recovery, even after worker death. No new store or historical-record
+rewriting is introduced.
+
+HTTP bodies require exact Content-Length or
 strict complete chunk framing before JSON decoding. Conflicting framing,
 premature EOF and malformed chunk terminators are refused; chunk extensions,
 trailers and close-delimited bodies are unsupported.

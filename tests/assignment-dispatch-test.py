@@ -86,7 +86,7 @@ class DispatchTest(unittest.TestCase):
         finally:
             db.close()
 
-    def run_vertical(self, scenario="success", approve=True):
+    def run_vertical(self, scenario="success", approve=True, during_transport=None):
         parts = self.parts
         real_transport = parts[-1]
         fixture = self
@@ -148,14 +148,15 @@ class DispatchTest(unittest.TestCase):
                 self.no_locks()
                 if scenario == "preflight-refused":
                     raise real_transport.Refusal("ASSIGNMENT_PERMISSION_UNPROVEN")
-                return [actor] if scenario == "present" else [actor + 1] if scenario == "drift" else []
+                return [actor] if scenario == "present" else [actor + 1] if scenario in {"drift", "incomplete-drift"} else []
 
             def assign(self, observed):
                 self.no_locks()
                 version, request, evidence, settlement = fixture.rows()
                 assert version == 6 and request and evidence is None and settlement is None
                 assert fixture.task() == request["reserved_task"]
-                fixture.trace.write_text("POST")
+                with fixture.trace.open("a") as trace:
+                    trace.write("POST")
                 if scenario == "lost":
                     raise OSError("lost response")
                 if scenario == "both-fail":
@@ -168,12 +169,14 @@ class DispatchTest(unittest.TestCase):
 
             def issue(self, observed):
                 self.no_locks()
+                if during_transport is not None:
+                    during_transport()
                 if scenario == "both-fail":
                     self.http_status = 403
                     raise real_transport.Refusal("RATE_LIMITED")
                 if scenario == "canary":
                     raise RuntimeError("private-canary-token-header-id")
-                if scenario == "incomplete":
+                if scenario in {"incomplete", "incomplete-drift"}:
                     raise OSError("incomplete GET")
                 if scenario == "truncated-get":
                     return truncated("GET", observed)
@@ -468,8 +471,9 @@ class DispatchTest(unittest.TestCase):
             def __init__(self, *args):
                 pass
 
-            def fresh(self, observed):
+            def fresh(self, observed, *, admission=True):
                 fixture.assertFalse((fixture.local.state / "locks/coordinator.lock").exists())
+                fixture.assertFalse(admission)
                 calls.append("GET")
                 return [actor]
 
@@ -508,6 +512,252 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(self.rows()[2:], (receipt, terminal))
         self.assertEqual(self.task()["worker"], request["reserved_task"]["worker"])
         self.assertEqual(self.task()["leases"], request["reserved_task"]["leases"])
+
+    def recovery_args(self):
+        request = self.rows()[1]
+        args = copy.copy(self.args)
+        args.action = "settle"
+        args.expected_revision = request["reserved_task"]["revision"]
+        args.assignment_operation_id = request["binding"]["operation_id"]
+        return args
+
+    def interrupted_settlement(self, mode, scenario="success"):
+        """Real parent-reaped worker / parent-owned coordinator during transport."""
+        parent = os.getpid()
+        ack = self.local.root / "interrupt-ack"
+        waits = self.local.root / "settlement-waits"
+        held = []
+        sleep = time.sleep
+
+        def inject(_signal, _frame):
+            if mode == "worker":
+                self.stop_worker()
+            else:
+                lock = self.parts[1].CoordinatorLock(self.local.state)
+                lock.__enter__()
+                held.append(lock)
+            ack.write_text("ready")
+
+        def release(_signal, _frame):
+            held.pop().__exit__(None, None, None)
+
+        def during():
+            os.kill(parent, signal.SIGUSR1)
+            until = time.monotonic() + 5
+            while not ack.exists() and time.monotonic() < until:
+                sleep(0.01)
+            assert ack.exists()
+
+        def waiting(seconds):
+            # This hook observes real retries; it does not replace lock acquisition.
+            with waits.open("a") as stream:
+                stream.write("wait\n")
+            if mode == "released" and len(waits.read_text().splitlines()) == 2:
+                os.kill(parent, signal.SIGUSR2)
+            sleep(seconds)
+
+        previous = [signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)]
+        signal.signal(signal.SIGUSR1, inject)
+        signal.signal(signal.SIGUSR2, release)
+        try:
+            with mock.patch.object(adapter, "time", SimpleNamespace(sleep=waiting)):
+                result = self.run_vertical(scenario, during_transport=during)
+        finally:
+            for lock in reversed(held):
+                lock.__exit__(None, None, None)
+            for sig, handler in zip((signal.SIGUSR1, signal.SIGUSR2), previous):
+                signal.signal(sig, handler)
+        self.assertEqual(self.trace.read_text(), "POST")
+        return result, len(waits.read_text().splitlines()) if waits.exists() else 0
+
+    def test_worker_reaped_during_transport_still_persists_and_settles(self):
+        result, waits = self.interrupted_settlement("worker")
+        self.assertEqual((result, waits), ("ASSIGNMENT_CONFIRMED_OBSERVED", 0))
+        self.assertEqual(self.parts[1].process_identity(
+            self.worker.pid, environment={"PATH": "/usr/bin:/bin"}), ("absent", None))
+        self.assertEqual(self.rows()[2]["completion"], "CONFIRMED")
+        self.assertEqual(self.task()["assignment_dispatch"]["phase"], "settled")
+
+    def test_worker_reaped_during_unknown_transport_retains_fence(self):
+        result, _ = self.interrupted_settlement("worker", "lost")
+        self.assertEqual(result, "UNKNOWN")
+        self.assertEqual(self.rows()[2]["completion"], "UNKNOWN")
+        self.assert_recovery_refuses_missing_or_unknown()
+
+    def test_worker_reaped_during_incomplete_observation_retains_confirmation(self):
+        result, _ = self.interrupted_settlement("worker", "incomplete")
+        self.assertEqual(result, "UNKNOWN")
+        self.assertEqual(self.rows()[2]["completion"], "CONFIRMED")
+        self.assertIsNone(self.rows()[2]["result_ids"])
+        self.assertIsNone(self.rows()[3])
+        self.assert_pending_guards()
+
+    def test_dead_worker_still_refuses_new_dispatch(self):
+        self.stop_worker()
+        self.assertEqual(self.run_vertical(), "REFUSED:WORKER_NOT_ACTIVE")
+        self.assertFalse(self.trace.exists())
+        self.assertEqual(self.rows()[0], 5)
+
+    def test_coordinator_released_during_retry_preserves_result(self):
+        result, waits = self.interrupted_settlement("released")
+        self.assertEqual(result, "ASSIGNMENT_CONFIRMED_OBSERVED")
+        self.assertGreaterEqual(waits, 2)
+        self.assertLess(waits, adapter.SETTLEMENT_LOCK_ATTEMPTS)
+        self.assertEqual(self.rows()[2]["completion"], "CONFIRMED")
+        self.assertEqual(self.rows()[3]["outcome"], result)
+
+    def test_coordinator_retry_exhaustion_is_not_durability(self):
+        result, waits = self.interrupted_settlement("held")
+        self.assertEqual(result, "REFUSED:DISPATCH_OR_DURABILITY_UNVERIFIED")
+        self.assertEqual(waits, adapter.SETTLEMENT_LOCK_ATTEMPTS - 1)
+        self.assertEqual(self.last_output["completion"], "UNKNOWN")
+        self.assertIsNone(self.rows()[2])
+        self.assertIsNone(self.rows()[3])
+        self.assert_recovery_refuses_missing_or_unknown()
+
+    def assert_recovery_refuses_missing_or_unknown(self):
+        with (mock.patch.dict(os.environ, {}, clear=True),
+              mock.patch.object(adapter, "modules", return_value=self.parts),
+              mock.patch.object(adapter, "implementation_head", side_effect=lambda value: value),
+              mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("network on refusal")),
+              self.assertRaisesRegex(adapter.Refusal, "PRODUCER_TERMINATION_PROOF_UNSUPPORTED")):
+            adapter.recover(self.recovery_args(), publisher)
+        self.assert_pending_guards()
+
+    def test_closed_receipt_does_not_waive_exact_ownership_guards(self):
+        self.assertEqual(self.run_vertical("incomplete"), "UNKNOWN")
+        self.stop_worker()
+        _, request, receipt, _ = self.rows()
+        store = adapter.Store(self.args, *self.parts[:-1])
+        with store.locked():
+            pass
+        for field, value in (("expected_worker_id", "0" * 32), ("expected_session_id", "other-session"),
+                             ("expected_generation", self.args.expected_generation + 1)):
+            store.args = copy.copy(self.args)
+            with (self.subTest(field=field), mock.patch.object(store.args, field, value),
+                  mock.patch.object(adapter, "time", SimpleNamespace(sleep=mock.Mock(side_effect=AssertionError("guard retry")))),
+                  self.assertRaisesRegex(adapter.Refusal, "OWNERSHIP_CHANGED")):
+                adapter.settle(store, request, receipt, None)
+        store.args = copy.copy(self.args)
+        with (mock.patch.object(store, "identity", ("changed",)),
+              self.assertRaisesRegex(adapter.Refusal, "STORE_IDENTITY_CHANGED")):
+            adapter.settle(store, request, receipt, None)
+        changed = copy.deepcopy(request)
+        changed["approval"]["binding_sha256"] = "0" * 64
+        with self.assertRaises(Exception):
+            adapter.settle(store, changed, receipt, None)
+        for path in (self.local.task_path, self.local.state / "slots" /
+                     (str(self.task()["leases"]["global_slot"]) + ".lock") / "owner.json"):
+            before = path.read_bytes()
+            value = json.loads(before)
+            if path == self.local.task_path:
+                value["updated_at"] = "2026-11-01T00:00:00Z"
+            else:
+                value["session_id"] = "other-session"
+            try:
+                self.local.write(path, value)
+                with self.assertRaises(Exception):
+                    adapter.settle(store, request, receipt, None)
+            finally:
+                path.write_bytes(before)
+        self.assertEqual(self.rows()[2], receipt)
+        self.assertIsNone(self.rows()[3])
+        self.assert_pending_guards()
+
+    def test_settlement_body_failures_are_not_retried(self):
+        self.assertEqual(self.run_vertical("incomplete"), "UNKNOWN")
+        _, request, receipt, _ = self.rows()
+        for stage in ("guard", "durable"):
+            store = adapter.Store(self.args, *self.parts[:-1])
+            with (self.subTest(stage=stage),
+                  mock.patch.object(store, stage, side_effect=store.core.BusyError("body failure")) as failure,
+                  mock.patch.object(adapter, "time", SimpleNamespace(sleep=mock.Mock(side_effect=AssertionError("body retry")))),
+                  self.assertRaises(store.core.BusyError)):
+                adapter.settle(store, request, receipt, None)
+            self.assertEqual(failure.call_count, 1)
+        self.assert_pending_guards()
+
+    def test_noncontention_lock_failure_is_not_retried(self):
+        store = adapter.Store(self.args, *self.parts[:-1])
+        unavailable = mock.MagicMock()
+        unavailable.__enter__.side_effect = OSError("storage unavailable")
+        with (mock.patch.object(store, "locked", return_value=unavailable) as locked,
+              mock.patch.object(adapter, "time", SimpleNamespace(sleep=mock.Mock(side_effect=AssertionError("storage retry")))),
+              self.assertRaises(OSError), adapter.settlement_lock(store)):
+            self.fail("lock acquisition unexpectedly succeeded")
+        self.assertEqual(locked.call_count, 1)
+
+    def recover_with_real_fresh(self, ids):
+        transport = self.parts[-1]
+        observed = self.intent["identity_observation"]
+        calls = []
+        fixture = self
+
+        def get(client, method, path, body=None):
+            fixture.assertEqual(method, "GET")
+            fixture.assertIsNone(body)
+            fixture.assertFalse((fixture.local.state / "locks/coordinator.lock").exists())
+            calls.append(path)
+            if path == "/user":
+                return {"type": "User", "id": observed["actor_id"], "node_id": observed["actor_node_id"],
+                        "login": observed["actor_login"]}, {"x-oauth-scopes": "repo"}
+            if path == client.repo_path:
+                return {"id": observed["repository_id"], "node_id": observed["repository_node_id"],
+                        "full_name": client.repository, "url": transport.API + path, "private": False,
+                        "archived": False, "disabled": False, "permissions": {"push": True}}, {}
+            if path == client.repo_path + "/assignees/" + observed["actor_login"]:
+                return {}, {}
+            fixture.assertEqual(path, client.issue_path)
+            return {"id": observed["issue_id"], "node_id": observed["issue_node_id"], "number": client.number,
+                    "url": transport.API + path, "repository_url": transport.API + client.repo_path,
+                    "state": "open", "locked": False, "assignees": [{"id": value} for value in ids]}, {}
+
+        with (mock.patch.dict(os.environ, {"GH_TOKEN": "ghp_" + "x" * 36}, clear=True),
+              mock.patch.object(adapter, "modules", return_value=self.parts),
+              mock.patch.object(adapter, "implementation_head", side_effect=lambda value: value),
+              mock.patch.object(transport.Transport, "_request", new=get)):
+            result = adapter.recover(self.recovery_args(), publisher)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(self.trace.read_text(), "POST")
+        return result
+
+    def test_full_capacity_get_only_recovery_settles_failed_actual_result(self):
+        self.assertEqual(self.run_vertical("incomplete"), "UNKNOWN")
+        self.stop_worker()
+        receipt = self.rows()[2]
+        actor = self.intent["identity_observation"]["actor_id"]
+        ids = [value for value in range(1, 12) if value != actor][:10]
+        self.assertEqual(self.recover_with_real_fresh(ids)["status"], "FAILED_ACTUAL_RESULT")
+        self.assertEqual(self.rows()[2], receipt)
+        self.assertEqual(self.rows()[3]["result_ids"], ids)
+        self.assertFalse(self.rows()[3]["satisfaction"])
+
+    def test_full_capacity_get_only_recovery_settles_drift(self):
+        # Prior ID comes from the real dispatch reservation, not an edited row.
+        self.assertEqual(self.run_vertical("incomplete-drift"), "UNKNOWN")
+        self.stop_worker()
+        receipt = self.rows()[2]
+        actor = self.intent["identity_observation"]["actor_id"]
+        ids = [value for value in range(1, 13) if value not in {actor, actor + 1}][:10]
+        self.assertEqual(len(ids), 10)
+        self.assertEqual(self.recover_with_real_fresh(ids)["status"], "DRIFT")
+        self.assertEqual(self.rows()[2], receipt)
+        self.assertEqual(self.rows()[3]["result_ids"], ids)
+        self.assertFalse(self.rows()[3]["satisfaction"])
+
+    def test_nine_assignees_get_only_recovery_control(self):
+        self.assertEqual(self.run_vertical("incomplete"), "UNKNOWN")
+        self.stop_worker()
+        actor = self.intent["identity_observation"]["actor_id"]
+        ids = [value for value in range(1, 12) if value != actor][:9]
+        self.assertEqual(self.recover_with_real_fresh(ids)["status"], "FAILED_ACTUAL_RESULT")
+
+    def test_full_capacity_actor_present_get_only_recovery_control(self):
+        self.assertEqual(self.run_vertical("incomplete"), "UNKNOWN")
+        self.stop_worker()
+        actor = self.intent["identity_observation"]["actor_id"]
+        ids = sorted([actor] + [value for value in range(1, 12) if value != actor][:9])
+        self.assertEqual(self.recover_with_real_fresh(ids)["status"], "ASSIGNMENT_CONFIRMED_OBSERVED")
 
     def test_truncated_post_never_confirms(self):
         self.assertEqual(self.run_vertical("truncated-post"), "UNKNOWN")

@@ -298,8 +298,8 @@ class Transport:
         require(len(set(ids)) == len(ids), "ASSIGNEES_INCOMPLETE")
         return sorted(ids)
 
-    def fresh(self, observed):
-        """Fresh actor, target, credential scopes, push permission and assignability."""
+    def fresh(self, observed, *, admission=True):
+        """Validate identity/permissions; capacity gates admission, not observation."""
         user, headers = self._request("GET", "/user")
         require(user.get("type") == "User" and positive(user.get("id"))
                 and user["id"] == observed["actor_id"]
@@ -319,7 +319,8 @@ class Transport:
                 "CREDENTIAL_SCOPE_UNPROVEN")
         self._request("GET", self.repo_path + "/assignees/" + observed["actor_login"])
         ids = self.issue(observed)
-        require(observed["actor_id"] in ids or len(ids) < 10, "ASSIGNEE_CAPACITY_EXHAUSTED")
+        if admission:
+            require(observed["actor_id"] in ids or len(ids) < 10, "ASSIGNEE_CAPACITY_EXHAUSTED")
         return ids
 
     def assign(self, observed):

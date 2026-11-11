@@ -488,6 +488,44 @@ class TransportTest(unittest.TestCase):
                 with self.assertRaises(transport.Refusal):
                     self.client.fresh(self.observed)
 
+    def test_observation_at_capacity_preserves_admission_gate(self):
+        ids = list(range(20, 30))
+        self.issue["assignees"] = [{"id": value} for value in ids]
+        self.identity_responses()
+        with self.assertRaisesRegex(transport.Refusal, "ASSIGNEE_CAPACITY_EXHAUSTED"):
+            self.client.fresh(self.observed)
+        self.identity_responses()
+        self.assertEqual(self.client.fresh(self.observed, admission=False), ids)
+        self.assertTrue(all(call[0] == "GET" for call in self.calls))
+
+    def test_observation_still_validates_identities_permissions_and_completeness(self):
+        for target, key, value, reason in (
+                (self.user, "id", 99, "ACTOR_IDENTITY_CHANGED"),
+                (self.repo, "id", 99, "REPOSITORY_IDENTITY_CHANGED"),
+                (self.repo, "permissions", {"push": False}, "ASSIGNMENT_PERMISSION_UNPROVEN"),
+                (self.issue, "id", 99, "ISSUE_IDENTITY_OR_STATE_CHANGED"),
+                (self.issue, "assignees", [{"id": value} for value in range(20, 31)], "ASSIGNEES_INCOMPLETE"),
+                (self.issue, "assignees", [{"id": 8}, {"id": 8}], "ASSIGNEES_INCOMPLETE")):
+            with self.subTest(key=key, reason=reason):
+                before = copy.deepcopy(target)
+                target[key] = value
+                self.responses = []
+                self.identity_responses()
+                with self.assertRaisesRegex(transport.Refusal, reason):
+                    self.client.fresh(self.observed, admission=False)
+                target.clear()
+                target.update(before)
+        self.responses = []
+        self.identity_responses(scopes="")
+        with self.assertRaisesRegex(transport.Refusal, "CREDENTIAL_SCOPE_UNPROVEN"):
+            self.client.fresh(self.observed, admission=False)
+        self.responses = []
+        self.identity_responses()
+        self.responses[2] = FakeResponse(404)
+        with self.assertRaisesRegex(transport.Refusal, "HTTP_STATUS_REFUSED"):
+            self.client.fresh(self.observed, admission=False)
+        self.assertTrue(all(call[0] == "GET" for call in self.calls))
+
     def test_unsupported_credentials_and_endpoint(self):
         for prefix in ("github_pat_", "ghs_", "ghu_", ""):
             with self.subTest(prefix=prefix), self.assertRaises(transport.Refusal):

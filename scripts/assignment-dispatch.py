@@ -15,8 +15,13 @@ import os
 import re
 import socket
 import subprocess
+import time
 import uuid
 from pathlib import Path
+
+# Only settlement lock acquisition retries; never transport or durability work.
+SETTLEMENT_LOCK_ATTEMPTS = 21
+SETTLEMENT_LOCK_DELAY = 0.1
 
 
 class Refusal(Exception):
@@ -163,9 +168,14 @@ class Store:
         require(intent["schema_version"] == 2 and row[1] == self.typed.digest(intent), "INTENT_CHANGED")
         return intent
 
-    def guard(self, db, request, *, original=False, recovery=False):
+    def guard(self, db, request, *, original=False, recovery=False, closed_receipt=None):
         self.journal.validate_store(db)
         self.typed.validate_request(db, request)
+        if closed_receipt is not None:
+            # Private synchronous dispatch continuation only, after client.close().
+            # This is not recovery authority: no CLI/file/worker-death inference.
+            require(not original and not recovery, "RECOVERY_BINDING_INVALID")
+            self.typed.validate_evidence(request, closed_receipt)
         if recovery:
             require(not original, "RECOVERY_BINDING_INVALID")
             receipt = self.typed.get(db, "assignment_evidence", request["evidence_id"])
@@ -180,7 +190,7 @@ class Store:
         self.args = copy.copy(args)
         self.args.expected_revision = expected["revision"]
         try:
-            self.ownership(task, active=not recovery)
+            self.ownership(task, active=not recovery and closed_receipt is None)
         finally:
             self.args = args
         if not original:
@@ -217,11 +227,32 @@ def evidence(request, completion, result_ids, diagnostics):
             "result_ids": result_ids, "producer": "SYNCHRONOUS_TRANSPORT_CLOSED", "diagnostics": diagnostics}
 
 
+@contextlib.contextmanager
+def settlement_lock(store):
+    # Catch contention only while entering: errors from guards/writes/exit must
+    # propagate without retry. Each attempt reselects physical roots and store.
+    with contextlib.ExitStack() as stack:
+        for attempt in range(SETTLEMENT_LOCK_ATTEMPTS):
+            try:
+                db = stack.enter_context(store.locked())
+            except store.core.BusyError:
+                if attempt + 1 == SETTLEMENT_LOCK_ATTEMPTS:
+                    raise
+                time.sleep(SETTLEMENT_LOCK_DELAY)
+                continue
+            yield db
+            return
+
+
 def settle(store, request, receipt, outcome, result_ids=None, *, recovery=False):
-    """Explicit evidence then settlement durability; task anchor cleared LAST."""
+    """Retain the closed producer's result in memory while acquiring coordinator.
+
+    Exhaustion/crash before evidence durability can still lose that result. Never
+    retry a guard, write, barrier or release failure, nor infer durability from it.
+    """
     t = store.typed
-    with store.locked() as db:
-        store.guard(db, request, recovery=recovery)
+    with settlement_lock(store) as db:
+        store.guard(db, request, recovery=recovery, closed_receipt=None if recovery else receipt)
         if recovery:
             require(t.get(db, "assignment_evidence", request["evidence_id"]) == receipt,
                     "RECOVERY_EVIDENCE_CHANGED")
@@ -237,7 +268,7 @@ def settle(store, request, receipt, outcome, result_ids=None, *, recovery=False)
                     "result_ids": receipt["result_ids"] if result_ids is None else result_ids}
         t.fill(db, "assignment_settlements", request["settlement_id"], terminal)
         store.durable(db)
-        store.guard(db, request, recovery=recovery)
+        store.guard(db, request, recovery=recovery, closed_receipt=None if recovery else receipt)
         store.core.assignment_release(store.root, request["reserved_task"])
         return {"status": outcome, "reservation": "settled", "completion": completion,
                 "satisfaction": satisfaction,
@@ -368,7 +399,7 @@ def recover(args, publisher):
     client = transport.Transport(intent["claim"]["repo"], intent["claim"]["issue"], token)
     token = None
     try:
-        ids = client.fresh(intent["identity_observation"])
+        ids = client.fresh(intent["identity_observation"], admission=False)
     finally:
         client.close()
     actual, _ = transport.actual_result(request["binding"]["prior_assignee_ids"], ids, request["binding"]["publisher"]["id"])
