@@ -346,7 +346,7 @@ delegates to the code that exists today; no behavior is meant to move or change.
 `apply` keeps the lock, the read, `verify_reservations` and `write_task` exactly as in
 the core; the core's own `command_*` functions keep calling its internal functions and
 are not migrated. Naming is provisional and defers to any seam already proposed in
-any seam proposed in other open work (U4, D8).
+other open work (U4, D8).
 
 ### Invariants the seam must preserve (each cited to source)
 
