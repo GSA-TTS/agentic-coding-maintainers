@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.5.0...v0.6.0) (2026-11-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **orchestration:** extract process observation with controller binding ([#165](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/165))
+
+### Features
+
+* **orchestration:** add fenced operator-approved assignment runner ([#152](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/152)) ([cdb1a62](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/cdb1a62dbd61100621bf00df8942f89a153e2595))
+
+
+### Bug Fixes
+
+* **approval:** tolerate transient terminal pending-input flag ([#156](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/156)) ([b6345ee](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/b6345eec1b4abfe55051ad6013d68db487701a45))
+* **assignment:** preserve closed-producer settlement evidence ([aa37c55](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/aa37c5542256b21585fd8a924622de7b85ee954d))
+* **assignment:** retain safe diagnostics and report output failures ([#157](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/157)) ([95d0523](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/95d05232a93bc28d60aebe546349b4a12240c521))
+
+
+### Code Refactoring
+
+* **orchestration:** extract process observation with controller binding ([#165](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/165)) ([159bc1f](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/159bc1fc7593fc420d0d6d580199ddc7edea08dc))
+
 ## [0.5.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.4.0...v0.5.0) (2026-11-09)
 
 
