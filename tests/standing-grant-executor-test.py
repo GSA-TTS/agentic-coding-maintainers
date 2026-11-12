@@ -5,6 +5,7 @@ import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import pty
@@ -12,9 +13,11 @@ import re
 import select
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -208,7 +211,7 @@ class ExecutorTests(unittest.TestCase):
         finally:
             db.close()
 
-    def human(self, action="activate", approve=True, tick=None, before_answer=None):
+    def human(self, action="activate", approve=True, tick=None, before_answer=None, cli=False):
         self.args.action = action
         if action in {"revoke", "revoke-qualification"}:
             self.args.proposal = None
@@ -216,9 +219,23 @@ class ExecutorTests(unittest.TestCase):
         if child == 0:
             try:
                 with mock.patch.dict(os.environ, {"GH_TOKEN": "synthetic"}, clear=True):
-                    result = {"activate": controller.activate, "revoke": controller.revoke,
-                              "install-qualification": controller.install_qualification,
-                              "revoke-qualification": controller.revoke_qualification}[action](self.args, dispatch)
+                    if cli:
+                        argv = ["control-standing-grant.py", action,
+                                "--authority-root", self.args.authority_root, "--invoking-root", self.args.invoking_root,
+                                "--implementation-head", self.args.implementation_head,
+                                "--expected-epoch", str(self.args.expected_epoch)]
+                        if self.args.proposal is not None:
+                            argv.extend(["--proposal", self.args.proposal])
+                        output = io.StringIO()
+                        with (mock.patch.object(sys, "argv", argv),
+                              mock.patch.object(controller, "load_dispatch", return_value=dispatch),
+                              contextlib.redirect_stdout(output)):
+                            code = controller.main()
+                        result = json.loads(output.getvalue()) | {"cli_exit": code}
+                    else:
+                        result = {"activate": controller.activate, "revoke": controller.revoke,
+                                  "install-qualification": controller.install_qualification,
+                                  "revoke-qualification": controller.revoke_qualification}[action](self.args, dispatch)
                 print("RESULT " + json.dumps(result), flush=True)
                 os._exit(0)
             except Exception as exc:
@@ -914,6 +931,23 @@ class ExecutorTests(unittest.TestCase):
         with store.locked() as db:
             self.assertEqual(self.grant.selector(db)["revocation"], pending["revocation"])
 
+    def test_revocation_completion_does_not_retry_durability_failure(self):
+        self.activate()
+        with mock.patch.object(controller, "complete_revocation", side_effect=OSError("fixture request boundary")):
+            self.assertIn("error", self.human("revoke"))
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with store.locked() as db:
+            pending = self.grant.selector(db)
+        with mock.patch.object(store, "durable", side_effect=store.core.BusyError("fixture barrier failure")) as barrier:
+            with self.assertRaisesRegex(store.core.BusyError, "fixture barrier failure"):
+                controller.complete_revocation(store, dispatch, self.grant, copy.deepcopy(pending))
+        self.assertEqual(barrier.call_count, 1)
+        self.assertFalse(dispatch.gate_path(store, self.definition["grant_id"]).exists())
+        with store.locked() as db:
+            final = self.grant.selector(db)
+        self.assertEqual(final["state"], "revoked")
+        self.assertEqual(final["revocation"], pending["revocation"])
+
     def test_recovery_wrong_explicit_revision_is_read_only_zero_get(self):
         self.activate()
         self.scenario = "get-failed"
@@ -1033,10 +1067,12 @@ class ExecutorTests(unittest.TestCase):
             db.close()
         self.assertEqual(self.trace.read_text(), "CREATE\n")
 
-    def revocation_race(self, phase):
+    def revocation_race(self, phase, *, hold_gate_removal=False):
         self.activate()
         ready_read, ready_write = os.pipe()
         release_read, release_write = os.pipe()
+        busy_read, busy_write = os.pipe()
+        producer_result = self.local.root / "revocation-producer-result.json"
 
         def hold_producer():
             os.write(ready_write, b"r")
@@ -1051,17 +1087,42 @@ class ExecutorTests(unittest.TestCase):
         child = os.fork()
         if child == 0:
             try:
-                self.runtime("issue-create")
+                release_dir = self.parts[1].release_dir
+                def release_then_hold(path, token):
+                    release_dir(path, token)
+                    if hold_gate_removal and path.name.startswith("standing-effect-"):
+                        # The gate is gone, but release_gate still owns the real
+                        # coordinator. Parent releases us only after the revoker
+                        # has actually encountered that lock contention.
+                        os.write(ready_write, b"d")
+                        if not select.select([release_read], [], [], 10)[0]:
+                            raise AssertionError("revoker did not encounter gate-removal window")
+                        self.assertEqual(os.read(release_read, 1), b"g")
+                with mock.patch.object(self.parts[1], "release_dir", side_effect=release_then_hold):
+                    result = self.runtime("issue-create")
+                producer_result.write_text(json.dumps(result))
                 os._exit(0)
-            except Exception:
+            except Exception as exc:
+                producer_result.write_text(json.dumps({"error": type(exc).__name__, "reason": str(exc)}))
                 os._exit(3)
         requested = []
+        removal_seen, contention_seen = [], []
         try:
             self.assertTrue(select.select([ready_read], [], [], 10)[0])
             self.assertEqual(os.read(ready_read, 1), b"r")
 
             def observe_requested():
                 if requested:
+                    if hold_gate_removal and not contention_seen:
+                        if not removal_seen and select.select([ready_read], [], [], 0)[0]:
+                            self.assertEqual(os.read(ready_read, 1), b"d")
+                            self.assertFalse((self.local.state / "locks" / ("standing-effect-" + self.definition["grant_id"] + ".lock")).exists())
+                            self.assertTrue((self.local.state / "locks/coordinator.lock").is_dir())
+                            removal_seen.append(True)
+                        if removal_seen and select.select([busy_read], [], [], 0)[0]:
+                            self.assertEqual(os.read(busy_read, 1), b"b")
+                            contention_seen.append(True)
+                            os.write(release_write, b"g")
                     return
                 db = self.parts[2].open_store(self.fixture.fixture.monitor)
                 try:
@@ -1069,6 +1130,11 @@ class ExecutorTests(unittest.TestCase):
                 finally:
                     db.close()
                 if selected["state"] == "revoke-requested":
+                    # Visibility of the SQLite commit precedes durable() and
+                    # coordinator exit. The fake transport checks no coordinator
+                    # is held, so do not resume it inside that controller section.
+                    if (self.local.state / "locks/coordinator.lock").exists():
+                        return
                     # The real controller has committed request, but cannot ack
                     # quiescence until the actual runtime producer leaves its gate.
                     self.assertTrue((self.local.state / "locks" / ("standing-effect-" + self.definition["grant_id"] + ".lock")).is_dir())
@@ -1076,24 +1142,43 @@ class ExecutorTests(unittest.TestCase):
                     requested.append(selected)
                     os.write(release_write, b"g")
 
-            result = self.human("revoke", tick=observe_requested)
-            self.assertEqual(result["status"], "GRANT_REVOKED_QUIESCENT")
+            enter = self.parts[1].CoordinatorLock.__enter__
+            def observed_enter(lock):
+                try:
+                    return enter(lock)
+                except self.parts[1].BusyError:
+                    if hold_gate_removal:
+                        os.write(busy_write, b"b")
+                    raise
+            with mock.patch.object(self.parts[1].CoordinatorLock, "__enter__", observed_enter):
+                result = self.human("revoke", tick=observe_requested)
+            self.assertEqual(result.get("status"), "GRANT_REVOKED_QUIESCENT", result)
             self.assertEqual(len(requested), 1)
+            if hold_gate_removal:
+                self.assertEqual((removal_seen, contention_seen), ([True], [True]))
             _, status = os.waitpid(child, 0)
             child = None
-            self.assertEqual(os.waitstatus_to_exitcode(status), 3 if phase == "fresh" else 0)
+            producer = json.loads(producer_result.read_text())
+            db = self.parts[2].open_store(self.fixture.fixture.monitor)
+            try:
+                evidence = [tuple(row) for row in db.execute("SELECT document FROM assignment_evidence")]
+            finally:
+                db.close()
+            diagnostic = {"producer": producer, "evidence": evidence, "task": self.task()}
+            self.assertEqual(os.waitstatus_to_exitcode(status), 3 if phase == "fresh" else 0, diagnostic)
             if phase == "fresh":
                 self.assertFalse(self.trace.exists())
             else:
+                self.assertEqual(producer.get("status"), "ISSUE_CREATED_OBSERVED", diagnostic)
                 self.assertEqual(self.trace.read_text(), "CREATE\n")
-                self.assertEqual(self.task()["tracker_number"], 501)
+                self.assertEqual(self.task()["tracker_number"], 501, diagnostic)
             with self.assertRaises(Exception):
                 self.runtime("issue-create")
         finally:
             if child is not None:
                 os.kill(child, signal.SIGKILL)
                 os.waitpid(child, 0)
-            for fd in (ready_read, ready_write, release_read, release_write):
+            for fd in (ready_read, ready_write, release_read, release_write, busy_read, busy_write):
                 os.close(fd)
 
     def test_real_controller_revocation_before_reservation_prevents_post(self):
@@ -1101,6 +1186,9 @@ class ExecutorTests(unittest.TestCase):
 
     def test_real_controller_revocation_waits_for_inflight_post(self):
         self.revocation_race("post")
+
+    def test_revocation_retries_coordinator_entry_after_producer_gate_removal(self):
+        self.revocation_race("post", hold_gate_removal=True)
 
     def test_real_legacy_v6_unknown_rows_and_core_bytes_survive_migration(self):
         legacy = fixtures.DispatchTest()
@@ -1269,6 +1357,270 @@ class ExecutorTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GH_TOKEN": "synthetic"}, clear=True):
             self.assertEqual(dispatch.recover(self.args)["status"], "ISSUE_CREATED_OBSERVED")
         self.assertEqual(self.trace.read_text(), "CREATE\n")
+
+
+class BootstrapTests(unittest.TestCase):
+    """Fresh core layout, no legacy intent fixture and a real controlling TTY."""
+
+    human = ExecutorTests.human
+    make_qualification_artifacts = ExecutorTests.make_qualification_artifacts
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.adapter, self.publisher, self.grant = dispatch.modules()
+        self.parts = self.adapter.modules()
+        with mock.patch.dict(os.environ, {"ORCHESTRATOR_TEST_MODE": "1",
+                             "ORCHESTRATOR_STATE_DIR": str(root / ".orchestrator")}, clear=True):
+            state = self.parts[1].state_root()
+        self.local = SimpleNamespace(root=root, state=state)
+        self.monitor = state / "monitor"
+        self.database = self.monitor / "history.sqlite3"
+        # Exercise the actual public parser without invented task/worker IDs.
+        with mock.patch.object(sys, "argv", ["control-standing-grant.py", "install-qualification",
+                "--authority-root", str(root), "--invoking-root", str(root),
+                "--implementation-head", "6" * 40, "--expected-epoch", "0",
+                "--proposal", str(root / "qualification-proposal.json")]):
+            self.args = dispatch.arguments(controller=True)
+        self.definition = {"version": 1, "grant_id": "a" * 32, "objective": "synthetic", "work_item": "bootstrap",
+            "repository": self.grant.REPOSITORY, "repository_id": self.grant.REPOSITORY_ID,
+            "repository_node_id": "R_synthetic", "publisher": {"id": 11, "node_id": "U_synthetic", "login": "fixture-publisher"},
+            "policy_sha256": dispatch.policy_digest(), "implementation_head": self.args.implementation_head,
+            "lifetime_seconds": 86400, "title": "Synthetic standing-grant tracking fixture: bootstrap",
+            "body": "Synthetic fixture for the synthetic objective. No production change requested.",
+            "qualification": {"endpoint_evidence_sha256": "c" * 64},
+            "workflow_effects": {"events": ["issues.opened", "issues.assigned"],
+                "decision": "AUTHORIZE_REVIEWED_SYNTHETIC_ISSUE_EVENT_WORKFLOWS_AND_COST", "evidence_sha256": "d" * 64}}
+        self.make_qualification_artifacts()
+        self.args.proposal = self.qualification_proposal
+        for patcher in (mock.patch.object(dispatch, "modules", return_value=(self.adapter, self.publisher, self.grant)),
+                        mock.patch.object(self.adapter, "modules", return_value=self.parts),
+                        mock.patch.object(self.adapter, "implementation_head", side_effect=lambda head: head),
+                        mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("bootstrap network"))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def install(self, **options):
+        return self.human("install-qualification", **options)
+
+    def assert_installed(self, new_store=True):
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            self.assertEqual(db.execute("SELECT version FROM meta").fetchone()[0], 7)
+            record = self.grant.qualification_get(db, self.manifest["qualification_id"])
+            self.assertEqual(record["installation"]["new_store"], new_store)
+            self.assertIn(record["store_id"].encode(), self.last_human_output)
+            self.assertEqual(record["installation"]["directories"], [[path.stat().st_dev, path.stat().st_ino]
+                for path in (self.local.root, self.local.state, self.local.state / "locks", self.monitor)])
+            for table in ("standing_grants", "standing_selector", "claim_intents", "assignment_requests"):
+                self.assertEqual(db.execute("SELECT count(*) FROM " + table).fetchone()[0], 0)
+            with self.assertRaisesRegex(self.grant.Invalid, "NO_ACTIVE_GRANT"):
+                self.grant.selector(db)
+        finally:
+            db.close()
+
+    def test_fresh_core_real_tty_install_and_no_preapproval_authority(self):
+        self.assertFalse(self.monitor.exists())
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with self.assertRaises(FileNotFoundError), store.locked():
+            self.fail("runtime prepared directories")
+        self.assertFalse(self.monitor.exists())
+        def before():
+            self.assertTrue(self.monitor.is_dir())
+            self.assertFalse(self.database.exists())
+        result = self.install(before_answer=before)
+        self.assertEqual(result.get("status"), "OFFLINE_QUALIFICATION_INSTALLED_FOR_ONE_USE_LIVE_PILOT", result)
+        self.assert_installed()
+
+    def test_missing_file_in_existing_monitor_and_runtime_refusal(self):
+        self.monitor.mkdir(mode=0o700)
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with self.assertRaisesRegex(self.adapter.Refusal, "EXISTING_JOURNAL_REQUIRED"), store.locked():
+            self.fail("runtime created store")
+        self.assertFalse(self.database.exists())
+        self.assertIn("status", self.install())
+        self.assert_installed()
+
+    def test_decline_preserves_artifacts_without_creating_journal(self):
+        before = {path: path.read_bytes() for path in self.evidence_dir.iterdir()}
+        self.assertIn("error", self.install(approve=False))
+        self.assertFalse(self.database.exists())
+        self.assertEqual({path: path.read_bytes() for path in self.evidence_dir.iterdir()}, before)
+
+    def test_no_controlling_tty_leaves_journal_absent(self):
+        child = os.fork()
+        if child == 0:
+            try:
+                os.setsid()
+                controller.install_qualification(self.args, dispatch)
+                os._exit(1)
+            except OSError:
+                os._exit(0)
+            except Exception:
+                os._exit(2)
+        self.assertEqual(os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]), 0)
+        self.assertFalse(self.database.exists())
+
+    def test_directory_replacement_during_prompt_refuses(self):
+        def replace():
+            self.monitor.rename(self.local.state / "parked-monitor")
+            self.monitor.mkdir(mode=0o700)
+        self.assertEqual(self.install(before_answer=replace).get("reason"), "STORE_IDENTITY_CHANGED")
+        self.assertFalse(self.database.exists())
+
+    def test_concurrent_store_creation_preserves_human_state(self):
+        def create():
+            self.parts[2].open_store(self.monitor, writable=True).close()
+            self.concurrent_bytes = self.database.read_bytes()
+        self.assertEqual(self.install(before_answer=create).get("reason"), "STORE_IDENTITY_CHANGED")
+        self.assertEqual(self.database.read_bytes(), self.concurrent_bytes)
+
+    def test_orphan_sidecar_refuses_bootstrap(self):
+        self.monitor.mkdir(mode=0o700)
+        sidecar = self.monitor / "history.sqlite3-journal"
+        sidecar.write_bytes(b"private-recovery-secret-canary")
+        sidecar.chmod(0o600)
+        result = self.install(cli=True)
+        self.assertEqual(result.get("reason"), "JOURNAL_RECOVERY_REQUIRED")
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertNotEqual(result["cli_exit"], 0)
+        self.assertNotIn(b"private-recovery-secret-canary", self.last_human_output)
+        self.assertNotIn(str(self.local.root).encode(), self.last_human_output)
+        self.assertNotIn(b"Type exactly", self.last_human_output)
+        self.assertFalse(self.database.exists())
+        self.assertEqual(sidecar.read_bytes(), b"private-recovery-secret-canary")
+
+    def test_taskless_public_controller_install_revoke_cycle(self):
+        result = self.install(cli=True)
+        self.assertEqual(result.get("status"), "OFFLINE_QUALIFICATION_INSTALLED_FOR_ONE_USE_LIVE_PILOT", result)
+        self.assertEqual(result["cli_exit"], 0)
+        self.assert_installed()
+        self.args.expected_epoch = 1
+        result = self.human("revoke-qualification", cli=True)
+        self.assertEqual(result.get("status"), "QUALIFICATION_REVOKED", result)
+        self.assertEqual(result["cli_exit"], 0)
+        self.assertIn(b"Type exactly REVOKE-QUALIFICATION", self.last_human_output)
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            self.assertEqual(self.grant.qualification_selector(db)["state"], "revoked")
+            self.assertEqual(db.execute("SELECT count(*) FROM standing_grants").fetchone()[0], 0)
+        finally:
+            db.close()
+
+    def test_other_actions_still_require_each_task_fence(self):
+        fences = {"task-id": "fixture", "expected-revision": "1", "expected-worker-id": "a" * 32,
+                  "expected-session-id": "fixture-session", "expected-generation": "1"}
+        for action in ("activate", "revoke", "issue-create", "assignees-add", "settle", "complete"):
+            for omitted in fences:
+                with self.subTest(action=action, omitted=omitted):
+                    argv = ["fixture", action, "--authority-root", self.args.authority_root,
+                            "--invoking-root", self.args.invoking_root, "--implementation-head", self.args.implementation_head,
+                            "--expected-epoch", "0"]
+                    argv.extend(part for key, value in fences.items() if key != omitted for part in ("--" + key, value))
+                    if action == "activate":
+                        argv.extend(["--proposal", self.qualification_proposal])
+                    if action == "settle":
+                        argv.extend(["--operation-id", "b" * 32])
+                    with mock.patch.object(sys, "argv", argv), self.assertRaisesRegex(self.adapter.Refusal, "INVALID_ARGUMENTS"):
+                        dispatch.arguments(controller=action in {"activate", "revoke"})
+
+    def test_unclean_code_and_changed_artifact_do_not_initialize(self):
+        with mock.patch.object(self.adapter, "implementation_head", side_effect=RuntimeError("IMPLEMENTATION_HEAD_CHANGED")):
+            self.assertEqual(self.install().get("reason"), "IMPLEMENTATION_HEAD_CHANGED")
+        self.assertFalse(self.database.exists())
+        def alter():
+            path = self.evidence_dir / "transcript.txt"
+            path.write_bytes(b"x" * path.stat().st_size)
+        self.assertEqual(self.install(before_answer=alter).get("reason"), "QUALIFICATION_ARTIFACT_CHANGED")
+        self.assertFalse(self.database.exists())
+
+    def test_installed_qualification_is_bound_to_physical_directories(self):
+        self.assertIn("status", self.install())
+        moved = self.local.state / "retained-monitor"
+        self.monitor.rename(moved)
+        self.monitor.mkdir(mode=0o700)
+        shutil.copyfile(moved / "history.sqlite3", self.database)
+        self.database.chmod(0o600)
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with store.locked() as db:
+            with self.assertRaisesRegex(self.grant.Invalid, "STORE_IDENTITY_CHANGED"):
+                dispatch.require_endpoint_qualification(store, db, self.grant, self.definition)
+
+    def fail_commit(self):
+        original = self.grant.put_qualification_selector
+        def denied(db, value):
+            original(db, value)
+            db.set_authorizer(lambda operation, first, *_: sqlite3.SQLITE_DENY
+                if operation == sqlite3.SQLITE_TRANSACTION and first == "COMMIT" else sqlite3.SQLITE_OK)
+        return mock.patch.object(self.grant, "put_qualification_selector", side_effect=denied)
+
+    def test_fresh_commit_failure_retains_empty_v1_for_human_retry(self):
+        with self.fail_commit():
+            self.assertIn("error", self.install())
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            identity = db.execute("SELECT store_id FROM meta").fetchone()[0]
+            self.assertEqual(db.execute("SELECT version FROM meta").fetchone()[0], 1)
+            self.assertIn(identity.encode(), self.last_human_output)
+        finally:
+            db.close()
+
+        self.assertIn("status", self.install())
+        self.assert_installed(new_store=False)
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            self.assertEqual(db.execute("SELECT store_id FROM meta").fetchone()[0], identity)
+        finally:
+            db.close()
+
+    def test_initial_v1_commit_failure_retains_partial_file_without_repair(self):
+        journal = self.parts[2]
+        class InitialCommitFailure(journal.StoreConnection):
+            def execute(self, sql, parameters=()):
+                result = super().execute(sql, parameters)
+                if sql == "INSERT INTO meta VALUES (1, ?)":
+                    self.set_authorizer(lambda operation, first, *_: sqlite3.SQLITE_DENY
+                        if operation == sqlite3.SQLITE_TRANSACTION and first == "COMMIT" else sqlite3.SQLITE_OK)
+                return result
+        with mock.patch.object(journal, "StoreConnection", InitialCommitFailure):
+            result = self.install(cli=True)
+        self.assertEqual(result.get("status"), "UNVERIFIED", result)
+        self.assertNotEqual(result["cli_exit"], 0)
+        self.assertTrue(self.database.is_file())
+        before = (self.database.stat().st_ino, self.database.read_bytes())
+        db = sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)
+        try:
+            self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [])
+        finally:
+            db.close()
+        # With injection removed, neither runtime nor another install repairs
+        # the retained partial file or collects fresh approval for overwriting it.
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with self.assertRaises(journal.JournalError), store.locked():
+            self.fail("runtime repaired partial store")
+        result = self.install(cli=True)
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertNotIn(b"Type exactly", self.last_human_output)
+        self.assertEqual((self.database.stat().st_ino, self.database.read_bytes()), before)
+
+    def test_existing_commit_failure_and_decline_preserve_history_bytes(self):
+        self.monitor.mkdir(mode=0o700)
+        db = self.parts[2].open_store(self.monitor, writable=True)
+        self.parts[2].begin(db, "bootstrap-history", "a" * 64, "monitor", ["repo:fixture/project"], "start")
+        db.close()
+        before = self.database.read_bytes()
+        self.assertIn("error", self.install(approve=False))
+        self.assertEqual(self.database.read_bytes(), before)
+        with self.fail_commit():
+            self.assertIn("error", self.install())
+        self.assertEqual(self.database.read_bytes(), before)
+
+    def test_postcommit_durability_failure_retains_selected_qualification(self):
+        with mock.patch.object(self.parts[4], "durable", side_effect=OSError("fixture durability failure")):
+            self.assertIn("error", self.install())
+        self.assert_installed()
+        self.assertEqual(self.install().get("reason"), "QUALIFICATION_EPOCH_CHANGED")
 
 
 if __name__ == "__main__":

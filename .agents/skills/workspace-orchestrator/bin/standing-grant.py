@@ -138,11 +138,17 @@ def migrate(db):
     """Caller holds coordinator and transaction; retain all preexisting row bytes."""
     t = typed()
     version = db.execute("SELECT version FROM meta").fetchone()[0]
-    require(version in {5, 6, 7})
-    if version == 5:
+    require(version in {1, 2, 3, 4, 5, 6, 7})
+    if version == 1:
+        db.execute("CREATE TABLE binding_acks (incarnation TEXT PRIMARY KEY, task_id TEXT NOT NULL, operation_id TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
+    if version <= 2:
+        db.execute("CREATE TABLE claim_intents (operation_id TEXT PRIMARY KEY NOT NULL, request TEXT NOT NULL, request_sha256 TEXT NOT NULL)")
+    if version <= 3:
+        db.execute("CREATE TABLE claim_observations (observation_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT NOT NULL REFERENCES claim_intents(operation_id), request_sha256 TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
+    if version <= 5:
         for table in t.TABLES:
             db.execute("CREATE TABLE " + table + " (id TEXT PRIMARY KEY NOT NULL, document TEXT, sha256 TEXT, reserved BLOB NOT NULL)")  # nosec B608 - fixed typed.TABLES
-    if version in {5, 6}:
+    if version <= 6:
         db.execute("CREATE TABLE standing_grants (id TEXT PRIMARY KEY NOT NULL, document TEXT NOT NULL, sha256 TEXT NOT NULL)")
         db.execute("CREATE TABLE standing_selector (id INTEGER PRIMARY KEY NOT NULL, document TEXT NOT NULL, sha256 TEXT NOT NULL)")
         db.execute("CREATE TABLE standing_qualifications (id TEXT PRIMARY KEY NOT NULL, document TEXT NOT NULL, sha256 TEXT NOT NULL)")
@@ -279,7 +285,21 @@ def validate_qualifications(db):
     epochs = set()
     for row in rows:
         record = qualification_get(db, row[0])
-        t.fields(record, "manifest report epoch store_id installed receipt")
+        # Pre-bootstrap v7 receipts retain their exact historical binding.
+        t.fields(record, "manifest report epoch store_id installed receipt" + (" installation" if "installation" in record else ""))
+        if "installation" in record:
+            installation = record["installation"]
+            t.fields(installation, "new_store authority_root invoking_root directories")
+            require(type(installation["new_store"]) is bool)
+            for key in ("authority_root", "invoking_root"):
+                path = installation[key]
+                require(type(path) is str and path.startswith("/") and 1 < len(path.encode("utf-8")) <= 4096
+                        and all(part not in {"", ".", ".."} for part in path[1:].split("/"))
+                        and not any(ord(char) < 32 for char in path))
+            pairs = installation["directories"]
+            require(type(pairs) is list and len(pairs) == 4
+                    and all(type(pair) is list and len(pair) == 2
+                            and all(type(item) is int and item >= 0 for item in pair) for pair in pairs))
         validate_qualification_manifest(record["manifest"])
         validate_qualification_report(record["manifest"], record["report"])
         require(record["manifest"]["qualification_id"] == row[0] and type(record["epoch"]) is int and record["epoch"] > 0

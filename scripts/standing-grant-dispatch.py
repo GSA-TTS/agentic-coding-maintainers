@@ -41,6 +41,9 @@ def policy_digest():
 def require_endpoint_qualification(store, db, grant, definition):
     """Controller-selected, human-installed offline qualification; no caller selector."""
     record = grant.require_qualification(db, definition)
+    if "installation" in record:
+        grant.require(store.physical_binding() == {key: value for key, value in record["installation"].items() if key != "new_store"},
+                      "STORE_IDENTITY_CHANGED")
     controller = load("qualification_artifacts", Path(__file__).with_name("control-standing-grant.py"))
     controller.verify_artifacts(store, grant, record["manifest"], expected_report=record["report"])
     return record
@@ -404,14 +407,22 @@ def arguments(*, controller=False):
     else:
         parser.add_argument("--operation-id", action=Once)
     for key in ("task-id", "expected-revision", "expected-worker-id", "expected-session-id", "expected-generation"):
-        parser.add_argument("--" + key, required=True, action=Once)
+        parser.add_argument("--" + key, action=Once)
     args = parser.parse_args()
+    for key in ("task_id", "expected_revision", "expected_worker_id", "expected_session_id", "expected_generation"):
+        adapter.require(controller and args.action in {"install-qualification", "revoke-qualification"}
+                        or getattr(args, key) is not None,
+                        "INVALID_ARGUMENTS")
     for key, pattern in (("task_id", r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}"),
                          ("expected_session_id", r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"),
                          ("expected_worker_id", r"[0-9a-f]{32}"), ("implementation_head", r"[0-9a-f]{40}")):
-        adapter.require(re.fullmatch(pattern, getattr(args, key)) is not None, "INVALID_ARGUMENTS")
+        value = getattr(args, key)
+        if value is not None:
+            adapter.require(re.fullmatch(pattern, value) is not None, "INVALID_ARGUMENTS")
     for key in ("expected_epoch", "expected_revision", "expected_generation"):
         value = getattr(args, key)
+        if value is None:
+            continue
         adapter.require(re.fullmatch(r"0|[1-9][0-9]{0,18}", value) is not None and int(value) <= 2**63 - 1, "INVALID_ARGUMENTS")
         setattr(args, key, int(value))
     if controller:

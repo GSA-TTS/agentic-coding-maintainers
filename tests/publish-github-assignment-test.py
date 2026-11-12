@@ -323,6 +323,22 @@ class OutputBoundaryTest(unittest.TestCase):
         error.http_status = 422
         self.assertEqual(publisher.public_failure(error)["http_status"], 422)
 
+    def test_journal_recovery_reason_is_exact_and_never_leaks_context(self):
+        class RecoveryError(Exception):
+            private_context = "private-recovery-secret-canary"
+
+            def __str__(self):
+                raise AssertionError("private-recovery-secret-canary")
+
+        for arguments, expected in (
+                (("JOURNAL_RECOVERY_REQUIRED",), "JOURNAL_RECOVERY_REQUIRED"),
+                (("JOURNAL_RECOVERY_REQUIRED private-recovery-secret-canary",), "DISPATCH_OR_DURABILITY_UNVERIFIED"),
+                (("JOURNAL_RECOVERY_REQUIRED", "private-recovery-secret-canary"), "DISPATCH_OR_DURABILITY_UNVERIFIED")):
+            result = publisher.public_failure(RecoveryError(*arguments))
+            self.assertEqual(result["reason"], expected)
+            self.assertEqual(result["status"], "UNVERIFIED")
+            self.assertNotIn("private-recovery-secret-canary", json.dumps(result))
+
 
 class TransportTest(unittest.TestCase):
     def setUp(self):

@@ -85,9 +85,10 @@ class Store:
         self.root = Path(args.authority_root) / ".orchestrator"
         self.monitor = self.root / "monitor"
         self.identity = None
+        self.directory_identity = None
 
     @contextlib.contextmanager
-    def locked(self):
+    def directories(self, *, prepare=False):
         p = self.preflight
         with contextlib.ExitStack() as stack:
             authority = p.physical_root(self.args.authority_root, stack)
@@ -95,18 +96,64 @@ class Store:
             require((os.fstat(authority).st_dev, os.fstat(authority).st_ino)
                     == (os.fstat(invoking).st_dev, os.fstat(invoking).st_ino), "ROOT_MISMATCH")
             store = p.directory(authority, ".orchestrator", stack, private=True)
-            p.directory(store, "locks", stack, private=True)
+            locks = p.directory(store, "locks", stack, private=True)
+            if prepare:
+                # Empty infrastructure only: no store identity or authority.
+                with self.core.CoordinatorLock(self.root):
+                    try:
+                        os.mkdir("monitor", mode=0o700, dir_fd=store)
+                        os.fsync(store)
+                    except FileExistsError:
+                        pass
             monitor = p.directory(store, "monitor", stack, private=True)
-            directories = tuple((os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in (authority, store, monitor))
+            identities = tuple((os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in (authority, store, locks, monitor))
+            yield identities
+
+    def physical_binding(self):
+        with self.directories() as identities:
+            require(identities == self.directory_identity, "STORE_IDENTITY_CHANGED")
+        return {"authority_root": self.args.authority_root, "invoking_root": self.args.invoking_root,
+                "directories": [list(pair) for pair in identities]}
+
+    @contextlib.contextmanager
+    def locked(self):
+        with self._locked() as db:
+            yield db
+
+    @contextlib.contextmanager
+    def qualification_locked(self, *, initial_store_id=None):
+        """Controller installation only; missing stores remain absent until approval."""
+        with self._locked(qualification=True, initial_store_id=initial_store_id) as db:
+            yield db
+
+    @contextlib.contextmanager
+    def _locked(self, *, qualification=False, initial_store_id=None):
+        with self.directories(prepare=qualification and self.directory_identity is None) as directories:
+            if self.directory_identity is None:
+                self.directory_identity = directories
+            require(directories == self.directory_identity, "STORE_IDENTITY_CHANGED")
             with self.core.CoordinatorLock(self.root):
-                require(self.journal.check_path(self.monitor).is_file(), "EXISTING_JOURNAL_REQUIRED")
-                db = self.journal.open_store(self.monitor, writable=True)
+                self.physical_binding()
+                exists = self.journal.check_path(self.monitor).is_file()
+                if qualification and not exists:
+                    # Orphan sidecars are human recovery state, never fresh setup.
+                    require(not any(self.monitor.glob("history.sqlite3-*")), "JOURNAL_RECOVERY_REQUIRED")
+                if qualification and initial_store_id is None and not exists:
+                    require(self.identity is None, "STORE_IDENTITY_CHANGED")
+                    yield None
+                    self.physical_binding()
+                    require(not self.journal.check_path(self.monitor).exists(), "STORE_IDENTITY_CHANGED")
+                    return
+                require(exists or qualification and initial_store_id is not None, "EXISTING_JOURNAL_REQUIRED")
+                require(initial_store_id is None or not exists and self.identity is None, "STORE_IDENTITY_CHANGED")
+                db = self.journal.open_store(self.monitor, writable=True, initial_store_id=initial_store_id)
                 try:
                     identity = (directories, db.file_identity, db.execute("SELECT store_id FROM meta").fetchone()[0])
                     if self.identity is None:
                         self.identity = identity
                     require(identity == self.identity, "STORE_IDENTITY_CHANGED")
                     yield db
+                    self.physical_binding()
                     selected = self.journal.check_path(self.monitor).lstat()
                     require(db.file_identity == (selected.st_dev, selected.st_ino), "STORE_IDENTITY_CHANGED")
                 finally:

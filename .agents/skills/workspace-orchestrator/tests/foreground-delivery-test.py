@@ -116,17 +116,18 @@ class ForegroundTests(unittest.TestCase):
     def cli(self, *args, expected=0):
         # Each invocation is a fresh public CLI process, including after pause.
         env = self.env
-        if args[0] == "foreground-delivery":
+        if args[0] == "foreground-delivery" or args[0] in diagnostic.COMPILE_ONLY_TARGETS:
             # Test-local interpreter shim: still invoke run.sh, exactly once.
-            # The observer captures main's suppressed exception in that process;
-            # it never replays mutation or changes the expected return code.
+            # Foreground retains its exception observer; explicit domain entries
+            # only reuse compilation, with their normal argv and exit semantics.
             directory = self.root / "diagnostic-bin"
             directory.mkdir(exist_ok=True)
             shim = directory / "python3"
             launcher = Path(__file__).with_name("foreground-cli-diagnostic.py")
+            mode = str(expected) if args[0] == "foreground-delivery" else "--compile-only"
             shim.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable)
                             + " -I -B " + shlex.quote(str(launcher))
-                            + " " + str(expected) + ' "$@"\n')
+                            + " " + mode + ' "$@"\n')
             shim.chmod(0o700)
             env = {**self.env, "PATH": str(directory) + os.pathsep + self.env["PATH"]}
         process = subprocess.run(["bash", str(ROOT / "run.sh"), *args], cwd=self.root,
@@ -134,10 +135,10 @@ class ForegroundTests(unittest.TestCase):
         if process.returncode != expected:
             # Only structural, bounded observer output is permitted in failures.
             prefix = "FOREGROUND_FIXTURE_DIAGNOSTIC "
-            diagnostic = next((line for line in process.stderr.splitlines()
+            detail = next((line for line in process.stderr.splitlines()
                                if line.startswith(prefix) and len(line) <= 3100),
                               "CLI diagnostic unavailable; output withheld")
-            self.assertEqual(process.returncode, expected, diagnostic)
+            self.assertEqual(process.returncode, expected, detail)
         return json.loads(process.stdout)
 
     def record(self):
@@ -1376,6 +1377,93 @@ class ForegroundTests(unittest.TestCase):
 
 
 class DiagnosticCompileTests(unittest.TestCase):
+    def test_compile_only_domain_cli_output_and_exit_equivalence(self):
+        launcher = Path(__file__).with_name("foreground-cli-diagnostic.py")
+        with tempfile.TemporaryDirectory(prefix="domain-launcher-") as temporary:
+            directory = Path(temporary)
+            shim = directory / "python3"
+            shim.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable)
+                            + " -I -B " + shlex.quote(str(launcher)) + ' --compile-only "$@"\n')
+            shim.chmod(0o700)
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("ORCHESTRATOR_", "WORKSPACE_ORCHESTRATOR_"))}
+            env["WORKSPACE_ORCHESTRATOR_ROOT"] = str(directory)
+            wrapped_env = {**env, "PATH": str(directory) + os.pathsep + os.environ["PATH"]}
+            for command, target in diagnostic.COMPILE_ONLY_TARGETS.items():
+                missing = ["fixture", *(["reconcile"] if command == "repair-apply" else []),
+                           "--request", str(directory / "missing.json")]
+                for args, expected in ((["--help"], 0), (["--unknown-fixture-flag"], 2), (missing, 3)):
+                    with self.subTest(command=command, args=args):
+                        raw = subprocess.run([sys.executable, "-I", "-B", target, *args],
+                                             env=env, capture_output=True, timeout=10)
+                        wrapped = subprocess.run(["bash", str(ROOT / "run.sh"), command, *args],
+                                                 env=wrapped_env, capture_output=True, timeout=10)
+                        self.assertEqual(raw.returncode, expected)
+                        self.assertEqual((wrapped.returncode, wrapped.stdout, wrapped.stderr),
+                                         (raw.returncode, raw.stdout, raw.stderr))
+
+    def test_compile_only_refuses_wrong_paths_flags_and_missing_arguments(self):
+        target = diagnostic.COMPILE_ONLY_TARGETS["review-evidence"]
+        invalid = ([], ["-I"], ["-I", "-B"], ["-B", "-I", target], ["-I", target],
+                   ["-I", "-B", "-O", target], ["-I", "-B", str(diagnostic.TARGET)],
+                   ["-I", "-B", str(ROOT / "bin/orchestrator-state.py")],
+                   ["-I", "-B", str(ROOT / "bin/../bin/review-evidence.py")],
+                   ["-I", "-B", "review-evidence.py"])
+        previous = sys.argv
+        with mock.patch.object(diagnostic.runpy, "run_path") as run:
+            for argv in invalid:
+                with self.subTest(argv=argv), self.assertRaisesRegex(SystemExit, "exact -I -B"):
+                    diagnostic.compile_only(argv)
+                self.assertIs(sys.argv, previous)
+            run.assert_not_called()
+
+    def test_fixture_shim_routes_only_explicit_domain_entries_once(self):
+        fixture = ForegroundTests(methodName="runTest")
+        with tempfile.TemporaryDirectory(prefix="domain-routing-") as temporary:
+            fixture.root = Path(temporary)
+            fixture.env = {"PATH": os.defpath}
+            response = subprocess.CompletedProcess([], 0, stdout='{"fixture": true}', stderr="")
+            for command in (*diagnostic.COMPILE_ONLY_TARGETS, "foreground-delivery", "state", "review-run"):
+                with self.subTest(command=command), \
+                        mock.patch.object(subprocess, "run", return_value=response) as run:
+                    self.assertEqual(fixture.cli(command, "fixture"), {"fixture": True})
+                    run.assert_called_once()
+                    self.assertEqual(run.call_args.args[0], ["bash", str(ROOT / "run.sh"), command, "fixture"])
+                    env = run.call_args.kwargs["env"]
+                    if command in {"state", "review-run"}:
+                        self.assertIs(env, fixture.env)
+                    else:
+                        shim = Path(env["PATH"].split(os.pathsep)[0]) / "python3"
+                        tokens = shlex.split(shim.read_text().splitlines()[1])
+                        self.assertEqual(tokens, ["exec", sys.executable, "-I", "-B",
+                                                  str(Path(__file__).with_name("foreground-cli-diagnostic.py")),
+                                                  "0" if command == "foreground-delivery" else "--compile-only", "$@"])
+
+    def test_compile_only_preserves_argv_exit_and_restores_loader_without_observer(self):
+        from importlib.machinery import SourceFileLoader
+        target = diagnostic.COMPILE_ONLY_TARGETS["review-evidence"]
+        previous, loader, trace = sys.argv, SourceFileLoader.source_to_code, sys.gettrace()
+        argv = ["-I", "-B", target, "fixture", "--request", "unchanged request.json"]
+        with mock.patch.object(diagnostic, "exception_observer") as observer:
+            for exit_code in (None, 0, 3, "unchanged exit message"):
+                def run(path, *, run_name):
+                    self.assertEqual(path, target)
+                    self.assertEqual(run_name, "__main__")
+                    self.assertEqual(sys.argv, argv[2:])
+                    self.assertIsNot(SourceFileLoader.source_to_code, loader)
+                    raise SystemExit(exit_code)
+
+                with self.subTest(exit_code=exit_code), \
+                        mock.patch.object(diagnostic.runpy, "run_path", side_effect=run) as execution, \
+                        self.assertRaises(SystemExit) as caught:
+                    diagnostic.compile_only(argv)
+                self.assertEqual(caught.exception.code, exit_code)
+                execution.assert_called_once()
+                self.assertIs(sys.argv, previous)
+                self.assertIs(SourceFileLoader.source_to_code, loader)
+                self.assertIs(sys.gettrace(), trace)
+            observer.assert_not_called()
+
     def test_repair_capability_guard_does_not_swallow_unexpected_errors(self):
         # Exercise the capability helper without running the expensive CLI setup.
         fixture = ForegroundTests(methodName="runTest")

@@ -1,5 +1,5 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-af930e186acb41c2cbcfca0b56b303fbd17ff88410f1a06933e9128dcb1d1d07  ./PROVENANCE.md
+06bd40af648e3be28aae0887511d046efe3019442244b28db92237f85dc5f660  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 ee185aae0dce4704ed54de7a5a92bd6e95cbf3dcb0b519f0b691cabe1cea7287  ./bin/assignment-journal.py
@@ -11,7 +11,7 @@ d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foregrou
 e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foreground-delivery.py
 55df01c80de182298ab9d6e7026f50755058396bb21bb3c5e39940439970fab8  ./bin/foreground-repair.py
 8a57114282fb1afe9e6135bbae31f46c70e0fdaa32b084da2c71ec5cf3194fcc  ./bin/foreground-review.py
-98b9bfdd6f7c02b35f589a3a73dece7c924396238e4220d545a68a67521127ec  ./bin/monitor-journal.py
+5516de7a432339a62949729ba5baddb7de0b78805ec5a2a53e707b4c047fd225  ./bin/monitor-journal.py
 da6efdd36dd0f16f9a4de3a88ade80add80d94c50ec16863e2210869c557129a  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
 d838cc46cce55f2d3a4c2db4c35d9b1209ae560501bd10693e1ef7a8ebf79441  ./bin/orchestrator-state.py
@@ -29,7 +29,7 @@ f19900a2f33673adccfa5b668859a9b3a7393275d066f5d8775aee28f45cc153  ./bin/review-p
 33d5e96d08adf79e91c298d62bb08c53d1d4dec4f5e0725e031020d13fd261ab  ./bin/review-run.py
 c4d0b8d520adf30b5489dc8a4f782daf451956f4ba9498fc105988ff04ccf930  ./bin/review-source-map.py
 0d469c47108847fe483dadfb97adb619999ed7b04a528029ac85a01879d978d6  ./bin/runtime-observation.py
-06f2207228e4a49f20b666b34d834e38f6b567c803059bdd65ba38ab1851b19d  ./bin/standing-grant.py
+47221921f3d61a5df545fbc8893d7aed3a111e0c697ef80aedef4865598feb5b  ./bin/standing-grant.py
 046083dca2865f063041a8078c9f7e64374148c3817a90003f57cd5f03fa3d32  ./docs/CANDIDATE-BINDING.md
 3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
 bc502c82107e10591330b9ae7234495cd961b07af2c4b0d18201056038d8a2a3  ./docs/EXECUTION-OBSERVER.md
@@ -61,9 +61,9 @@ d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
 68a769e6c16f28321581bf109f0fb4341676d93f3e996935d94931d5ebfd963a  ./tests/foreground-admission-cases.py
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
-323bc46f9b67266aab507a5185d02e7434f9cb44517b7945b98062aac9339b6a  ./tests/foreground-cli-diagnostic.py
-475a1d7f18e699ddb91072a6cdde339250430929e544cd91dd709637f26c6991  ./tests/foreground-delivery-test.py
-135b7a166293e07a595fbf07b34ce3a5a68714227b3e6606e65e3482fb05afb9  ./tests/foreground-diagnostic-benchmark.py
+0847bdcf582fec97ee7f1200d2969f16f4216b0794fbc5d93f2639fcbc973321  ./tests/foreground-cli-diagnostic.py
+063aed925b810eec2f94c5972c9d0dd4cde27aac19da740812bde612bec582e8  ./tests/foreground-delivery-test.py
+41ab66c1967c71694fdb9a4ca0038ecce422c34964811ba7091f89e6def13bb6  ./tests/foreground-diagnostic-benchmark.py
 5bd40070bbbdeaab4c9b33487da23f9cba11e99599ce0a8920e7405ff47bf5d9  ./tests/foreground-handoff-test.py
 1a68af3feaf26d8d90e7b409b3b807f5144d2669730b03b5ce1f2145e70ed2fc  ./tests/foreground-review-cases.py
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
