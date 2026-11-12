@@ -356,7 +356,8 @@ class TaskStoreInventoryTests(unittest.TestCase):
         for phrase in ("all observed above", "Everything above this heading is observed",
                        "Three consumers read task data", "Three controllers hold", "Checkpoint placeholder",
                        "leave the seam unhashed", "hash / not hash",
-                       "checked in both directions before admission or mutation"):
+                       "checked in both directions before admission or mutation",
+                       "no storage I/O", "there is no unhashed alternative", "There is no unhashed option"):
             self.assertNotIn(phrase, self.source, phrase)
 
     def test_decisions_and_unknowns_are_sequential(self):
