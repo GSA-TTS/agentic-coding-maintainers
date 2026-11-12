@@ -354,8 +354,21 @@ class TaskStoreInventoryTests(unittest.TestCase):
 
     def test_no_stale_overclaims(self):
         for phrase in ("all observed above", "Everything above this heading is observed",
-                       "Three consumers read task data", "Three controllers hold", "Checkpoint placeholder"):
+                       "Three consumers read task data", "Three controllers hold", "Checkpoint placeholder",
+                       "leave the seam unhashed", "hash / not hash",
+                       "checked in both directions before admission or mutation"):
             self.assertNotIn(phrase, self.source, phrase)
+
+    def test_decisions_and_unknowns_are_sequential(self):
+        for prefix, title in (("D", "Decisions for the maintainer"), ("U", "Unknowns and not inspected")):
+            ids = [row[0] for row in self.by_title[title]["tables"][0]["rows"]]
+            self.assertEqual(sorted(ids, key=lambda i: int(i[1:])), ids, title)
+            self.assertEqual(ids, [f"{prefix}{n}" for n in range(1, len(ids) + 1)], title)
+
+    def test_manifest_decision_has_no_unhashed_option(self):
+        row = next(r for r in self.by_title["Decisions for the maintainer"]["tables"][0]["rows"] if r[0] == "D6")
+        self.assertIn("defer", row[2].lower())
+        self.assertNotIn("not hash", " ".join(row))
 
     def test_id_references_resolve(self):
         known = set()
