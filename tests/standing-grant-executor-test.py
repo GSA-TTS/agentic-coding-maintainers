@@ -931,6 +931,23 @@ class ExecutorTests(unittest.TestCase):
         with store.locked() as db:
             self.assertEqual(self.grant.selector(db)["revocation"], pending["revocation"])
 
+    def test_revocation_completion_does_not_retry_durability_failure(self):
+        self.activate()
+        with mock.patch.object(controller, "complete_revocation", side_effect=OSError("fixture request boundary")):
+            self.assertIn("error", self.human("revoke"))
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with store.locked() as db:
+            pending = self.grant.selector(db)
+        with mock.patch.object(store, "durable", side_effect=store.core.BusyError("fixture barrier failure")) as barrier:
+            with self.assertRaisesRegex(store.core.BusyError, "fixture barrier failure"):
+                controller.complete_revocation(store, dispatch, self.grant, copy.deepcopy(pending))
+        self.assertEqual(barrier.call_count, 1)
+        self.assertFalse(dispatch.gate_path(store, self.definition["grant_id"]).exists())
+        with store.locked() as db:
+            final = self.grant.selector(db)
+        self.assertEqual(final["state"], "revoked")
+        self.assertEqual(final["revocation"], pending["revocation"])
+
     def test_recovery_wrong_explicit_revision_is_read_only_zero_get(self):
         self.activate()
         self.scenario = "get-failed"
@@ -1050,10 +1067,12 @@ class ExecutorTests(unittest.TestCase):
             db.close()
         self.assertEqual(self.trace.read_text(), "CREATE\n")
 
-    def revocation_race(self, phase):
+    def revocation_race(self, phase, *, hold_gate_removal=False):
         self.activate()
         ready_read, ready_write = os.pipe()
         release_read, release_write = os.pipe()
+        busy_read, busy_write = os.pipe()
+        producer_result = self.local.root / "revocation-producer-result.json"
 
         def hold_producer():
             os.write(ready_write, b"r")
@@ -1068,17 +1087,42 @@ class ExecutorTests(unittest.TestCase):
         child = os.fork()
         if child == 0:
             try:
-                self.runtime("issue-create")
+                release_dir = self.parts[1].release_dir
+                def release_then_hold(path, token):
+                    release_dir(path, token)
+                    if hold_gate_removal and path.name.startswith("standing-effect-"):
+                        # The gate is gone, but release_gate still owns the real
+                        # coordinator. Parent releases us only after the revoker
+                        # has actually encountered that lock contention.
+                        os.write(ready_write, b"d")
+                        if not select.select([release_read], [], [], 10)[0]:
+                            raise AssertionError("revoker did not encounter gate-removal window")
+                        self.assertEqual(os.read(release_read, 1), b"g")
+                with mock.patch.object(self.parts[1], "release_dir", side_effect=release_then_hold):
+                    result = self.runtime("issue-create")
+                producer_result.write_text(json.dumps(result))
                 os._exit(0)
-            except Exception:
+            except Exception as exc:
+                producer_result.write_text(json.dumps({"error": type(exc).__name__, "reason": str(exc)}))
                 os._exit(3)
         requested = []
+        removal_seen, contention_seen = [], []
         try:
             self.assertTrue(select.select([ready_read], [], [], 10)[0])
             self.assertEqual(os.read(ready_read, 1), b"r")
 
             def observe_requested():
                 if requested:
+                    if hold_gate_removal and not contention_seen:
+                        if not removal_seen and select.select([ready_read], [], [], 0)[0]:
+                            self.assertEqual(os.read(ready_read, 1), b"d")
+                            self.assertFalse((self.local.state / "locks" / ("standing-effect-" + self.definition["grant_id"] + ".lock")).exists())
+                            self.assertTrue((self.local.state / "locks/coordinator.lock").is_dir())
+                            removal_seen.append(True)
+                        if removal_seen and select.select([busy_read], [], [], 0)[0]:
+                            self.assertEqual(os.read(busy_read, 1), b"b")
+                            contention_seen.append(True)
+                            os.write(release_write, b"g")
                     return
                 db = self.parts[2].open_store(self.fixture.fixture.monitor)
                 try:
@@ -1086,6 +1130,11 @@ class ExecutorTests(unittest.TestCase):
                 finally:
                     db.close()
                 if selected["state"] == "revoke-requested":
+                    # Visibility of the SQLite commit precedes durable() and
+                    # coordinator exit. The fake transport checks no coordinator
+                    # is held, so do not resume it inside that controller section.
+                    if (self.local.state / "locks/coordinator.lock").exists():
+                        return
                     # The real controller has committed request, but cannot ack
                     # quiescence until the actual runtime producer leaves its gate.
                     self.assertTrue((self.local.state / "locks" / ("standing-effect-" + self.definition["grant_id"] + ".lock")).is_dir())
@@ -1093,24 +1142,43 @@ class ExecutorTests(unittest.TestCase):
                     requested.append(selected)
                     os.write(release_write, b"g")
 
-            result = self.human("revoke", tick=observe_requested)
-            self.assertEqual(result["status"], "GRANT_REVOKED_QUIESCENT")
+            enter = self.parts[1].CoordinatorLock.__enter__
+            def observed_enter(lock):
+                try:
+                    return enter(lock)
+                except self.parts[1].BusyError:
+                    if hold_gate_removal:
+                        os.write(busy_write, b"b")
+                    raise
+            with mock.patch.object(self.parts[1].CoordinatorLock, "__enter__", observed_enter):
+                result = self.human("revoke", tick=observe_requested)
+            self.assertEqual(result.get("status"), "GRANT_REVOKED_QUIESCENT", result)
             self.assertEqual(len(requested), 1)
+            if hold_gate_removal:
+                self.assertEqual((removal_seen, contention_seen), ([True], [True]))
             _, status = os.waitpid(child, 0)
             child = None
-            self.assertEqual(os.waitstatus_to_exitcode(status), 3 if phase == "fresh" else 0)
+            producer = json.loads(producer_result.read_text())
+            db = self.parts[2].open_store(self.fixture.fixture.monitor)
+            try:
+                evidence = [tuple(row) for row in db.execute("SELECT document FROM assignment_evidence")]
+            finally:
+                db.close()
+            diagnostic = {"producer": producer, "evidence": evidence, "task": self.task()}
+            self.assertEqual(os.waitstatus_to_exitcode(status), 3 if phase == "fresh" else 0, diagnostic)
             if phase == "fresh":
                 self.assertFalse(self.trace.exists())
             else:
+                self.assertEqual(producer.get("status"), "ISSUE_CREATED_OBSERVED", diagnostic)
                 self.assertEqual(self.trace.read_text(), "CREATE\n")
-                self.assertEqual(self.task()["tracker_number"], 501)
+                self.assertEqual(self.task()["tracker_number"], 501, diagnostic)
             with self.assertRaises(Exception):
                 self.runtime("issue-create")
         finally:
             if child is not None:
                 os.kill(child, signal.SIGKILL)
                 os.waitpid(child, 0)
-            for fd in (ready_read, ready_write, release_read, release_write):
+            for fd in (ready_read, ready_write, release_read, release_write, busy_read, busy_write):
                 os.close(fd)
 
     def test_real_controller_revocation_before_reservation_prevents_post(self):
@@ -1118,6 +1186,9 @@ class ExecutorTests(unittest.TestCase):
 
     def test_real_controller_revocation_waits_for_inflight_post(self):
         self.revocation_race("post")
+
+    def test_revocation_retries_coordinator_entry_after_producer_gate_removal(self):
+        self.revocation_race("post", hold_gate_removal=True)
 
     def test_real_legacy_v6_unknown_rows_and_core_bytes_survive_migration(self):
         legacy = fixtures.DispatchTest()

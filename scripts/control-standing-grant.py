@@ -324,26 +324,35 @@ def complete_revocation(store, dispatch, grant, selected):
                 return {"status": "REVOKE_REQUESTED_GATE_UNVERIFIED", "reservation": "pending"}
             time.sleep(0.1)
             continue
-        with store.locked():
+        with contextlib.ExitStack() as stack:
+            # Gate removal precedes the producer's coordinator unlock. Retry
+            # only lock entry; never replay validation, writes or durability.
             try:
-                gate = dispatch.acquire_gate(store, selected["grant_id"])
-                break
+                db = stack.enter_context(store.locked())
             except store.core.BusyError:
                 if time.monotonic() >= until:
                     return {"status": "REVOKE_REQUESTED_GATE_UNVERIFIED", "reservation": "pending"}
+            else:
+                try:
+                    gate = dispatch.acquire_gate(store, selected["grant_id"])
+                except store.core.BusyError:
+                    if time.monotonic() >= until:
+                        return {"status": "REVOKE_REQUESTED_GATE_UNVERIFIED", "reservation": "pending"}
+                else:
+                    # Keep the coordinator through completion: releasing it
+                    # here would introduce another avoidable acquisition race.
+                    try:
+                        store.journal.validate_store(db)
+                        grant.require(grant.selector(db) == selected, "GRANT_EPOCH_CHANGED")
+                        selected["state"] = "revoked"
+                        with db:
+                            db.execute("BEGIN IMMEDIATE")
+                            grant.put_selector(db, selected)
+                        store.durable(db)
+                    finally:
+                        store.core.release_dir(path, gate)
+                    return {"status": "GRANT_REVOKED_QUIESCENT", "epoch": selected["epoch"], "reservation": "settled"}
         time.sleep(0.1)
-    try:
-        with store.locked() as db:
-            store.journal.validate_store(db)
-            grant.require(grant.selector(db) == selected, "GRANT_EPOCH_CHANGED")
-            selected["state"] = "revoked"
-            with db:
-                db.execute("BEGIN IMMEDIATE")
-                grant.put_selector(db, selected)
-            store.durable(db)
-    finally:
-        dispatch.release_gate(store, selected["grant_id"], gate)
-    return {"status": "GRANT_REVOKED_QUIESCENT", "epoch": selected["epoch"], "reservation": "settled"}
 
 
 def main():
