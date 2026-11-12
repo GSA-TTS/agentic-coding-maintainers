@@ -5,6 +5,7 @@ import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import pty
@@ -210,7 +211,7 @@ class ExecutorTests(unittest.TestCase):
         finally:
             db.close()
 
-    def human(self, action="activate", approve=True, tick=None, before_answer=None):
+    def human(self, action="activate", approve=True, tick=None, before_answer=None, cli=False):
         self.args.action = action
         if action in {"revoke", "revoke-qualification"}:
             self.args.proposal = None
@@ -218,9 +219,23 @@ class ExecutorTests(unittest.TestCase):
         if child == 0:
             try:
                 with mock.patch.dict(os.environ, {"GH_TOKEN": "synthetic"}, clear=True):
-                    result = {"activate": controller.activate, "revoke": controller.revoke,
-                              "install-qualification": controller.install_qualification,
-                              "revoke-qualification": controller.revoke_qualification}[action](self.args, dispatch)
+                    if cli:
+                        argv = ["control-standing-grant.py", action,
+                                "--authority-root", self.args.authority_root, "--invoking-root", self.args.invoking_root,
+                                "--implementation-head", self.args.implementation_head,
+                                "--expected-epoch", str(self.args.expected_epoch)]
+                        if self.args.proposal is not None:
+                            argv.extend(["--proposal", self.args.proposal])
+                        output = io.StringIO()
+                        with (mock.patch.object(sys, "argv", argv),
+                              mock.patch.object(controller, "load_dispatch", return_value=dispatch),
+                              contextlib.redirect_stdout(output)):
+                            code = controller.main()
+                        result = json.loads(output.getvalue()) | {"cli_exit": code}
+                    else:
+                        result = {"activate": controller.activate, "revoke": controller.revoke,
+                                  "install-qualification": controller.install_qualification,
+                                  "revoke-qualification": controller.revoke_qualification}[action](self.args, dispatch)
                 print("RESULT " + json.dumps(result), flush=True)
                 os._exit(0)
             except Exception as exc:
@@ -1393,12 +1408,51 @@ class BootstrapTests(unittest.TestCase):
     def test_orphan_sidecar_refuses_bootstrap(self):
         self.monitor.mkdir(mode=0o700)
         sidecar = self.monitor / "history.sqlite3-journal"
-        sidecar.write_bytes(b"human recovery state")
+        sidecar.write_bytes(b"private-recovery-secret-canary")
         sidecar.chmod(0o600)
-        self.assertEqual(self.install().get("reason"), "JOURNAL_RECOVERY_REQUIRED")
+        result = self.install(cli=True)
+        self.assertEqual(result.get("reason"), "JOURNAL_RECOVERY_REQUIRED")
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertNotEqual(result["cli_exit"], 0)
+        self.assertNotIn(b"private-recovery-secret-canary", self.last_human_output)
+        self.assertNotIn(str(self.local.root).encode(), self.last_human_output)
         self.assertNotIn(b"Type exactly", self.last_human_output)
         self.assertFalse(self.database.exists())
-        self.assertEqual(sidecar.read_bytes(), b"human recovery state")
+        self.assertEqual(sidecar.read_bytes(), b"private-recovery-secret-canary")
+
+    def test_taskless_public_controller_install_revoke_cycle(self):
+        result = self.install(cli=True)
+        self.assertEqual(result.get("status"), "OFFLINE_QUALIFICATION_INSTALLED_FOR_ONE_USE_LIVE_PILOT", result)
+        self.assertEqual(result["cli_exit"], 0)
+        self.assert_installed()
+        self.args.expected_epoch = 1
+        result = self.human("revoke-qualification", cli=True)
+        self.assertEqual(result.get("status"), "QUALIFICATION_REVOKED", result)
+        self.assertEqual(result["cli_exit"], 0)
+        self.assertIn(b"Type exactly REVOKE-QUALIFICATION", self.last_human_output)
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            self.assertEqual(self.grant.qualification_selector(db)["state"], "revoked")
+            self.assertEqual(db.execute("SELECT count(*) FROM standing_grants").fetchone()[0], 0)
+        finally:
+            db.close()
+
+    def test_other_actions_still_require_each_task_fence(self):
+        fences = {"task-id": "fixture", "expected-revision": "1", "expected-worker-id": "a" * 32,
+                  "expected-session-id": "fixture-session", "expected-generation": "1"}
+        for action in ("activate", "revoke", "issue-create", "assignees-add", "settle", "complete"):
+            for omitted in fences:
+                with self.subTest(action=action, omitted=omitted):
+                    argv = ["fixture", action, "--authority-root", self.args.authority_root,
+                            "--invoking-root", self.args.invoking_root, "--implementation-head", self.args.implementation_head,
+                            "--expected-epoch", "0"]
+                    argv.extend(part for key, value in fences.items() if key != omitted for part in ("--" + key, value))
+                    if action == "activate":
+                        argv.extend(["--proposal", self.qualification_proposal])
+                    if action == "settle":
+                        argv.extend(["--operation-id", "b" * 32])
+                    with mock.patch.object(sys, "argv", argv), self.assertRaisesRegex(self.adapter.Refusal, "INVALID_ARGUMENTS"):
+                        dispatch.arguments(controller=action in {"activate", "revoke"})
 
     def test_unclean_code_and_changed_artifact_do_not_initialize(self):
         with mock.patch.object(self.adapter, "implementation_head", side_effect=RuntimeError("IMPLEMENTATION_HEAD_CHANGED")):
@@ -1440,6 +1494,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn(identity.encode(), self.last_human_output)
         finally:
             db.close()
+
         self.assertIn("status", self.install())
         self.assert_installed(new_store=False)
         db = self.parts[2].open_store(self.monitor)
@@ -1447,6 +1502,36 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT store_id FROM meta").fetchone()[0], identity)
         finally:
             db.close()
+
+    def test_initial_v1_commit_failure_retains_partial_file_without_repair(self):
+        journal = self.parts[2]
+        class InitialCommitFailure(journal.StoreConnection):
+            def execute(self, sql, parameters=()):
+                result = super().execute(sql, parameters)
+                if sql == "INSERT INTO meta VALUES (1, ?)":
+                    self.set_authorizer(lambda operation, first, *_: sqlite3.SQLITE_DENY
+                        if operation == sqlite3.SQLITE_TRANSACTION and first == "COMMIT" else sqlite3.SQLITE_OK)
+                return result
+        with mock.patch.object(journal, "StoreConnection", InitialCommitFailure):
+            result = self.install(cli=True)
+        self.assertEqual(result.get("status"), "UNVERIFIED", result)
+        self.assertNotEqual(result["cli_exit"], 0)
+        self.assertTrue(self.database.is_file())
+        before = (self.database.stat().st_ino, self.database.read_bytes())
+        db = sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True)
+        try:
+            self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [])
+        finally:
+            db.close()
+        # With injection removed, neither runtime nor another install repairs
+        # the retained partial file or collects fresh approval for overwriting it.
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with self.assertRaises(journal.JournalError), store.locked():
+            self.fail("runtime repaired partial store")
+        result = self.install(cli=True)
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertNotIn(b"Type exactly", self.last_human_output)
+        self.assertEqual((self.database.stat().st_ino, self.database.read_bytes()), before)
 
     def test_existing_commit_failure_and_decline_preserve_history_bytes(self):
         self.monitor.mkdir(mode=0o700)

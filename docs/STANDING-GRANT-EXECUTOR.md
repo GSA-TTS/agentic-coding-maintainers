@@ -31,9 +31,9 @@ It performs no network writes. The manifest has exactly:
 On a dedicated Linux controller, initialize the ordinary core `.orchestrator`
 layout first and place reviewed artifacts below that authority root. No legacy
 claim, monitor poll, manual SQL header change or separate store-init approval is
-needed. Qualification installation requires the authority/invoking roots and
-implementation head, but no admitted task; task/worker arguments apply to grant
-activation and runtime actions.
+needed. Qualification installation and revocation require the authority/invoking
+roots and implementation head, but no admitted task; task/worker arguments apply
+to grant activation, grant revocation and runtime actions.
 
 After checking artifacts and clean code, installation may create only an empty
 owner-only `monitor/` directory under the coordinator before prompting. It retains
@@ -51,6 +51,9 @@ updates the version and installs the qualification and receipt. Existing row byt
 and store IDs survive migration, including legacy claims and UNKNOWN evidence.
 Migration and qualification rollback together on transaction failure; the already
 initialized empty v1 journal is retained for a fresh human installation attempt.
+If initialization itself fails before the v1 commit, its partial database file is
+retained and subsequent installation/runtime refuse it as unverified. It requires
+human recovery; neither path silently repairs or overwrites that file.
 Nothing automatically deletes a journal, sidecar, artifact or core task as cleanup.
 A durability failure after commit reports failure but may retain the installed
 selection; inspect the selector/epoch before any retry. Installation never creates
@@ -114,9 +117,11 @@ at a time; concurrent active objective grants are unsupported.
 
 Run installed, clean, reviewed code with `python3 -I -B`. Both entry points require
 the canonical `--authority-root`, identical `--invoking-root`, and exact
-`--implementation-head`. They also require the admitted `--task-id`,
-`--expected-revision`, `--expected-worker-id`, `--expected-session-id`, and
-`--expected-generation`. `--expected-epoch` is a mismatch guard, not a grant selector.
+`--implementation-head`. Controller `activate`/`revoke` and all runtime actions
+also require the admitted `--task-id`, `--expected-revision`, `--expected-worker-id`,
+`--expected-session-id`, and `--expected-generation`. Controller
+`install-qualification`/`revoke-qualification` require no task or worker arguments.
+`--expected-epoch` is a mismatch guard, not a grant selector.
 
 `scripts/control-standing-grant.py activate --proposal <private-file>` takes a
 canonical JSON proposal with exactly these fields:

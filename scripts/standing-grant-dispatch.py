@@ -410,7 +410,8 @@ def arguments(*, controller=False):
         parser.add_argument("--" + key, action=Once)
     args = parser.parse_args()
     for key in ("task_id", "expected_revision", "expected_worker_id", "expected_session_id", "expected_generation"):
-        adapter.require(controller and args.action == "install-qualification" or getattr(args, key) is not None,
+        adapter.require(controller and args.action in {"install-qualification", "revoke-qualification"}
+                        or getattr(args, key) is not None,
                         "INVALID_ARGUMENTS")
     for key, pattern in (("task_id", r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}"),
                          ("expected_session_id", r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"),
