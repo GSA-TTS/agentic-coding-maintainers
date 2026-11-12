@@ -12,9 +12,11 @@ import re
 import select
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -1269,6 +1271,200 @@ class ExecutorTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GH_TOKEN": "synthetic"}, clear=True):
             self.assertEqual(dispatch.recover(self.args)["status"], "ISSUE_CREATED_OBSERVED")
         self.assertEqual(self.trace.read_text(), "CREATE\n")
+
+
+class BootstrapTests(unittest.TestCase):
+    """Fresh core layout, no legacy intent fixture and a real controlling TTY."""
+
+    human = ExecutorTests.human
+    make_qualification_artifacts = ExecutorTests.make_qualification_artifacts
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.adapter, self.publisher, self.grant = dispatch.modules()
+        self.parts = self.adapter.modules()
+        with mock.patch.dict(os.environ, {"ORCHESTRATOR_TEST_MODE": "1",
+                             "ORCHESTRATOR_STATE_DIR": str(root / ".orchestrator")}, clear=True):
+            state = self.parts[1].state_root()
+        self.local = SimpleNamespace(root=root, state=state)
+        self.monitor = state / "monitor"
+        self.database = self.monitor / "history.sqlite3"
+        # Exercise the actual public parser without invented task/worker IDs.
+        with mock.patch.object(sys, "argv", ["control-standing-grant.py", "install-qualification",
+                "--authority-root", str(root), "--invoking-root", str(root),
+                "--implementation-head", "6" * 40, "--expected-epoch", "0",
+                "--proposal", str(root / "qualification-proposal.json")]):
+            self.args = dispatch.arguments(controller=True)
+        self.definition = {"version": 1, "grant_id": "a" * 32, "objective": "synthetic", "work_item": "bootstrap",
+            "repository": self.grant.REPOSITORY, "repository_id": self.grant.REPOSITORY_ID,
+            "repository_node_id": "R_synthetic", "publisher": {"id": 11, "node_id": "U_synthetic", "login": "fixture-publisher"},
+            "policy_sha256": dispatch.policy_digest(), "implementation_head": self.args.implementation_head,
+            "lifetime_seconds": 86400, "title": "Synthetic standing-grant tracking fixture: bootstrap",
+            "body": "Synthetic fixture for the synthetic objective. No production change requested.",
+            "qualification": {"endpoint_evidence_sha256": "c" * 64},
+            "workflow_effects": {"events": ["issues.opened", "issues.assigned"],
+                "decision": "AUTHORIZE_REVIEWED_SYNTHETIC_ISSUE_EVENT_WORKFLOWS_AND_COST", "evidence_sha256": "d" * 64}}
+        self.make_qualification_artifacts()
+        self.args.proposal = self.qualification_proposal
+        for patcher in (mock.patch.object(dispatch, "modules", return_value=(self.adapter, self.publisher, self.grant)),
+                        mock.patch.object(self.adapter, "modules", return_value=self.parts),
+                        mock.patch.object(self.adapter, "implementation_head", side_effect=lambda head: head),
+                        mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("bootstrap network"))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def install(self, **options):
+        return self.human("install-qualification", **options)
+
+    def assert_installed(self, new_store=True):
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            self.assertEqual(db.execute("SELECT version FROM meta").fetchone()[0], 7)
+            record = self.grant.qualification_get(db, self.manifest["qualification_id"])
+            self.assertEqual(record["installation"]["new_store"], new_store)
+            self.assertIn(record["store_id"].encode(), self.last_human_output)
+            self.assertEqual(record["installation"]["directories"], [[path.stat().st_dev, path.stat().st_ino]
+                for path in (self.local.root, self.local.state, self.local.state / "locks", self.monitor)])
+            for table in ("standing_grants", "standing_selector", "claim_intents", "assignment_requests"):
+                self.assertEqual(db.execute("SELECT count(*) FROM " + table).fetchone()[0], 0)
+            with self.assertRaisesRegex(self.grant.Invalid, "NO_ACTIVE_GRANT"):
+                self.grant.selector(db)
+        finally:
+            db.close()
+
+    def test_fresh_core_real_tty_install_and_no_preapproval_authority(self):
+        self.assertFalse(self.monitor.exists())
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with self.assertRaises(FileNotFoundError), store.locked():
+            self.fail("runtime prepared directories")
+        self.assertFalse(self.monitor.exists())
+        def before():
+            self.assertTrue(self.monitor.is_dir())
+            self.assertFalse(self.database.exists())
+        result = self.install(before_answer=before)
+        self.assertEqual(result.get("status"), "OFFLINE_QUALIFICATION_INSTALLED_FOR_ONE_USE_LIVE_PILOT", result)
+        self.assert_installed()
+
+    def test_missing_file_in_existing_monitor_and_runtime_refusal(self):
+        self.monitor.mkdir(mode=0o700)
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with self.assertRaisesRegex(self.adapter.Refusal, "EXISTING_JOURNAL_REQUIRED"), store.locked():
+            self.fail("runtime created store")
+        self.assertFalse(self.database.exists())
+        self.assertIn("status", self.install())
+        self.assert_installed()
+
+    def test_decline_preserves_artifacts_without_creating_journal(self):
+        before = {path: path.read_bytes() for path in self.evidence_dir.iterdir()}
+        self.assertIn("error", self.install(approve=False))
+        self.assertFalse(self.database.exists())
+        self.assertEqual({path: path.read_bytes() for path in self.evidence_dir.iterdir()}, before)
+
+    def test_no_controlling_tty_leaves_journal_absent(self):
+        child = os.fork()
+        if child == 0:
+            try:
+                os.setsid()
+                controller.install_qualification(self.args, dispatch)
+                os._exit(1)
+            except OSError:
+                os._exit(0)
+            except Exception:
+                os._exit(2)
+        self.assertEqual(os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]), 0)
+        self.assertFalse(self.database.exists())
+
+    def test_directory_replacement_during_prompt_refuses(self):
+        def replace():
+            self.monitor.rename(self.local.state / "parked-monitor")
+            self.monitor.mkdir(mode=0o700)
+        self.assertEqual(self.install(before_answer=replace).get("reason"), "STORE_IDENTITY_CHANGED")
+        self.assertFalse(self.database.exists())
+
+    def test_concurrent_store_creation_preserves_human_state(self):
+        def create():
+            self.parts[2].open_store(self.monitor, writable=True).close()
+            self.concurrent_bytes = self.database.read_bytes()
+        self.assertEqual(self.install(before_answer=create).get("reason"), "STORE_IDENTITY_CHANGED")
+        self.assertEqual(self.database.read_bytes(), self.concurrent_bytes)
+
+    def test_orphan_sidecar_refuses_bootstrap(self):
+        self.monitor.mkdir(mode=0o700)
+        sidecar = self.monitor / "history.sqlite3-journal"
+        sidecar.write_bytes(b"human recovery state")
+        sidecar.chmod(0o600)
+        self.assertEqual(self.install().get("reason"), "JOURNAL_RECOVERY_REQUIRED")
+        self.assertNotIn(b"Type exactly", self.last_human_output)
+        self.assertFalse(self.database.exists())
+        self.assertEqual(sidecar.read_bytes(), b"human recovery state")
+
+    def test_unclean_code_and_changed_artifact_do_not_initialize(self):
+        with mock.patch.object(self.adapter, "implementation_head", side_effect=RuntimeError("IMPLEMENTATION_HEAD_CHANGED")):
+            self.assertEqual(self.install().get("reason"), "IMPLEMENTATION_HEAD_CHANGED")
+        self.assertFalse(self.database.exists())
+        def alter():
+            path = self.evidence_dir / "transcript.txt"
+            path.write_bytes(b"x" * path.stat().st_size)
+        self.assertEqual(self.install(before_answer=alter).get("reason"), "QUALIFICATION_ARTIFACT_CHANGED")
+        self.assertFalse(self.database.exists())
+
+    def test_installed_qualification_is_bound_to_physical_directories(self):
+        self.assertIn("status", self.install())
+        moved = self.local.state / "retained-monitor"
+        self.monitor.rename(moved)
+        self.monitor.mkdir(mode=0o700)
+        shutil.copyfile(moved / "history.sqlite3", self.database)
+        self.database.chmod(0o600)
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with store.locked() as db:
+            with self.assertRaisesRegex(self.grant.Invalid, "STORE_IDENTITY_CHANGED"):
+                dispatch.require_endpoint_qualification(store, db, self.grant, self.definition)
+
+    def fail_commit(self):
+        original = self.grant.put_qualification_selector
+        def denied(db, value):
+            original(db, value)
+            db.set_authorizer(lambda operation, first, *_: sqlite3.SQLITE_DENY
+                if operation == sqlite3.SQLITE_TRANSACTION and first == "COMMIT" else sqlite3.SQLITE_OK)
+        return mock.patch.object(self.grant, "put_qualification_selector", side_effect=denied)
+
+    def test_fresh_commit_failure_retains_empty_v1_for_human_retry(self):
+        with self.fail_commit():
+            self.assertIn("error", self.install())
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            identity = db.execute("SELECT store_id FROM meta").fetchone()[0]
+            self.assertEqual(db.execute("SELECT version FROM meta").fetchone()[0], 1)
+            self.assertIn(identity.encode(), self.last_human_output)
+        finally:
+            db.close()
+        self.assertIn("status", self.install())
+        self.assert_installed(new_store=False)
+        db = self.parts[2].open_store(self.monitor)
+        try:
+            self.assertEqual(db.execute("SELECT store_id FROM meta").fetchone()[0], identity)
+        finally:
+            db.close()
+
+    def test_existing_commit_failure_and_decline_preserve_history_bytes(self):
+        self.monitor.mkdir(mode=0o700)
+        db = self.parts[2].open_store(self.monitor, writable=True)
+        self.parts[2].begin(db, "bootstrap-history", "a" * 64, "monitor", ["repo:fixture/project"], "start")
+        db.close()
+        before = self.database.read_bytes()
+        self.assertIn("error", self.install(approve=False))
+        self.assertEqual(self.database.read_bytes(), before)
+        with self.fail_commit():
+            self.assertIn("error", self.install())
+        self.assertEqual(self.database.read_bytes(), before)
+
+    def test_postcommit_durability_failure_retains_selected_qualification(self):
+        with mock.patch.object(self.parts[4], "durable", side_effect=OSError("fixture durability failure")):
+            self.assertIn("error", self.install())
+        self.assert_installed()
+        self.assertEqual(self.install().get("reason"), "QUALIFICATION_EPOCH_CHANGED")
 
 
 if __name__ == "__main__":

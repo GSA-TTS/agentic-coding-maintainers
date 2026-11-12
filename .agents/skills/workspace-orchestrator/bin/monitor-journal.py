@@ -65,9 +65,12 @@ def check_path(root: Path) -> Path:
     return path
 
 
-def open_store(root: Path, writable: bool = False) -> sqlite3.Connection:
+def open_store(root: Path, writable: bool = False, *, initial_store_id: str | None = None) -> sqlite3.Connection:
     path = check_path(root)
     existed = path.exists()
+    if initial_store_id is not None and (not writable or existed
+            or re.fullmatch(r"[0-9a-f]{32}", initial_store_id) is None):
+        raise JournalError("initial identity requires a new writable store")
     if not existed and not writable:
         raise JournalError("no durable observation history")
     if not existed:
@@ -120,7 +123,7 @@ def open_store(root: Path, writable: bool = False) -> sqlite3.Connection:
                       event_id INTEGER NOT NULL REFERENCES events(id), first_seq INTEGER NOT NULL REFERENCES polls(seq),
                       last_seen_seq INTEGER NOT NULL REFERENCES polls(seq), PRIMARY KEY(repo,number));
                 """)
-                connection.execute("INSERT INTO meta VALUES (1, ?)", (uuid.uuid4().hex,))
+                connection.execute("INSERT INTO meta VALUES (1, ?)", (initial_store_id or uuid.uuid4().hex,))
             fd = os.open(root, os.O_RDONLY)
             try:
                 os.fsync(fd)

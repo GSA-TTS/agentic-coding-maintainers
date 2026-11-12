@@ -79,6 +79,19 @@ retaining exact task, lease and receipt guards. Current copied-core fixtures cop
 the entire bin directory, including runtime-observation; pinned legacy sources
 remain byte-identical and independent of that later extraction.
 
+Fresh-controller bootstrap adaptation on canonical base
+`36e98f74f698b297c604eaea16f84a97d8f60b49` (2026-11-12) permits the human
+qualification installer to initialize a missing fixed-path journal after one real
+TTY decision bound to a prospective store ID and physical controller directories.
+Only an empty private monitor directory may precede approval. The additive v1–v7
+migration retains existing row bytes; failed installation retains initialized v1
+state for human retry rather than deleting history. Runtime cannot initialize a
+store or activate a grant. Legacy v7 qualification receipts remain readable; new
+receipts also bind physical installation identity. Sandbox fixtures cover fresh
+core setup, no-TTY/decline, replacement, concurrent creation, commit refusal and
+legacy v1–v4 migration; existing real v6 UNKNOWN fixtures remain in place.
+Execution and strict validation are deferred to the primary isolated sandbox.
+
 ### Scoped autonomy policy contract
 
 Issue #66 policy slice on canonical base

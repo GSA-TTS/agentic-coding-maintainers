@@ -9,6 +9,7 @@ import os
 import stat
 import sys
 import time
+import uuid
 from pathlib import Path
 
 REVOKE_WAIT_SECONDS = 35
@@ -106,7 +107,7 @@ def verify_artifacts(store, grant, manifest, expected_report=None):
 
 
 def existing_qualification(db, grant):
-    if db.execute("SELECT version FROM meta").fetchone()[0] != 7:
+    if db is None or db.execute("SELECT version FROM meta").fetchone()[0] != 7:
         return None
     if db.execute("SELECT count(*) FROM standing_qualification_selector").fetchone()[0] == 0:
         return None
@@ -115,7 +116,7 @@ def existing_qualification(db, grant):
 
 def qualification_idle(store, db, grant):
     """Qualification installation/revocation cannot race a selected live grant."""
-    if db.execute("SELECT version FROM meta").fetchone()[0] == 7:
+    if db is not None and db.execute("SELECT version FROM meta").fetchone()[0] == 7:
         if db.execute("SELECT count(*) FROM standing_selector").fetchone()[0]:
             selected = grant.selector(db)
             grant.require(selected["state"] == "revoked", "PRIOR_GRANT_NOT_REVOKED")
@@ -135,19 +136,28 @@ def install_qualification(args, dispatch):
                   and manifest["scope"]["policy_sha256"] == dispatch.policy_digest(), "QUALIFICATION_BINDING_CHANGED")
     report = verify_artifacts(store, grant, manifest)
     installed = grant.clock()
-    with store.locked() as db:
-        store.journal.validate_store(db)
+    with store.qualification_locked() as db:
+        if db is not None:
+            store.journal.validate_store(db)
         qualification_idle(store, db, grant)
         previous = existing_qualification(db, grant)
         grant.require(args.expected_epoch == (previous["epoch"] if previous else 0), "QUALIFICATION_EPOCH_CHANGED")
         grant.require(previous is None or previous["state"] == "revoked", "QUALIFICATION_NOT_REVOKED")
         binding = {"action": "install-qualification", "manifest": manifest, "report": report,
-                   "epoch": args.expected_epoch + 1, "installed": installed,
-                   "store_id": db.execute("SELECT store_id FROM meta").fetchone()[0]}
+                    "epoch": args.expected_epoch + 1, "installed": installed,
+                    "store_id": db.execute("SELECT store_id FROM meta").fetchone()[0] if db is not None else uuid.uuid4().hex,
+                    "installation": {"new_store": db is None, **store.physical_binding()}}
     decision = GrantDecision(publisher, binding, grant)
     adapter.implementation_head(args.implementation_head)
     verify_artifacts(store, grant, manifest, expected_report=report)
-    with store.locked() as db:
+    # Validate the actual TTY decision before creating even an empty v1 store.
+    # Initialization is retained on later failure; never unlink human history.
+    decision.validate(publisher, binding)
+    with store.qualification_locked(initial_store_id=binding["store_id"] if binding["installation"]["new_store"] else None) as db:
+        grant.require(db is not None and db.execute("SELECT store_id FROM meta").fetchone()[0] == binding["store_id"],
+                      "STORE_IDENTITY_CHANGED")
+        grant.require(store.physical_binding() == {key: value for key, value in binding["installation"].items() if key != "new_store"},
+                      "STORE_IDENTITY_CHANGED")
         grant.require(existing_qualification(db, grant) == previous, "QUALIFICATION_EPOCH_CHANGED")
         qualification_idle(store, db, grant)
         verify_artifacts(store, grant, manifest, expected_report=report)
