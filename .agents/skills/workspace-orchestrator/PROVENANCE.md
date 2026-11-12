@@ -92,6 +92,19 @@ core setup, no-TTY/decline, replacement, concurrent creation, commit refusal and
 legacy v1–v4 migration; existing real v6 UNKNOWN fixtures remain in place.
 Execution and strict validation are deferred to the primary isolated sandbox.
 
+Fixture CI optimization after `b1b226f` extends the foreground test launcher's
+process-local, actual-source-byte compile reuse to the explicitly allowlisted
+review-evidence, review-collect, repair-proposal and repair-apply child CLIs.
+Each still runs once through the public dispatcher in a fresh isolated Python
+process; each import reads source and executes a fresh module namespace. The
+foreground exception observer and state wrapper retain their existing routes.
+No module instances, file metadata, Git facts, state or results are cached.
+Launcher fixtures cover exact paths/flags/argv, exit/output equivalence and loader
+restoration; existing same-length-edit, namespace and observer fixtures remain.
+The bounded benchmark reports separate domain-child profiles and verifies actual
+test counts. Performance and full-suite validation require the primary sandbox;
+production code, CI configuration and its timeout are unchanged.
+
 ### Scoped autonomy policy contract
 
 Issue #66 policy slice on canonical base

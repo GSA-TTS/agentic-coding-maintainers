@@ -2,7 +2,7 @@
 """Bounded offline fixture timings/profile; run only in the approved sandbox.
 
 Three fresh processes per case, alternating cases. A separate profile pass
-instruments the parent and the same foreground diagnostic interpreter invocations,
+instruments the parent and the same foreground/domain fixture interpreter invocations,
 never retries a request. Other CLI subprocesses are counted but not profiled.
 No production code, state, Git facts or assertion results are cached.
 """
@@ -69,11 +69,12 @@ def profile_case(fixture, test, case):
     original = subprocess.run
     commands = Counter()
     with tempfile.TemporaryDirectory(prefix="foreground-profile-") as temporary:
-        directory, profiles = Path(temporary), []
+        directory, profiles = Path(temporary), {}
 
         def run(args, *positional, **kwargs):
             commands[args[2] if len(args) > 2 and args[:2] == ["bash", str(fixture.ROOT / "run.sh")] else args[0]] += 1
-            if len(args) > 2 and args[:3] == ["bash", str(fixture.ROOT / "run.sh"), "foreground-delivery"]:
+            if (len(args) > 2 and args[:2] == ["bash", str(fixture.ROOT / "run.sh")]
+                    and args[2] in {"foreground-delivery", *fixture.diagnostic.COMPILE_ONLY_TARGETS}):
                 # cli() just wrote this private fixture shim. Only instrument its
                 # interpreter, keeping run.sh, isolation flags and argv intact.
                 shim = Path(kwargs["env"]["PATH"].split(os.pathsep)[0]) / "python3"
@@ -82,7 +83,7 @@ def profile_case(fixture, test, case):
                 profile = directory / (str(len(profiles)) + ".prof")
                 shim.write_text(source.replace(" -I -B ", " -I -B " + shlex.quote(__file__)
                                 + " --profile-cli " + shlex.quote(str(profile)) + " ", 1))
-                profiles.append(profile)
+                profiles[profile] = args[2]
             return original(args, *positional, **kwargs)
 
         parent = cProfile.Profile()
@@ -95,8 +96,12 @@ def profile_case(fixture, test, case):
         if not measured_pass(report) or not profiles:
             print(json.dumps({"case": case, **report, "profile_cli_count": len(profiles)}), flush=True)
             raise SystemExit("profile fixture failed or no CLI profiles captured")
-        for scope, stats in (("parent", pstats.Stats(parent)),
-                             ("foreground_children", pstats.Stats(*(str(path) for path in profiles)))):
+        scopes = [("parent", pstats.Stats(parent))]
+        for command in sorted(set(profiles.values())):
+            paths = [str(path) for path, name in profiles.items() if name == command]
+            scope = "foreground_children" if command == "foreground-delivery" else command + "_children"
+            scopes.append((scope, pstats.Stats(*paths)))
+        for scope, stats in scopes:
             rows = []
             hottest = set(sorted(stats.stats, key=lambda key: -stats.stats[key][2])[:20])
             for (filename, line, function), (primitive, calls, own, cumulative, _) in stats.stats.items():
@@ -106,7 +111,8 @@ def profile_case(fixture, test, case):
                     rows.append({"file": Path(filename).name, "line": line, "function": function,
                                  "calls": calls, "self_seconds": round(own, 6), "cumulative_seconds": round(cumulative, 6)})
             print(json.dumps({"scope": scope, "case": case, **report,
-                              "commands": dict(commands), "profile_cli_count": len(profiles), "total_calls": stats.total_calls,
+                              "commands": dict(commands), "profile_cli_count": len(profiles),
+                              "profile_commands": dict(Counter(profiles.values())), "total_calls": stats.total_calls,
                               "linecache_calls": sum(value[1] for key, value in stats.stats.items()
                                                      if Path(key[0]).name == "linecache.py"),
                               "total_seconds": round(stats.total_tt, 6), "rows": sorted(rows, key=lambda r: -r["self_seconds"])}, sort_keys=True, indent=2), flush=True)
@@ -128,7 +134,7 @@ def main():
             profiler.dump_stats(output)
         return
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", action="store_true", help="separate parent/foreground-child profiles instead of timings")
+    parser.add_argument("--profile", action="store_true", help="separate parent/foreground/domain-child profiles instead of timings")
     parser.add_argument("--case", action="append", help="exact test method (repeat for interleaved cases)")
     parser.add_argument("--time-case", help=argparse.SUPPRESS)
     args = parser.parse_args()

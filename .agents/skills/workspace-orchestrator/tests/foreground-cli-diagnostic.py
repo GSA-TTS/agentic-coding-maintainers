@@ -15,6 +15,8 @@ from pathlib import Path
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
 TARGET = BIN / "foreground-delivery.py"
+COMPILE_ONLY_TARGETS = {name: str(BIN / (name + ".py")) for name in
+                        ("review-evidence", "review-collect", "repair-proposal", "repair-apply")}
 KINDS = {"Unverified", "UnknownError", "BusyError", "InputError", "ValueError",
          "TypeError", "KeyError", "OSError", "FileNotFoundError", "PermissionError",
           "TimeoutExpired", "JSONDecodeError", "AssertionError"}
@@ -118,7 +120,23 @@ def exception_observer(capture):
         sys.settrace(previous)
 
 
+def compile_only(argv):
+    """Run one allowlisted domain CLI with compile reuse and no observer."""
+    if len(argv) < 3 or argv[:2] != ["-I", "-B"] or argv[2] not in COMPILE_ONLY_TARGETS.values():
+        raise SystemExit("compile-only launcher requires an allowlisted fixture CLI and exact -I -B flags")
+    previous = sys.argv
+    sys.argv = argv[2:]
+    try:
+        with compiled_installed_sources():
+            # Let SystemExit (including None/string codes) propagate unchanged.
+            runpy.run_path(sys.argv[0], run_name="__main__")
+    finally:
+        sys.argv = previous
+
+
 def main():
+    if sys.argv[1:2] == ["--compile-only"]:
+        return compile_only(sys.argv[2:])
     expected = int(sys.argv[1])
     # The public shell entrypoint supplied these exact isolated Python arguments.
     if sys.argv[2:5] != ["-I", "-B", str(TARGET)]:
