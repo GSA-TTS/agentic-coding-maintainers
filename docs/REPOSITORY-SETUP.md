@@ -78,6 +78,19 @@ are not a substitute for checking live settings.
 - Verify the first hosted CI run downloads the pinned Gitleaks archive, checks
   its SHA-256 and completes the repository scan.
 
+CI runs the foreground delivery and handoff suites in one 15-minute job and
+the remaining tests, syntax/inventory checks, core quality checks and Gitleaks
+in a second 15-minute job. Each has its own checkout and pinned Python 3.12.15.
+The required `Repository checks` job always evaluates both results without a
+checkout and succeeds only when both are exactly `success`; failed, skipped,
+cancelled or missing results cannot pass. Keep the existing required-check name
+and ruleset. Measure both jobs' actual hosted runtimes after changes.
+
+Local `make check` and `make strict-check` still run all suites, with foreground
+tests exactly once. `make test-foreground` and `make check-rest` are the explicit
+CI partitions; `check-rest` includes the remaining tests followed by the same
+`check-static` syntax/inventory checks used after the complete local suite.
+
 ## Retirement
 
 Archive the repository by default. Transfer or deletion must use applicable

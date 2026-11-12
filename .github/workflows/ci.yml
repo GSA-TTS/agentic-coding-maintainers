@@ -14,10 +14,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: Repository checks
+  foreground:
+    name: Foreground tests
     runs-on: ubuntu-latest
-    # The expanded suite reached PASS at the old 10m job deadline, before scanners.
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pinned Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: 3.12.15
+      - name: Run foreground tests
+        run: make test-foreground
+
+  check:
+    name: Remaining repository checks
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Check out repository
@@ -34,8 +49,8 @@ jobs:
           set -euo pipefail
           tools/install-ci-tools.sh "$RUNNER_TEMP/quality-tools"
           echo "$RUNNER_TEMP/quality-tools/bin" >> "$GITHUB_PATH"
-      - name: Run checks
-        run: make check
+      - name: Run remaining tests and static checks
+        run: make check-rest
       - name: Run core quality checks
         run: scripts/core-quality-check.sh
       - name: Install pinned Gitleaks
@@ -54,3 +69,22 @@ jobs:
       - name: Scan for secrets
         run: |
           "$RUNNER_TEMP/gitleaks" dir . --config .gitleaks.toml --redact --no-banner
+
+  repository-checks:
+    name: Repository checks
+    needs: [foreground, check]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require both check jobs to succeed
+        env:
+          FOREGROUND_RESULT: ${{ needs.foreground.result }}
+          CHECK_RESULT: ${{ needs.check.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${FOREGROUND_RESULT:-}" != success || "${CHECK_RESULT:-}" != success ]]; then
+            echo 'Repository checks require both jobs to succeed.' >&2
+            exit 1
+          fi

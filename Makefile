@@ -1,9 +1,19 @@
 SHELL := /bin/bash
 
-.PHONY: test check strict-check review-workspace-preflight-test qualify-opencode-profile-test qualify-opencode-profile qualify-opencode-tools-test qualify-opencode-tools
+.PHONY: test test-foreground test-rest check check-rest check-static strict-check review-workspace-preflight-test qualify-opencode-profile-test qualify-opencode-profile qualify-opencode-tools-test qualify-opencode-tools
 
-test:
+# Hosted partitions have separate checkouts; local suites share one checkout.
+.NOTPARALLEL: test
+
+test: test-foreground test-rest
+
+test-foreground:
+	python3 -I -B .agents/skills/workspace-orchestrator/tests/foreground-handoff-test.py
+	python3 -I -B .agents/skills/workspace-orchestrator/tests/foreground-delivery-test.py
+
+test-rest:
 	python3 -I -B tests/ci-tool-installer-test.py
+	python3 -I -B tests/ci-partition-test.py
 	python3 -I -B tests/cooperative-session-binding-test.py
 	python3 -I -B tests/release-config-test.py
 	python3 -I -B tests/shared-authority-admission-test.py
@@ -15,8 +25,6 @@ test:
 	python3 -I -B tests/scoped-autonomy-contract-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-reservation-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-handoff-test.py
-	python3 -I -B .agents/skills/workspace-orchestrator/tests/foreground-handoff-test.py
-	python3 -I -B .agents/skills/workspace-orchestrator/tests/foreground-delivery-test.py
 	sh -n scripts/review-workspace-preflight.sh
 	python3 -I -B tests/review-workspace-preflight-test.py
 	python3 -I -B tests/qualify-opencode-profile-test.py
@@ -90,6 +98,13 @@ qualify-opencode-tools:
 	python3 -I -B scripts/qualify-opencode-tools.py $(QUALIFY_TOOLS_ARGS)
 
 check: test
+	@$(MAKE) --no-print-directory check-static
+
+check-rest: test-rest
+	@$(MAKE) --no-print-directory check-static
+
+# Run after the selected tests, including when the caller uses parallel make.
+check-static:
 	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
 	@set -euo pipefail; while IFS= read -r file; do bash -n "$$file"; done < <(git ls-files --cached --others --exclude-standard -- '*.sh' '.agents/skills/*/tests/fixtures/*/gh')
 	@PYTHONDONTWRITEBYTECODE=1 python3 -c 'import ast, pathlib, subprocess; files = [pathlib.Path(p) for p in subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py"], text=True).splitlines()]; [compile(ast.parse(p.read_text(encoding="utf-8"), filename=str(p)), str(p), "exec") for p in files]; print(f"python syntax: PASS ({len(files)} files)")'
