@@ -98,6 +98,8 @@ python3 -I -B tests/record-claim-observation-test.py
 bash tests/operating-surface-test.sh
 """.splitlines()
 PARTITION_TEST = "python3 -I -B tests/ci-partition-test.py"
+SYNTAX_TEST = "python3 -I -B tests/syntax-first-test.py"
+PREFLIGHT_SYNTAX = "sh -n scripts/review-workspace-preflight.sh"
 
 
 def job(name):
@@ -111,7 +113,7 @@ def job(name):
 class CIPartitionTests(unittest.TestCase):
     def dry_run(self, target):
         env = {key: value for key, value in os.environ.items()
-               if key not in {"MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES", "MAKEFILES"}}
+               if not key.startswith(("GIT_", "MAKE")) and key != "MFLAGS"}
         result = subprocess.run(
             ["make", "--no-print-directory", "-n", target], cwd=ROOT, env=env,
             check=True, capture_output=True, text=True, timeout=30,
@@ -120,21 +122,40 @@ class CIPartitionTests(unittest.TestCase):
 
     def test_original_test_commands_partition_exactly_once(self):
         self.assertIn("\n.NOTPARALLEL: test\n", MAKEFILE)
+        syntax = self.dry_run("check-syntax")
         foreground = self.dry_run("test-foreground")
         rest = self.dry_run("test-rest")
-        self.assertEqual(foreground, FOREGROUND)
-        expected_rest = [line for line in ORIGINAL_TESTS if line not in FOREGROUND]
+        self.assertEqual(foreground, syntax + FOREGROUND)
+        expected_rest = [line for line in ORIGINAL_TESTS
+                         if line not in FOREGROUND + [PREFLIGHT_SYNTAX]]
         expected_rest.insert(1, PARTITION_TEST)
-        self.assertEqual(rest, expected_rest)
-        self.assertEqual(Counter(foreground + rest), Counter(ORIGINAL_TESTS + [PARTITION_TEST]))
-        self.assertEqual(self.dry_run("test"), foreground + rest)
+        expected_rest.insert(2, SYNTAX_TEST)
+        self.assertEqual(rest, syntax + expected_rest)
+        self.assertEqual(Counter(FOREGROUND + expected_rest + [PREFLIGHT_SYNTAX]),
+                         Counter(ORIGINAL_TESTS + [PARTITION_TEST, SYNTAX_TEST]))
+        self.assertEqual(self.dry_run("test"), syntax + FOREGROUND + expected_rest)
+
+    def test_syntax_inventory_and_partition_prerequisites(self):
+        syntax = self.dry_run("check-syntax")
+        self.assertEqual(len(syntax), 4)
+        self.assertEqual(syntax[0], PREFLIGHT_SYNTAX)
+        for command, marker in zip(syntax[1:], (
+            'bash -n "$file"', "python syntax: PASS", "json syntax: PASS",
+        ), strict=True):
+            self.assertIn(marker, command)
+            self.assertIn("--cached", command)
+            self.assertIn("--others", command)
+            self.assertIn("--exclude-standard", command)
+        self.assertIn("'.agents/skills/*/tests/fixtures/*/gh'", syntax[1])
+        self.assertIn("compile(ast.parse(", syntax[2])
+        for target in ("test-foreground", "test-rest"):
+            self.assertIn(f"\n{target}: check-syntax\n", MAKEFILE)
 
     def test_check_composition_keeps_static_checks_after_tests(self):
         static = self.dry_run("check-static")
-        self.assertEqual(len(static), 8)
+        self.assertEqual(len(static), 5)
         for command, marker in zip(static, (
-            "CANONICAL-SHA256SUMS", 'bash -n "$file"', "python syntax: PASS",
-            "json syntax: PASS", "shellcheck: PASS", "scripts/forbidden-paths.sh --check",
+            "CANONICAL-SHA256SUMS", "shellcheck: PASS", "scripts/forbidden-paths.sh --check",
             "PRIVATE KEY", "repository checks: PASS",
         ), strict=True):
             self.assertIn(marker, command)

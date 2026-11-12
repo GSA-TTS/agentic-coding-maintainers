@@ -1,19 +1,20 @@
 SHELL := /bin/bash
 
-.PHONY: test test-foreground test-rest check check-rest check-static strict-check review-workspace-preflight-test qualify-opencode-profile-test qualify-opencode-profile qualify-opencode-tools-test qualify-opencode-tools
+.PHONY: test test-foreground test-rest check check-rest check-syntax check-static strict-check review-workspace-preflight-test qualify-opencode-profile-test qualify-opencode-profile qualify-opencode-tools-test qualify-opencode-tools
 
 # Hosted partitions have separate checkouts; local suites share one checkout.
 .NOTPARALLEL: test
 
 test: test-foreground test-rest
 
-test-foreground:
+test-foreground: check-syntax
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/foreground-handoff-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/foreground-delivery-test.py
 
-test-rest:
+test-rest: check-syntax
 	python3 -I -B tests/ci-tool-installer-test.py
 	python3 -I -B tests/ci-partition-test.py
+	python3 -I -B tests/syntax-first-test.py
 	python3 -I -B tests/cooperative-session-binding-test.py
 	python3 -I -B tests/release-config-test.py
 	python3 -I -B tests/shared-authority-admission-test.py
@@ -25,7 +26,6 @@ test-rest:
 	python3 -I -B tests/scoped-autonomy-contract-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-reservation-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-handoff-test.py
-	sh -n scripts/review-workspace-preflight.sh
 	python3 -I -B tests/review-workspace-preflight-test.py
 	python3 -I -B tests/qualify-opencode-profile-test.py
 	python3 -I -B tests/qualify-opencode-tools-test.py
@@ -103,12 +103,16 @@ check: test
 check-rest: test-rest
 	@$(MAKE) --no-print-directory check-static
 
-# Run after the selected tests, including when the caller uses parallel make.
-check-static:
-	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
+# Shared prerequisite: finish cheap syntax checks before either test partition.
+check-syntax:
+	sh -n scripts/review-workspace-preflight.sh
 	@set -euo pipefail; while IFS= read -r file; do bash -n "$$file"; done < <(git ls-files --cached --others --exclude-standard -- '*.sh' '.agents/skills/*/tests/fixtures/*/gh')
 	@PYTHONDONTWRITEBYTECODE=1 python3 -c 'import ast, pathlib, subprocess; files = [pathlib.Path(p) for p in subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py"], text=True).splitlines()]; [compile(ast.parse(p.read_text(encoding="utf-8"), filename=str(p)), str(p), "exec") for p in files]; print(f"python syntax: PASS ({len(files)} files)")'
 	@PYTHONDONTWRITEBYTECODE=1 python3 -c 'import json, pathlib, subprocess; files = [pathlib.Path(p) for p in subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.json"], text=True).splitlines()]; [json.loads(p.read_text(encoding="utf-8")) for p in files]; print(f"json syntax: PASS ({len(files)} files)")'
+
+# Run after the selected tests, including when the caller uses parallel make.
+check-static:
+	@set -euo pipefail; tmp="$$(mktemp)"; (cd .agents/skills/workspace-orchestrator && find . -type d -name __pycache__ -prune -o -type f ! -name CANONICAL-SHA256SUMS ! -name '*.pyc' ! -name '*.pyo' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$$tmp"; diff -u .agents/skills/workspace-orchestrator/CANONICAL-SHA256SUMS "$$tmp"; rm -f "$$tmp"
 	@if command -v shellcheck >/dev/null 2>&1; then git ls-files -z --cached --others --exclude-standard -- '*.sh' '.agents/skills/*/tests/fixtures/*/gh' | xargs -0 shellcheck && printf '%s\n' 'shellcheck: PASS'; else printf '%s\n' 'shellcheck: SKIP (not installed)'; fi
 	@bash scripts/forbidden-paths.sh --check
 	@set -euo pipefail; pattern='-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}'; while IFS= read -r file; do if grep -Iq . "$$file" && grep -En -- "$$pattern" "$$file"; then exit 1; fi; done < <(git ls-files --cached --others --exclude-standard)
