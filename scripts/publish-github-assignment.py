@@ -45,6 +45,18 @@ TRANSPORT_UNVERIFIED ISSUE_IDENTITY_OR_STATE_CHANGED ASSIGNEES_INCOMPLETE
 ACTOR_IDENTITY_CHANGED REPOSITORY_IDENTITY_CHANGED ASSIGNMENT_PERMISSION_UNPROVEN
 CREDENTIAL_SCOPE_UNPROVEN ASSIGNEE_CAPACITY_EXHAUSTED ASSIGNMENT_CAPACITY_EXHAUSTED
 ASSIGNMENT_IDENTIFIER_COLLISION
+CLOCK_PLATFORM_UNSUPPORTED CLOCK_UNVERIFIED CLOCK_CONTINUITY_LOST GRANT_NOT_FOUND
+NO_ACTIVE_GRANT GRANT_INACTIVE_OR_EPOCH_CHANGED GRANT_EXPIRED GRANT_EPOCH_CHANGED
+PRIOR_GRANT_NOT_REVOKED GRANT_IDENTIFIER_COLLISION ACTIVATED_ADMISSION_CHANGED
+STANDING_GRANT_UNVERIFIED LOGICAL_WORK_ALREADY_ATTEMPTED TARGET_PENDING
+DAILY_BUDGET_EXHAUSTED UNRESOLVED_BUDGET_EXHAUSTED REMOTE_DUPLICATE_OR_CORRELATION
+ISSUE_LIST_INCOMPLETE
+CREATE_ASSIGNEES_CHANGED
+ENDPOINT_QUALIFICATION_NOT_INSTALLED
+QUALIFICATION_MODE_UNSUPPORTED QUALIFICATION_CASE_FAILED QUALIFICATION_ARTIFACT_CHANGED
+QUALIFICATION_ARTIFACT_UNSAFE QUALIFICATION_REVOKED QUALIFICATION_BINDING_CHANGED
+QUALIFICATION_EFFECT_GATE_PENDING QUALIFICATION_EPOCH_CHANGED QUALIFICATION_NOT_REVOKED
+QUALIFICATION_IDENTIFIER_COLLISION
 """.split())
 
 
@@ -164,6 +176,11 @@ def terminal_settings(attributes):
 
 
 def collect_approval(binding):
+    validate_binding(binding)
+    return collect_terminal(binding, "APPROVE", "Assignment action (private binding; do not publish)")
+
+
+def collect_terminal(binding, verb, description):
     """Read one exact challenge from /dev/tty, outside all coordinator/DB locks.
 
     stdin/stdout, files, environment variables and caller booleans cannot approve.
@@ -171,7 +188,9 @@ def collect_approval(binding):
     before displaying the challenge. Every displayed input is JSON-escaped, avoiding
     terminal control injection from private metadata. Fixtures must use a real PTY.
     """
-    validate_binding(binding)
+    require(verb in {"APPROVE", "ACTIVATE", "REVOKE", "INSTALL-QUALIFICATION", "REVOKE-QUALIFICATION"}
+            and len(canonical(binding)) <= MAX_DISPLAY_BYTES,
+            "APPROVAL_DISPLAY_BOUND")
     # Snapshot before interaction: mutation of the caller's dict cannot rebind it.
     binding = json.loads(canonical(binding))
     fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -183,10 +202,10 @@ def collect_approval(binding):
         termios.tcflush(fd, termios.TCIFLUSH)
         started = time.monotonic()
         require(math.isfinite(started), "MONOTONIC_CLOCK_UNVERIFIED")
-        challenge = "APPROVE " + binding_digest(binding)
-        prompt = ("\nAssignment action (private binding; do not publish):\n"
+        challenge = verb + " " + binding_digest(binding)
+        prompt = ("\n" + description + ":\n"
                   + canonical(binding) + "\nType exactly " + challenge
-                  + " to approve this one additive assignment, or anything else to decline:\n")
+                  + " to confirm, or anything else to decline:\n")
         output = memoryview(prompt.encode("ascii"))
         while output:
             remaining = MAX_APPROVAL_SECONDS - (time.monotonic() - started)

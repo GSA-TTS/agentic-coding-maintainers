@@ -22,6 +22,63 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Synthetic standing-grant executor candidate
+
+Issue #68 implementation on canonical base
+`5d2c0a2b58ea7ba725ec0ce61044b523652482ff` (2026-11-10) adds journal v7
+definitions/selection, explicitly discriminated standing-grant requests in the
+existing typed outbox, and permanent version-2 core markers. Narrow intake tasks
+own no implementation resources; confirmed create settlement binds their tracker
+before additive assignment. The consumer controller binds real terminal activation
+to the clean implementation/policy and actual admission; runtime resolves authority
+from the fixed journal. Budgets, deduplication and unknown-target history survive
+renewal. Linux-only clock continuity refuses unsupported platforms. Legacy typed
+rows remain byte-preserved and manual assignment retains its terminal requirement.
+The candidate and fixtures await isolated primary validation and independent review;
+no grant or live endpoint has been activated. Original source hashes are preserved.
+
+Review rework adds human-controlled qualification installation/revocation in the
+shared journal. Canonical private report/transcript artifact bytes and exact scope
+are checked before and after a real TTY assessment, then selected durably. Only
+offline-reviewed one-use synthetic live-pilot authority is supported; hashes are
+not proof of execution or production qualification. Caller evidence hashes alone
+cannot activate it. Human challenge digests include full effective limits and workflow/cost scope. Durable
+NOT_SENT terminal evidence releases remote quota without deleting history, and
+cumulative risk is conservatively repository-wide across objective changes.
+Security review rework preserves and resumes durable same-epoch revoke requests,
+checks explicit recovery revision before effects, and fences manual assignment
+against all pending creates in its repository, including marker-only failures.
+Sandbox fixtures exercise pinned pre-migration readers and retained UNKNOWN guards.
+Post-`3dcc043ef6596438057f02cf561012cb41322621` QA rework packages byte-exact
+pre-migration sources as inert hash-manifested consumer fixtures, independent of
+shallow Git history. Intake completion uses its immutable settlement chain and a
+durable completion intent before releasing leases, with explicit resumable fences.
+Required qualification cases include executor-level code drift, expiry, daily
+budget exhaustion and interrupted completion. Validation remains sandbox-only.
+Repeated typed-journal validation uses bounded lazy process-local caches for
+trusted fixed-path module instances. No journal rows, selectors, clock samples,
+authorization decisions or validation results are cached; validator attributes
+remain live. A warm-loader fixture checks capacity revalidation and changed active
+selection before a subsequent action.
+Fixed-head `260d3e6` completion review rework re-proves exact task file/parent
+durability before release and binds lease directory identities in a strict
+core/native completion receipt. Whole-directory task-private tombstones plus
+durable cleanup phases permit interrupted owner-unlink/rmdir recovery without
+treating arbitrary empty or reused reservations as owned. Generic releases are
+unchanged; targeted sandbox crash fixtures cover the completion-specific protocol.
+Fixed-head `4cb2cfa` QA rework restricts both validators to the five reachable
+slot-before-scope phase pairs and binds the six-write revision budget to the
+original completion base. Negative fixtures cover all unreachable combinations
+with empty/absent scope reservations, and boundary fixtures cover interrupted
+completion through the final allowed revision without changing retained history.
+Integration with main `aa37c5542256b21585fd8a924622de7b85ee954d` retains the
+extracted runtime-observation module and upstream foreground guidance. Standing
+GET-only recovery uses observation rather than admission capacity checks; closed
+standing producers share the upstream bounded settlement-lock entry retry while
+retaining exact task, lease and receipt guards. Current copied-core fixtures copy
+the entire bin directory, including runtime-observation; pinned legacy sources
+remain byte-identical and independent of that later extraction.
+
 ### Scoped autonomy policy contract
 
 Issue #66 policy slice on canonical base

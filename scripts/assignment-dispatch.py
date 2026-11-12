@@ -159,7 +159,7 @@ class Store:
 
     def intent(self, db):
         version = db.execute("SELECT version FROM meta").fetchone()[0]
-        require(version in {5, 6}, "IDENTITY_BOUND_INTENT_REQUIRED")
+        require(version in {5, 6, 7}, "IDENTITY_BOUND_INTENT_REQUIRED")
         row = db.execute("SELECT request,request_sha256 FROM claim_intents WHERE operation_id=?",
                          (self.args.intent_operation_id,)).fetchone()
         require(row is not None, "INTENT_NOT_FOUND")
@@ -224,7 +224,23 @@ def build(store, intent, task, ids, head):
 
 def evidence(request, completion, result_ids, diagnostics):
     return {"version": 2, "attempt_id": request["binding"]["attempt_id"], "completion": completion,
-            "result_ids": result_ids, "producer": "SYNCHRONOUS_TRANSPORT_CLOSED", "diagnostics": diagnostics}
+             "result_ids": result_ids, "producer": "SYNCHRONOUS_TRANSPORT_CLOSED", "diagnostics": diagnostics}
+
+
+def standing_target_fence(store, db, repository_id, issue):
+    """Manual assignment cannot cross a standing create's repository-wide fence."""
+    if db.execute("SELECT version FROM meta").fetchone()[0] == 7:
+        for row in db.execute("SELECT document FROM assignment_requests"):
+            request = store.typed.decode(row[0])
+            binding = request["binding"]
+            if request["version"] == 2 and store.typed.get(db, "assignment_settlements", request["settlement_id"]) is None:
+                require(not (binding["target"]["repository_id"] == repository_id and
+                             (binding["action"] == "issue-create" or binding["target"].get("issue") == issue)), "TARGET_PENDING")
+    for other in store.core.command_list(store.root, allow_bound=True):
+        marker = other.get("assignment_dispatch", {})
+        if marker.get("version") == 2 and marker.get("phase") == "pending":
+            require(not (marker["target"]["repository_id"] == repository_id and
+                         (marker["action"] == "issue-create" or marker["target"].get("issue") == issue)), "TARGET_PENDING")
 
 
 @contextlib.contextmanager
@@ -289,9 +305,10 @@ def dispatch(args, publisher):
         store.ownership(task)
         require(task["revision"] <= c.MAX_GENERATION - 2, "REVISION_LIMIT")
         intent = store.intent(db)
+        standing_target_fence(store, db, intent["identity_observation"]["repository_id"], intent["claim"]["issue"])
         require(intent["binding"] == t.task_binding(task), "ORIGINAL_INTENT_BINDING_CHANGED")
-        if db.execute("SELECT version FROM meta").fetchone()[0] == 6:
-            require(not any(t.decode(row[0])["binding"]["intent_operation_id"] == intent["operation_id"]
+        if db.execute("SELECT version FROM meta").fetchone()[0] in {6, 7}:
+            require(not any(t.decode(row[0])["binding"].get("intent_operation_id") == intent["operation_id"]
                             for row in db.execute("SELECT document FROM assignment_requests")), "POST_REPLAY_REFUSED")
     claim, observed = intent["claim"], intent["identity_observation"]
     client = transport.Transport(claim["repo"], claim["issue"], token)
@@ -315,6 +332,7 @@ def dispatch(args, publisher):
             store.guard(db, request, original=True)
             approval.validate(request["binding"])
             t.preflight(db, request)
+            standing_target_fence(store, db, observed["repository_id"], claim["issue"])
             approval.validate(request["binding"])
             # Never clear this marker on failed/ambiguous DB commit.
             c.assignment_reserve(store.root, task, request["reserved_task"])
@@ -368,9 +386,9 @@ def recover(args, publisher):
     store = Store(args, p, c, j, t, durability)
     implementation_head(args.implementation_head)
     with store.locked() as db:
-        require(db.execute("SELECT version FROM meta").fetchone()[0] == 6, "RESERVATION_NOT_FOUND")
+        require(db.execute("SELECT version FROM meta").fetchone()[0] in {6, 7}, "RESERVATION_NOT_FOUND")
         request = t.get(db, "assignment_requests", args.assignment_operation_id)
-        require(request is not None and request["binding"]["implementation_head"] == args.implementation_head
+        require(request is not None and request["version"] == 1 and request["binding"]["implementation_head"] == args.implementation_head
                 and request["binding"]["intent_operation_id"] == args.intent_operation_id,
                 "RESERVATION_REQUEST_CHANGED")
         require(store.task()["revision"] == args.expected_revision, "REVISION_MISMATCH")

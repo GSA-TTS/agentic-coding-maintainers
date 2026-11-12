@@ -391,6 +391,60 @@ class TransportTest(unittest.TestCase):
             self.client.assign(self.observed)
         self.assertEqual(len(self.calls), 1)
 
+    def test_create_fixed_endpoint_and_get_identity(self):
+        client = transport.Transport("example/fixture", None, "ghp_" + "x" * 36)
+        self.addCleanup(client.close)
+        expected = {"title": "Synthetic fixture", "body": "Synthetic body"}
+        issue = dict(self.issue, **expected, user=self.user, assignees=[])
+        self.responses += [FakeResponse(201, issue, [("Content-Type", "application/json"),
+                            ("Location", transport.API + "/repos/example/fixture/issues/12")]), FakeResponse(200, issue)]
+        created = client.create(expected, self.observed)
+        self.assertEqual(client.observe_created(created, expected, self.observed), created)
+        self.assertEqual([call[1] for call in self.calls], ["/repos/example/fixture/issues", "/repos/example/fixture/issues/12"])
+        with self.assertRaises(transport.Refusal):
+            client.create(expected, self.observed)
+
+    def test_issue_list_requires_complete_fixed_origin_pages(self):
+        prefix = transport.API + "/repos/example/fixture/issues?state=all&per_page=100&page="
+        issue = dict(self.issue, title="Synthetic fixture", body="Synthetic body", state="closed")
+        self.responses += [FakeResponse(200, [issue], [("Content-Type", "application/json"),
+                            ("Link", '<' + prefix + '2>; rel="next", <' + prefix + '2>; rel="last"')]), FakeResponse(200, [])]
+        self.assertEqual(self.client.complete_issues(), [issue])
+        self.responses += [FakeResponse(200, [], [("Content-Type", "application/json"),
+                            ("Link", '<https://example.invalid/private>; rel="next"')])]
+        with self.assertRaisesRegex(transport.Refusal, "ISSUE_LIST_INCOMPLETE"):
+            self.client.complete_issues()
+
+    def test_create_response_cannot_expand_public_fields(self):
+        client = transport.Transport("example/fixture", None, "ghp_" + "x" * 36)
+        self.addCleanup(client.close)
+        with self.assertRaisesRegex(transport.Refusal, "ENDPOINT_REFUSED"):
+            client.create({"title": "synthetic", "body": "synthetic", "assignees": ["other"]}, self.observed)
+        self.assertEqual(self.calls, [])
+
+    def test_create_and_observation_reject_wrong_author_and_assignment_drift(self):
+        expected = {"title": "Synthetic fixture", "body": "Synthetic body"}
+        good = dict(self.issue, **expected, user=self.user, assignees=[])
+        for stage in ("POST", "GET"):
+            for replacement in ({"user": dict(self.user, id=99)}, {"user": dict(self.user, node_id="U_wrong")},
+                                {"user": dict(self.user, login="other")}, {"user": dict(self.user, type="Bot")},
+                                {"assignees": [{"id": 9}]}):
+                with self.subTest(stage=stage, replacement=replacement):
+                    client = transport.Transport("example/fixture", None, "ghp_" + "x" * 36)
+                    try:
+                        bad = dict(good, **replacement)
+                        if stage == "POST":
+                            self.responses.append(FakeResponse(201, bad))
+                            with self.assertRaises(transport.Refusal):
+                                client.create(expected, self.observed)
+                        else:
+                            self.responses += [FakeResponse(201, good), FakeResponse(200, bad)]
+                            created = client.create(expected, self.observed)
+                            with self.assertRaises(transport.Refusal):
+                                client.observe_created(created, expected, self.observed)
+                    finally:
+                        client.close()
+
     def test_http_201_location_is_inert_and_all_redirects_refuse(self):
         class Socket:
             def __init__(self, wire):

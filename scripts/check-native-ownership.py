@@ -38,7 +38,7 @@ TASK_FIELDS = {
     "head_sha", "reviewed_sha", "restricted_paths", "acceptance_criteria", "dependencies",
     "reviewers", "findings", "validation", "next_action", "worker", "leases",
     "transition_intent", "rework_count", "revision", "created_at", "updated_at"}
-BOUND_OPTIONAL_FIELDS = {"legacy_finding_dispositions", "transition_recovery", "assignment_dispatch"}
+BOUND_OPTIONAL_FIELDS = {"legacy_finding_dispositions", "transition_recovery", "assignment_dispatch", "intake_completion"}
 WORKER_FIELDS = {"task_id", "owner", "pid", "process_start", "worker_id", "token",
                  "hostname", "created_at"}
 BOUND_WORKER_FIELDS = WORKER_FIELDS | {"session_id", "generation"}
@@ -146,7 +146,9 @@ def validate_base_task(task, bound=False):
     text(task["state"])
     require(task["state"] in STATES)
     text(task["kind"])
-    require(task["kind"] in {"implementation", "review", "monitor"})
+    require(task["kind"] in {"implementation", "review", "monitor", "intake"})
+    if task["kind"] == "intake":
+        require(not any(task[key] for key in ("branch", "worktree", "owned_paths", "restricted_paths")))
     single_line(task["scope"], 500)
     require(task["scope_key"] == hashlib.sha256(task["scope"].encode("utf-8")).hexdigest())
     for key in ("owner", "repo", "branch", "worktree", "base_sha", "head_sha", "reviewed_sha",
@@ -318,10 +320,25 @@ def validate_assignment_dispatch(task):
     if "assignment_dispatch" not in task:
         return
     marker = task["assignment_dispatch"]
+    extra = {"action", "grant_id", "target", "logical_key"} if type(marker) is dict and marker.get("version") == 2 else set()
     fields(marker, {"version", "phase", "operation_id", "attempt_id", "store_id", "intent_sha256",
-                    "original_sha256", "original_revision", "implementation_head"})
-    require(type(marker["version"]) is int and marker["version"] == 1
+                    "original_sha256", "original_revision", "implementation_head"} | extra)
+    require(type(marker["version"]) is int and marker["version"] in {1, 2}
             and marker["phase"] in {"pending", "settled"})
+    if marker["version"] == 2:
+        require(task["kind"] == "intake" and marker["action"] in {"issue-create", "assignees-add"})
+        matches(marker["grant_id"], HEX32)
+        matches(marker["logical_key"], HEX64)
+        keys = {"repository", "repository_id", "repository_node_id"}
+        if marker["action"] == "assignees-add":
+            keys |= {"issue", "issue_id", "issue_node_id"}
+        fields(marker["target"], keys)
+        require(marker["target"]["repository"] == task["repo"])
+        for key in keys - {"repository"}:
+            if key.endswith("node_id"):
+                matches(marker["target"][key], re.compile(r"[A-Za-z0-9_+/=-]{1,256}"))
+            else:
+                integer(marker["target"][key], 1, MAX_INT64)
     for key in ("operation_id", "attempt_id", "store_id"):
         matches(marker[key], HEX32)
     for key in ("intent_sha256", "original_sha256"):
@@ -331,6 +348,32 @@ def validate_assignment_dispatch(task):
     if marker["phase"] == "pending":
         require(task["state"] in ACTIVE and task["worker"] is not None
                 and task["transition_intent"] is None and task.get("transition_recovery", {}).get("phase") != "pending")
+
+
+def validate_intake_completion(task):
+    if "intake_completion" not in task:
+        return
+    value = task["intake_completion"]
+    fields(value, {"version", "base_revision", "leases"})
+    require(task["kind"] == "intake" and type(value["version"]) is int and value["version"] == 1)
+    integer(value["base_revision"], 1, task["revision"] - 1)
+    fields(value["leases"], {"slot", "scope"})
+    for lease in value["leases"].values():
+        fields(lease, {"device", "inode", "phase"})
+        integer(lease["device"])
+        integer(lease["inode"])
+        require(lease["phase"] in {"reserved", "cleanup", "released"})
+    phases = (value["leases"]["slot"]["phase"], value["leases"]["scope"]["phase"])
+    progress = {("reserved", "reserved"): 0, ("cleanup", "reserved"): 1,
+                ("released", "reserved"): 2, ("released", "cleanup"): 3,
+                ("released", "released"): 4}
+    require(phases in progress and value["base_revision"] <= MAX_INT64 - 6)
+    if task["state"] == "Done":
+        require(task["transition_intent"] is None and all(x["phase"] == "released" for x in value["leases"].values()))
+    else:
+        require(task["state"] == "Claimed" and task["transition_intent"] == "Done")
+    revision = value["base_revision"] + 1 + progress[phases]
+    require(task["revision"] == revision + int(task["state"] == "Done"))
 
 
 def validate_task(task):
@@ -346,6 +389,7 @@ def validate_task(task):
     validate_base_task(task, bound=True)
     validate_cooperative_binding(task, check_worker_task=False)
     validate_assignment_dispatch(task)
+    validate_intake_completion(task)
     validate_transition_recovery(task)
     validate_legacy_dispositions(task)
 

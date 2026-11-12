@@ -440,7 +440,7 @@ class DispatchTest(unittest.TestCase):
 
         self.assertEqual(typed.diagnostic("POST", CanaryError("private-canary"), True),
                          {"stage": "POST", "reason": "UNEXPECTED_FAILURE", "http_status": None})
-        request = {"binding": {"attempt_id": "1" * 32}}
+        request = {"version": 1, "binding": {"attempt_id": "1" * 32}}
         valid = adapter.evidence(request, "UNKNOWN", None, [
             {"stage": "POST", "reason": "HTTP_STATUS_REFUSED", "http_status": 422}])
         typed.validate_evidence(request, valid)
@@ -796,7 +796,9 @@ class ImplementationProbeTest(unittest.TestCase):
             root = Path(directory).resolve()
             installed = root / ".agents/skills/workspace-orchestrator/bin"
             shutil.copytree(SOURCE / ".agents/skills/workspace-orchestrator/bin", installed,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            self.assertEqual((installed / "runtime-observation.py").read_bytes(),
+                             (SOURCE / ".agents/skills/workspace-orchestrator/bin/runtime-observation.py").read_bytes())
             (root / "scripts").mkdir()
             (root / "scripts/assignment-dispatch.py").write_text("fixture\n")
             (root / ".gitignore").write_text("ignored-extra\n")

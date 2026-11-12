@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import uuid
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +149,7 @@ def validate_store(db: sqlite3.Connection) -> None:
                 5: TABLES | {"binding_acks", "claim_intents", "claim_observations"},
                 6: TABLES | {"binding_acks", "claim_intents", "claim_observations",
                              "assignment_requests", "assignment_attempts", "assignment_evidence", "assignment_settlements"}}
+    versions[7] = versions[6] | {"standing_grants", "standing_selector", "standing_qualifications", "standing_qualification_selector"}
     if names not in versions.values() or any(row["type"] != "table" for row in objects):
         raise JournalError("unsupported journal schema")
     meta = db.execute("SELECT * FROM meta").fetchall()
@@ -172,7 +174,7 @@ def validate_store(db: sqlite3.Connection) -> None:
         for row in db.execute("SELECT * FROM claim_intents"):
             request = decode_intent(row["request"])
             validate_claim_intent(request)
-            if request["schema_version"] == 2 and meta[0]["version"] not in {5, 6}:
+            if request["schema_version"] == 2 and meta[0]["version"] not in {5, 6, 7}:
                 raise JournalError("identity-bound intent requires journal version 5")
             if (row["operation_id"] != request["operation_id"] or row["operation_id"] in seen
                     or request["store_id"] != meta[0]["store_id"]
@@ -196,8 +198,10 @@ def validate_store(db: sqlite3.Connection) -> None:
                     or row["request_sha256"] != receipt["intent_request_sha256"]
                     or row["receipt_sha256"] != fingerprint(receipt)):
                 raise JournalError("claim observation identity differs")
-    if meta[0]["version"] == 6:
+    if meta[0]["version"] in {6, 7}:
         assignment_journal().validate(db)
+    if meta[0]["version"] == 7:
+        assignment_journal().module("standing-grant").validate(db)
     if db.execute("PRAGMA quick_check").fetchone()[0] != "ok" or db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise JournalError("journal integrity check failed")
     for query, limit in (("SELECT count(*) FROM polls", MAX_POLLS), ("SELECT count(*) FROM events", MAX_EVENTS), ("SELECT count(*) FROM candidates", MAX_CANDIDATES)):
@@ -421,7 +425,7 @@ def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guar
         reject_reserved_observation_ids(db, claim_intent_identifiers(request))
         if guard is not None:
             guard()
-        if version in {3, 4, 5, 6}:
+        if version in {3, 4, 5, 6, 7}:
             prior = db.execute("SELECT request FROM claim_intents WHERE operation_id=?", (request["operation_id"],)).fetchone()
             if prior:
                 if prior[0] != raw:
@@ -523,8 +527,10 @@ def validate_observation_id(db: sqlite3.Connection, observation_id: str) -> None
         forbidden.update(claim_intent_identifiers(value))
     for row in db.execute("SELECT incarnation,operation_id FROM binding_acks"):
         forbidden.update(row)
-    if db.execute("SELECT version FROM meta").fetchone()[0] == 6:
+    if db.execute("SELECT version FROM meta").fetchone()[0] in {6, 7}:
         forbidden.update(assignment_journal().identifiers(db))
+    if db.execute("SELECT version FROM meta").fetchone()[0] == 7:
+        forbidden.update(assignment_journal().module("standing-grant").identifiers(db))
     if observation_id in forbidden:
         raise JournalError("claim observation identifier reuse")
 
@@ -544,18 +550,20 @@ def reject_reserved_observation_ids(db: sqlite3.Connection, identifiers) -> None
     Legacy versions have no observation namespace and retain their behavior.
     """
     version = db.execute("SELECT version FROM meta").fetchone()[0]
-    if version not in {4, 5, 6}:
+    if version not in {4, 5, 6, 7}:
         return
     reserved = {row[0] for row in db.execute("SELECT observation_id FROM claim_observations")}
-    if version == 6:
+    if version in {6, 7}:
         reserved.update(assignment_journal().identifiers(db))
+    if version == 7:
+        reserved.update(assignment_journal().module("standing-grant").identifiers(db))
     if reserved.intersection(identifiers):
         raise JournalError("reserved claim observation identifier")
 
 
 def claim_observation(db: sqlite3.Connection, observation_id: str) -> dict[str, Any] | None:
     version = db.execute("SELECT version FROM meta").fetchone()[0]
-    if version not in {3, 4, 5, 6}:
+    if version not in {3, 4, 5, 6, 7}:
         raise JournalError("claim observation requires existing intent schema")
     if version == 3:
         return None
@@ -571,7 +579,7 @@ def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *,
         db.execute("BEGIN IMMEDIATE")
         validate_store(db)
         version = db.execute("SELECT version FROM meta").fetchone()[0]
-        if version not in {3, 4, 5, 6}:
+        if version not in {3, 4, 5, 6, 7}:
             raise JournalError("claim observation requires existing intent schema")
         validate_claim_observation(db, receipt)
         guard()
@@ -580,7 +588,7 @@ def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *,
             if prior != receipt:
                 raise JournalError("conflicting claim observation")
             return "HISTORICAL_REPLAY"
-        count = db.execute("SELECT count(*) FROM claim_observations").fetchone()[0] if version in {4, 5, 6} else 0
+        count = db.execute("SELECT count(*) FROM claim_observations").fetchone()[0] if version in {4, 5, 6, 7} else 0
         if count >= MAX_CLAIM_OBSERVATIONS:
             raise JournalError("claim observation capacity reached")
         if version == 3:
@@ -594,6 +602,7 @@ def record_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any], *,
     return "HISTORICAL_RECORDED"
 
 
+@lru_cache(maxsize=1)
 def assignment_journal():
     # Journal v6 delegates typed evidence validation here. Evidence documents v1
     # and v2 coexist; opening/validating a store never upgrades immutable rows.

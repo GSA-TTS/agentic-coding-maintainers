@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 
 TABLES = ("assignment_requests", "assignment_attempts", "assignment_evidence", "assignment_settlements")
@@ -31,6 +32,7 @@ TRANSPORT_CLOSED ENDPOINT_REFUSED POST_REPLAY_REFUSED DUPLICATE_HTTP_HEADER
 ROUTING_OR_INCOMPLETE_RESPONSE RATE_LIMITED HTTP_STATUS_REFUSED
 CONFLICTING_HTTP_FRAMING CONTENT_TYPE_REFUSED TRANSPORT_UNVERIFIED
 ISSUE_IDENTITY_OR_STATE_CHANGED ASSIGNEES_INCOMPLETE ACTOR_IDENTITY_CHANGED
+CREATE_ASSIGNEES_CHANGED
 """.split())
 
 
@@ -58,7 +60,13 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode("ascii")).hexdigest()
 
 
+@lru_cache(maxsize=4)
 def module(name):
+    # Trusted code only, never a DB row/result/authority cache. These modules do
+    # not call this loader during import, so assignment <-> standing imports
+    # finish before the reverse edge is requested. Keep live module attributes
+    # (including fixture patches) rather than capturing validator callables.
+    require(name in {"monitor-journal", "standing-grant", "orchestrator-state"})
     spec = importlib.util.spec_from_file_location("assignment_" + name, Path(__file__).with_name(name + ".py"))
     require(spec is not None and spec.loader is not None)
     value = importlib.util.module_from_spec(spec)
@@ -105,6 +113,8 @@ def get(db, table, identity):
 
 
 def validate_request(db, request):
+    if type(request) is dict and type(request.get("version")) is int and request["version"] == 2:
+        return module("standing-grant").validate_request(db, request)
     fields(request, "version binding original_task reserved_task approval evidence_id settlement_id")
     require(type(request["version"]) is int and request["version"] == 1)
     binding = request["binding"]
@@ -173,6 +183,9 @@ def validate_ids(ids):
 
 
 def validate_evidence(request, evidence):
+    require(type(request.get("version")) is int and request["version"] in {1, 2})
+    if request["version"] == 2:
+        return module("standing-grant").validate_evidence(request, evidence)
     require(type(evidence) is dict and type(evidence.get("version")) is int and evidence["version"] in {1, 2})
     fields(evidence, "version attempt_id completion result_ids producer" + (" diagnostics" if evidence["version"] == 2 else ""))
     require(evidence["attempt_id"] == request["binding"]["attempt_id"]
@@ -200,6 +213,9 @@ def validate_evidence(request, evidence):
 
 
 def validate_settlement(request, evidence, settlement):
+    require(type(request.get("version")) is int and request["version"] in {1, 2})
+    if request["version"] == 2:
+        return module("standing-grant").validate_settlement(request, evidence, settlement)
     fields(settlement, "version attempt_id evidence_sha256 outcome completion satisfaction result_ids")
     require(type(settlement["version"]) is int and settlement["version"] == 1
             and settlement["attempt_id"] == request["binding"]["attempt_id"]
@@ -249,6 +265,8 @@ def validate(db):
     require(len(set(counts)) == 1)
     journal = module("monitor-journal")
     forbidden = {db.execute("SELECT store_id FROM meta").fetchone()[0]}
+    if db.execute("SELECT version FROM meta").fetchone()[0] == 7:
+        forbidden.update(module("standing-grant").identifiers(db))
     for row in db.execute("SELECT request FROM claim_intents"):
         forbidden.update(journal.claim_intent_identifiers(journal.decode_intent(row[0])))
     for row in db.execute("SELECT incarnation,operation_id FROM binding_acks"):
@@ -283,7 +301,7 @@ def reservation_rows(db, request):
     journal = module("monitor-journal")
     journal.validate_store(db)
     version = db.execute("SELECT version FROM meta").fetchone()[0]
-    require(version in {5, 6})
+    require(version in {5, 6, 7})
     validate_request(db, request)
     if version == 5:
         for table in TABLES:
@@ -293,6 +311,8 @@ def reservation_rows(db, request):
         raise Invalid("ASSIGNMENT_CAPACITY_EXHAUSTED")
     binding = request["binding"]
     forbidden = {db.execute("SELECT store_id FROM meta").fetchone()[0]} | identifiers(db)
+    if version == 7:
+        forbidden.update(module("standing-grant").identifiers(db))
     for row in db.execute("SELECT request FROM claim_intents"):
         forbidden.update(journal.claim_intent_identifiers(journal.decode_intent(row[0])))
     for row in db.execute("SELECT incarnation,operation_id FROM binding_acks"):
@@ -301,9 +321,18 @@ def reservation_rows(db, request):
     if forbidden & {binding["operation_id"], binding["attempt_id"], request["evidence_id"], request["settlement_id"]}:
         raise Invalid("ASSIGNMENT_IDENTIFIER_COLLISION")
     # One assignment per intent; all prior outcomes, including UNKNOWN, refuse replay.
-    for row in db.execute("SELECT document FROM assignment_requests"):
-        if decode(row[0])["binding"]["intent_operation_id"] == binding["intent_operation_id"]:
-            raise Invalid("POST_REPLAY_REFUSED")
+    if request["version"] == 2:
+        module("standing-grant").reserve_budget(db, request)
+    else:
+        for row in db.execute("SELECT document FROM assignment_requests"):
+            old = decode(row[0])
+            if old["version"] == 1 and old["binding"]["intent_operation_id"] == binding["intent_operation_id"]:
+                raise Invalid("POST_REPLAY_REFUSED")
+            other = old["binding"]
+            if (other["target"]["repository_id"] == binding["target"]["repository_id"]
+                    and (other["action"] == "issue-create" or other["target"].get("issue") == binding["target"]["issue"])
+                    and get(db, "assignment_settlements", old["settlement_id"]) is None):
+                raise Invalid("TARGET_PENDING")
     attempt = {"version": 1, "phase": "DISPATCHING", "operation_id": binding["operation_id"],
                "request_sha256": digest(request), "producer": "DIRECT_HTTPS_NO_DESCENDANTS"}
     for table, identity, document in ((TABLES[0], binding["operation_id"], request),

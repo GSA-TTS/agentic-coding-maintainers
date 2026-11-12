@@ -64,6 +64,8 @@ test:
 	python3 -I -B tests/journal-approved-claim-test.py
 	python3 -I -B tests/publish-github-assignment-test.py
 	python3 -I -B tests/assignment-dispatch-test.py
+	python3 -I -B tests/standing-grant-test.py
+	python3 -I -B tests/standing-grant-executor-test.py
 	python3 -I -B tests/observe-github-claims-test.py
 	python3 -I -B tests/observe-claim-intent-test.py
 	python3 -I -B tests/record-claim-observation-test.py
