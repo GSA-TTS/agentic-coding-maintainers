@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+from typing import NotRequired, TypeGuard, TypedDict
 
 MAX_BYTES = 1_000_000
 MAX_BODY_BYTES = 65_536
@@ -33,12 +34,25 @@ class Unverified(Exception):
     """Only fixed reason codes may be returned to the caller."""
 
 
+class ClaimReport(TypedDict):
+    status: str
+    reason: str
+    remote_coverage: str
+    mutation_authorized: bool
+    comment: NotRequired[str]
+    comment_sha256: NotRequired[str]
+    public_review: NotRequired[str]
+    observed_match_ids: NotRequired[list[int]]
+    observed_comment_count: NotRequired[int]
+    conflict_reasons: NotRequired[list[str]]
+
+
 def require(condition, reason="INVALID_INPUT"):
     if not condition:
         raise Unverified(reason)
 
 
-def matches(value, pattern):
+def matches(value: object, pattern: re.Pattern[str]) -> TypeGuard[str]:
     return type(value) is str and pattern.fullmatch(value) is not None
 
 
@@ -58,11 +72,13 @@ def captured_login(value):
 
 
 def validate_claim(value):
-    require(type(value) is dict and set(value) == FIELDS, "INVALID_CLAIM")
+    if not (type(value) is dict and set(value) == FIELDS):
+        raise Unverified("INVALID_CLAIM")
     require(type(value["version"]) is int and value["version"] == 1
             and value["action"] == "claim", "INVALID_CLAIM")
     repo = value["repo"]
-    require(type(repo) is str and repo.count("/") == 1, "INVALID_CLAIM")
+    if not (type(repo) is str and repo.count("/") == 1):
+        raise Unverified("INVALID_CLAIM")
     owner, name = repo.split("/")
     require(login(owner) and matches(name, REPOSITORY) and ".." not in name
             and not name.endswith("."), "INVALID_CLAIM")
@@ -93,15 +109,15 @@ def digest(body):
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def report(status, reason):
+def report(status: str, reason: str) -> ClaimReport:
     return {"status": status, "reason": reason, "remote_coverage": "unmeasured",
             "mutation_authorized": False}
 
 
-def prepare(claim):
+def prepare(claim) -> ClaimReport:
     body = render(claim)
-    return dict(report("PREPARED", "PUBLIC_REVIEW_REQUIRED"), comment=body,
-                comment_sha256=digest(body), public_review="REQUIRED")
+    return {**report("PREPARED", "PUBLIC_REVIEW_REQUIRED"), "comment": body,
+            "comment_sha256": digest(body), "public_review": "REQUIRED"}
 
 
 def unique(pairs):
@@ -205,26 +221,29 @@ def parse_marker(body):
     return claim
 
 
-def reconcile(comments, intended, known_comment_id=None, known_body_sha256=None):
+def reconcile(comments, intended, known_comment_id=None, known_body_sha256=None) -> ClaimReport:
     validate_claim(intended)
     require((known_comment_id is None) == (known_body_sha256 is None), "INVALID_RECEIPT")
     if known_comment_id is not None:
         require(positive(known_comment_id) and matches(known_body_sha256, HEX64), "INVALID_RECEIPT")
-    require(type(comments) is list and len(comments) <= MAX_COMMENTS, "INVALID_CAPTURE")
+    if not (type(comments) is list and len(comments) <= MAX_COMMENTS):
+        raise Unverified("INVALID_CAPTURE")
     issue_url = f"https://api.github.com/repos/{intended['repo']}/issues/{intended['issue']}"
     ids, operations, claims = set(), set(), {}
     matches_seen, conflicts = [], set()
     receipt_seen = False
     for comment in comments:
-        require(type(comment) is dict and positive(comment.get("id")), "INVALID_COMMENT")
+        if not (type(comment) is dict and positive(comment.get("id"))):
+            raise Unverified("INVALID_COMMENT")
         comment_id = comment["id"]
         require(comment_id not in ids, "DUPLICATE_COMMENT_ID")
         ids.add(comment_id)
-        require(type(comment.get("user")) is dict and captured_login(comment["user"].get("login")),
-                "INVALID_COMMENT")
+        author = comment.get("user")
+        if not (type(author) is dict and captured_login(author.get("login"))):
+            raise Unverified("INVALID_COMMENT")
         body = comment.get("body")
-        require(type(body) is str and len(body.encode("utf-8")) <= MAX_BODY_BYTES,
-                "INVALID_COMMENT")
+        if not (type(body) is str and len(body.encode("utf-8")) <= MAX_BODY_BYTES):
+            raise Unverified("INVALID_COMMENT")
         require(comment.get("issue_url") == issue_url, "COMMENT_ISSUE_MISMATCH")
         if comment_id == known_comment_id:
             receipt_seen = True
@@ -235,7 +254,7 @@ def reconcile(comments, intended, known_comment_id=None, known_body_sha256=None)
             continue
         if claim["repo"] != intended["repo"] or claim["issue"] != intended["issue"]:
             conflicts.add("MARKER_ISSUE_MISMATCH")
-        if claim["actor"] != comment["user"]["login"]:
+        if claim["actor"] != author["login"]:
             conflicts.add("AUTHOR_MISMATCH")
         if claim["operation_id"] in operations:
             conflicts.add("DUPLICATE_OPERATION_ID")
@@ -244,7 +263,7 @@ def reconcile(comments, intended, known_comment_id=None, known_body_sha256=None)
         if prior is not None and prior != claim:
             conflicts.add("CLAIM_PAYLOAD_MISMATCH")
         claims[claim["claim_id"]] = claim
-        if claim == intended and claim["actor"] == comment["user"]["login"]:
+        if claim == intended and claim["actor"] == author["login"]:
             matches_seen.append(comment_id)
         else:
             conflicts.add("OTHER_CLAIM_OR_PAYLOAD")
@@ -256,8 +275,8 @@ def reconcile(comments, intended, known_comment_id=None, known_body_sha256=None)
         status, reason = "OBSERVED_MATCH", "CAPTURE_COVERAGE_UNMEASURED"
     else:
         status, reason = "UNVERIFIED", "NO_MATCH_OBSERVED"
-    return dict(report(status, reason), observed_match_ids=sorted(matches_seen),
-                observed_comment_count=len(comments), conflict_reasons=sorted(conflicts))
+    return {**report(status, reason), "observed_match_ids": sorted(matches_seen),
+            "observed_comment_count": len(comments), "conflict_reasons": sorted(conflicts)}
 
 
 class Parser(argparse.ArgumentParser):
