@@ -26,7 +26,7 @@ them from the table; that is a separate authorization.
 
 **What this file is not.** It does not approve the proposed seam, admit or prioritize any
 item, assign an owner, choose answers for decisions D1 to D10, or change code, tests, schemas
-or runtime behavior. Every item is **Blocked** until its trigger holds. The rows are tracking
+or runtime behavior. Every item is **Blocked** until its `Blocked by` conditions and its trigger hold (section 3). The rows are tracking
 records, not issue bodies.
 
 **Stacking.** The documents it cites are not on `main`. `docs/TASK-STORE-INVENTORY.md` is on
@@ -60,8 +60,8 @@ Status: **Blocked** (a `Blocked by` condition or the unblock trigger has not bee
 (every condition in `Blocked by` and the unblock trigger hold, and the item has been admitted
 through the repository's task admission process), **Done**, **Dropped** (with reason).
 
-- An item moves to Ready only when every item and decision in its `Blocked by` column is
-  resolved and its unblock trigger holds, each verified in live GitHub and the repository, not
+- An item moves to Ready only when every condition, item and decision in its `Blocked by` column is
+  resolved and its unblock trigger holds, in both tables (sections 4 and 6), each verified in live GitHub and the repository, not
   from this file. The trigger text may restate only part of the `Blocked by` column; the
   `Blocked by` column governs.
 - When an item completes or is dropped, search this file for items it blocked and surface them
@@ -123,9 +123,9 @@ two documents (section 2).
 
 | ID | Work | Status | Blocked by | Unblock trigger |
 | --- | --- | --- | --- | --- |
-| A1 | Make `tests/task-store-inventory-test.py` run its historical citation check in hosted CI. The hosted checkout is shallow, so the pin is not reachable there and the test reports its explicit skip; fetching the pin in the CI job is one way. Changes a CI configuration | Blocked | A maintainer decision that the check should run in CI; CI changes need explicit approval | A maintainer asks for it |
+| A1 | Make `tests/task-store-inventory-test.py` run its historical citation check in hosted CI. The hosted checkout is shallow, so the pin is not reachable there and the test reports its explicit skip; fetching the pin in the CI job is one way. Changes a CI configuration | Blocked | A maintainer decision that the check should run in CI; CI changes need explicit approval | A maintainer asks for it and explicit approval of the CI change is given |
 | A2 | Investigate the intermittent first-run failures of foreground fixture tests (seen as `test_adopt_parseable_wronghash_root_and_descendant_trees` and `test_fresh_persistence_failure_existing_packet_fsync_and_retry`; they passed on rerun). Not root-caused | Blocked | Both: a maintainer decision to investigate, and a reproduction in an isolated environment | Both hold; a recurrence on a PR head is a reason to ask for the decision, not a trigger by itself |
-| A3 | Inventory the consumer changes after `5b137ba`: `#175` (`9315596`) unified the assignment guard and settlement sequence in `scripts/assignment-dispatch.py` and `scripts/standing-grant-dispatch.py`; `#174` (`eaa3ea5`) changed the Makefile check ordering (it also added `tests/syntax-first-test.py`); `#178` is open and touches `scripts/prepare-task-claim.py` and `scripts/record-claim-observation.py` (and other claim scripts). A component of W0's re-pin, listed separately so it is visible; it is part of W0 and not a downstream item. W0 is not Done until A3 is | Blocked | none beyond W0 (A3 is part of W0) | Same as W0 |
+| A3 | Inventory the consumer changes after `5b137ba`: `#175` (`9315596`) unified the assignment guard and settlement sequence in `scripts/assignment-dispatch.py` and `scripts/standing-grant-dispatch.py`; `#174` (`eaa3ea5`) changed the Makefile check ordering (it also added `tests/syntax-first-test.py`); `#178` is open and touches `scripts/prepare-task-claim.py` and `scripts/record-claim-observation.py` (and other claim scripts). A component of W0's re-pin, listed separately so it is visible; it is part of W0 and not a downstream item. W0 is not Done until A3 is | Blocked | none of its own: A3 shares W0's blocking conditions and is part of W0, so it is not blocked by W0 being Done | W0's pre-work trigger holds (reviews and merge decisions, D1 and D8 answers) |
 
 ## 7. Review focus for the reader
 
