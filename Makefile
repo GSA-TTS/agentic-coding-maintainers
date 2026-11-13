@@ -24,6 +24,7 @@ test-rest: check-syntax
 	python3 -I -B tests/pr-description-guidance-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/runtime-observation-test.py
 	python3 -I -B tests/scoped-autonomy-contract-test.py
+	python3 -I -B tests/task-store-inventory-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-reservation-test.py
 	python3 -I -B .agents/skills/workspace-orchestrator/tests/review-handoff-test.py
 	python3 -I -B tests/review-workspace-preflight-test.py
