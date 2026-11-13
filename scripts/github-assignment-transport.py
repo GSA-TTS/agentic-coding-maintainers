@@ -38,6 +38,16 @@ class BoundedHTTPSConnection(_HTTPS):
     TLS against the fixed API hostname. There is no DNS inside socket.connect.
     """
 
+    def __init__(self, host: str, port: int = 443, *, timeout: float,
+                 context: ssl.SSLContext | None = None):
+        # Internal callers must supply a bounded timeout, never the stdlib's
+        # global default/None. Retain the explicit context used for TLS wrapping.
+        require(type(timeout) in (int, float) and math.isfinite(timeout)
+                and 0 < timeout <= MAX_SECONDS, "DEADLINE_EXCEEDED")
+        self._connect_timeout = timeout
+        self._tls_context = context if context is not None else ssl.create_default_context()
+        super().__init__(host, port, timeout=timeout, context=self._tls_context)
+
     def connect(self):
         started = time.monotonic()
         code = ("import json,socket; "
@@ -47,16 +57,16 @@ class BoundedHTTPSConnection(_HTTPS):
             child = subprocess.run([sys.executable, "-I", "-B", "-c", code],
                                    env={}, cwd="/", stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                   close_fds=True, timeout=self.timeout, check=True)
+                                   close_fds=True, timeout=self._connect_timeout, check=True)
             address = json.loads(child.stdout)
             require(type(address) is str and len(address) <= 15, "DNS_UNVERIFIED")
             socket.inet_pton(socket.AF_INET, address)
-            remaining = self.timeout - (time.monotonic() - started)
+            remaining = self._connect_timeout - (time.monotonic() - started)
             require(remaining > 0, "DEADLINE_EXCEEDED")
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(remaining)
             self.sock.connect((address, 443))
-            self.sock = self._context.wrap_socket(self.sock, server_hostname="api.github.com")
+            self.sock = self._tls_context.wrap_socket(self.sock, server_hostname="api.github.com")
         except (subprocess.SubprocessError, ValueError, OSError) as exc:
             self.close()
             raise Refusal("DNS_OR_CONNECT_UNVERIFIED") from exc
@@ -64,6 +74,10 @@ class BoundedHTTPSConnection(_HTTPS):
 
 class Refusal(Exception):
     """Fixed diagnostic only; never propagate HTTP bodies or credentials."""
+
+    # Only the request boundary attaches a measurement. An absent attribute lets
+    # dispatch fall back to the client's status; explicit None must override it.
+    http_status: int | None
 
 
 def require(condition, reason):
@@ -107,27 +121,29 @@ def decode(raw, *, listing=False):
         raise Refusal("INVALID_JSON") from exc
 
 
-def read_chunked(response, maximum):
+def read_chunked(response: http.client.HTTPResponse, maximum: int):
     """Strict bounded chunk framing; extensions/trailers are unsupported.
 
     HTTPResponse's chunk reader tolerates EOF while discarding trailers and does
     not validate the data terminator bytes. Read its already-header-parsed body
     stream directly so even syntactically valid JSON requires complete framing.
     """
-    require(response.chunked and response.fp is not None, "INVALID_HTTP_FRAMING")
+    stream = response.fp
+    if not response.chunked or stream is None:
+        raise Refusal("INVALID_HTTP_FRAMING")
     chunks = []
     total = 0
     while True:
-        line = response.fp.readline(128)
+        line = stream.readline(128)
         require(re.fullmatch(rb"[0-9A-Fa-f]{1,16}\r\n", line) is not None, "INVALID_HTTP_FRAMING")
         size = int(line[:-2], 16)
         require(total + size <= maximum, "OUTPUT_BYTE_BOUND")
         if size == 0:
-            require(response.fp.readline(128) == b"\r\n", "INCOMPLETE_HTTP_BODY")
+            require(stream.readline(128) == b"\r\n", "INCOMPLETE_HTTP_BODY")
             response.close()
             return b"".join(chunks)
-        chunk = response.fp.read(size)
-        require(len(chunk) == size and response.fp.read(2) == b"\r\n", "INCOMPLETE_HTTP_BODY")
+        chunk = stream.read(size)
+        require(len(chunk) == size and stream.read(2) == b"\r\n", "INCOMPLETE_HTTP_BODY")
         chunks.append(chunk)
         total += size
 
@@ -180,13 +196,13 @@ class Transport:
         self.repository, self.number = repository, number
         self.repo_path = "/repos/" + repository
         self.issue_path = self.repo_path + "/issues/" + str(number) if number is not None else None
-        self._token = token
+        self._token: str | None = token
         self._context = ssl.create_default_context()
         self._remaining = MAX_BYTES
         self._until = time.monotonic() + MAX_SECONDS
         self._post_attempted = False
         self._closed = False
-        self.http_status = None
+        self.http_status: int | None = None
 
     def close(self):
         self._token = None
@@ -196,6 +212,8 @@ class Transport:
         # Per-call measurement, reset even when refusing before network activity.
         self.http_status = None
         require(not self._closed, "TRANSPORT_CLOSED")
+        if type(path) is not str:
+            raise Refusal("ENDPOINT_REFUSED")
         allowed = {"/user", self.repo_path, self.issue_path}
         listing = re.fullmatch(re.escape(self.repo_path) + r"/issues\?state=all&per_page=100&page=([1-9]|10)", path)
         assignable = re.fullmatch(re.escape(self.repo_path) + "/assignees/(" + LOGIN + ")", path)
@@ -207,6 +225,8 @@ class Transport:
             require(not self._post_attempted, "POST_REPLAY_REFUSED")
             self._post_attempted = True  # Before connection creation, including failure.
         remaining = self._until - time.monotonic()
+        if self._token is None:
+            raise Refusal("TRANSPORT_CLOSED")
         headers = {"Authorization": "Bearer " + self._token,
                    "Accept": "application/vnd.github.raw+json",
                    "X-GitHub-Api-Version": API_VERSION,
@@ -280,10 +300,14 @@ class Transport:
                 connection.close()
 
     def issue(self, observed):
+        if self.issue_path is None:
+            raise Refusal("ISSUE_NUMBER_INVALID")
         value, _ = self._request("GET", self.issue_path)
         return self.validate_issue(value, observed)
 
     def validate_issue(self, value, observed):
+        if self.issue_path is None:
+            raise Refusal("ISSUE_NUMBER_INVALID")
         require(type(value) is dict and value.get("id") == observed["issue_id"]
                 and positive(value.get("id")) and value.get("node_id") == observed["issue_node_id"]
                 and type(value.get("number")) is int and value["number"] == self.number
@@ -292,10 +316,12 @@ class Transport:
                 and "pull_request" not in value and value.get("state") == "open"
                 and value.get("locked") is False, "ISSUE_IDENTITY_OR_STATE_CHANGED")
         assignees = value.get("assignees")
-        require(type(assignees) is list and len(assignees) <= 10, "ASSIGNEES_INCOMPLETE")
+        if type(assignees) is not list or len(assignees) > 10:
+            raise Refusal("ASSIGNEES_INCOMPLETE")
         ids = []
         for user in assignees:
-            require(type(user) is dict and positive(user.get("id")), "ASSIGNEES_INCOMPLETE")
+            if type(user) is not dict or not positive(user.get("id")):
+                raise Refusal("ASSIGNEES_INCOMPLETE")
             ids.append(user["id"])
         require(len(set(ids)) == len(ids), "ASSIGNEES_INCOMPLETE")
         return sorted(ids)
@@ -333,6 +359,8 @@ class Transport:
     def assign(self, observed):
         """One additive POST. Caller must retain UNKNOWN if this raises."""
         self.http_status = None
+        if self.issue_path is None:
+            raise Refusal("ISSUE_NUMBER_INVALID")
         value, _ = self._request("POST", self.issue_path + "/assignees",
                                  payload(observed["actor_login"]))
         self.validate_issue(value, observed)
@@ -352,7 +380,8 @@ class Transport:
             if "link" in headers:
                 for part in headers["link"].split(","):
                     match = re.fullmatch(r'\s*<' + re.escape(API + prefix) + r'([1-9][0-9]{0,5})>; rel="(next|last|first|prev)"\s*', part)
-                    require(match is not None and match[2] not in relations, "ISSUE_LIST_INCOMPLETE")
+                    if match is None or match[2] in relations:
+                        raise Refusal("ISSUE_LIST_INCOMPLETE")
                     relations[match[2]] = int(match[1])
                 require(all(number <= 10 for number in relations.values()), "ISSUE_LIST_INCOMPLETE")
                 require("next" not in relations or relations["next"] == page + 1, "ISSUE_LIST_INCOMPLETE")
@@ -396,6 +425,8 @@ class Transport:
         return {key: value[key] for key in ("id", "node_id", "number", "title", "body")}
 
     def observe_created(self, created, expected, observed):
+        if self.issue_path is None:
+            raise Refusal("ISSUE_NUMBER_INVALID")
         value, _ = self._request("GET", self.issue_path)
         require(value.get("id") == created["id"] and value.get("node_id") == created["node_id"],
                 "ISSUE_IDENTITY_OR_STATE_CHANGED")

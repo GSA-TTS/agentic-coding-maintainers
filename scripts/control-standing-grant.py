@@ -44,10 +44,14 @@ class GrantDecision:
     """Distinct grant validator and receipt; never manufactures assignment authority."""
 
     def __init__(self, publisher, binding, grant):
-        grant.require(type(binding) is dict and binding.get("action") in {"activate", "revoke", "install-qualification", "revoke-qualification"})
+        if type(binding) is not dict or binding.get("action") not in {"activate", "revoke", "install-qualification", "revoke-qualification"}:
+            raise grant.Invalid("STANDING_GRANT_UNVERIFIED")
+        action = binding["action"]
+        if not isinstance(action, str):
+            raise grant.Invalid("STANDING_GRANT_UNVERIFIED")
         self.binding = publisher.canonical(binding)
-        self.approval = publisher.collect_terminal(binding, binding["action"].upper(),
-            "Standing grant " + binding["action"] + " (private scope; cooperative host authority)")
+        self.approval = publisher.collect_terminal(binding, action.upper(),
+            "Standing grant " + action + " (private scope; cooperative host authority)")
 
     def validate(self, publisher, binding):
         publisher.require(self.binding == publisher.canonical(binding), "APPROVAL_BINDING_CHANGED")
@@ -154,8 +158,8 @@ def install_qualification(args, dispatch):
     # Initialization is retained on later failure; never unlink human history.
     decision.validate(publisher, binding)
     with store.qualification_locked(initial_store_id=binding["store_id"] if binding["installation"]["new_store"] else None) as db:
-        grant.require(db is not None and db.execute("SELECT store_id FROM meta").fetchone()[0] == binding["store_id"],
-                      "STORE_IDENTITY_CHANGED")
+        if db is None or db.execute("SELECT store_id FROM meta").fetchone()[0] != binding["store_id"]:
+            raise grant.Invalid("STORE_IDENTITY_CHANGED")
         grant.require(store.physical_binding() == {key: value for key, value in binding["installation"].items() if key != "new_store"},
                       "STORE_IDENTITY_CHANGED")
         grant.require(existing_qualification(db, grant) == previous, "QUALIFICATION_EPOCH_CHANGED")

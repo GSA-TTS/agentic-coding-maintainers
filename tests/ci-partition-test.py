@@ -99,6 +99,7 @@ bash tests/operating-surface-test.sh
 """.splitlines()
 PARTITION_TEST = "python3 -I -B tests/ci-partition-test.py"
 SYNTAX_TEST = "python3 -I -B tests/syntax-first-test.py"
+CORE_QUALITY_TEST = "python3 -I -B tests/core-quality-check-test.py"
 PREFLIGHT_SYNTAX = "sh -n scripts/review-workspace-preflight.sh"
 
 
@@ -130,9 +131,10 @@ class CIPartitionTests(unittest.TestCase):
                          if line not in FOREGROUND + [PREFLIGHT_SYNTAX]]
         expected_rest.insert(1, PARTITION_TEST)
         expected_rest.insert(2, SYNTAX_TEST)
+        expected_rest.insert(3, CORE_QUALITY_TEST)
         self.assertEqual(rest, syntax + expected_rest)
         self.assertEqual(Counter(FOREGROUND + expected_rest + [PREFLIGHT_SYNTAX]),
-                         Counter(ORIGINAL_TESTS + [PARTITION_TEST, SYNTAX_TEST]))
+                         Counter(ORIGINAL_TESTS + [PARTITION_TEST, SYNTAX_TEST, CORE_QUALITY_TEST]))
         self.assertEqual(self.dry_run("test"), syntax + FOREGROUND + expected_rest)
 
     def test_syntax_inventory_and_partition_prerequisites(self):

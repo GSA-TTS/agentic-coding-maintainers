@@ -27,6 +27,8 @@ SOURCE = Path(__file__).resolve().parents[1]
 
 def load(name, filename):
     spec = importlib.util.spec_from_file_location(name, SOURCE / "scripts" / filename)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("fixture module unavailable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -225,6 +227,25 @@ class ApprovalTest(unittest.TestCase):
                 changed[key] = value
                 publisher.validate_binding(changed)
 
+    def test_binding_shapes_refuse_before_terminal_interaction(self):
+        cases = [None, [], {}]
+        for key in ("publisher", "target", "task_binding"):
+            for replacement in (None, [], {}, "invalid"):
+                cases.append(dict(binding(), **{key: replacement}))
+        for path in (("implementation_head",), ("intent_operation_id",), ("intent_sha256",),
+                     ("publisher", "id"), ("publisher", "node_id"), ("publisher", "login"),
+                     ("target", "repository"), ("target", "issue_id"), ("target", "issue_node_id"),
+                     ("task_binding", "task_sha256")):
+            changed = binding()
+            target = changed if len(path) == 1 else changed[path[0]]
+            target[path[-1]] = None
+            cases.append(changed)
+        with mock.patch.object(publisher.os, "open") as opened:
+            for value in cases:
+                with self.subTest(value=value), self.assertRaisesRegex(publisher.Refusal, "^INVALID_APPROVAL_BINDING$"):
+                    publisher.collect_approval(value)
+            opened.assert_not_called()
+
     def test_pipe_is_not_an_approval_terminal(self):
         read_fd, write_fd = os.pipe()
         try:
@@ -256,6 +277,15 @@ class FakeResponse:
 
 
 class OutputBoundaryTest(unittest.TestCase):
+    def test_missing_adapter_spec_or_loader_refuses(self):
+        for spec in (None, importlib.util.spec_from_loader("missing_adapter", loader=None)):
+            with (self.subTest(spec=spec),
+                  mock.patch.object(publisher.importlib.util, "spec_from_file_location", return_value=spec),
+                  mock.patch.object(publisher.importlib.util, "module_from_spec") as module,
+                  self.assertRaisesRegex(publisher.Refusal, "^ADAPTER_UNAVAILABLE$")):
+                publisher.load_adapter()
+            module.assert_not_called()
+
     def test_actual_cli_invalid_arguments_are_sanitized_json(self):
         result = subprocess.run([sys.executable, "-I", "-B", str(SOURCE / "scripts/publish-github-assignment.py"),
                                  "private-canary-token-header-id"], capture_output=True, check=False)
@@ -322,6 +352,21 @@ class OutputBoundaryTest(unittest.TestCase):
             self.assertNotIn("http_status", publisher.public_failure(error))
         error.http_status = 422
         self.assertEqual(publisher.public_failure(error)["http_status"], 422)
+
+    def test_transport_refusal_status_preserves_absent_and_explicit_unknown(self):
+        error = transport.Refusal("HTTP_STATUS_REFUSED")
+        client = mock.Mock(http_status=201)
+        # Dispatch falls back to the client only when the error has no measured
+        # status. A class-level None would silently erase that fallback.
+        self.assertFalse(hasattr(error, "http_status"))
+        self.assertEqual(getattr(error, "http_status", client.http_status), 201)
+        self.assertNotIn("http_status", publisher.public_failure(error))
+        error.http_status = 403
+        self.assertEqual(getattr(error, "http_status", client.http_status), 403)
+        self.assertEqual(publisher.public_failure(error)["http_status"], 403)
+        error.http_status = None
+        self.assertIsNone(getattr(error, "http_status", client.http_status))
+        self.assertNotIn("http_status", publisher.public_failure(error))
 
     def test_journal_recovery_reason_is_exact_and_never_leaks_context(self):
         class RecoveryError(Exception):
@@ -604,6 +649,55 @@ class TransportTest(unittest.TestCase):
             self.client._request("POST", self.client.issue_path + "/comments", b"{}")
         self.assertFalse(self.calls)
 
+    def test_unbound_issue_calls_refuse_before_network_or_post_fence(self):
+        client = transport.Transport("example/fixture", None, "ghp_" + "x" * 36)
+        self.addCleanup(client.close)
+        for call in (lambda: client.issue(self.observed),
+                     lambda: client.assign(self.observed),
+                     lambda: client.validate_issue(self.issue, self.observed),
+                     lambda: client.observe_created({}, {}, self.observed)):
+            with self.assertRaisesRegex(transport.Refusal, "^ISSUE_NUMBER_INVALID$"):
+                call()
+        self.assertFalse(client._post_attempted)
+        self.assertEqual(self.calls, [])
+
+    def test_non_string_request_path_is_fixed_refusal(self):
+        for path in (None, 12, b"/user", []):
+            with self.subTest(path=path), self.assertRaisesRegex(transport.Refusal, "^ENDPOINT_REFUSED$"):
+                self.client._request("POST", path, b"{}")
+        self.assertFalse(self.client._post_attempted)
+        self.assertEqual(self.calls, [])
+
+    def test_closed_or_missing_token_never_connects_and_keeps_post_fence(self):
+        self.client.close()
+        self.assertIsNone(self.client._token)
+        with self.assertRaisesRegex(transport.Refusal, "^TRANSPORT_CLOSED$"):
+            self.client.assign(self.observed)
+        self.assertFalse(self.client._post_attempted)
+        # An inconsistent internal state must also refuse, after the POST fence.
+        self.client._closed = False
+        with self.assertRaisesRegex(transport.Refusal, "^TRANSPORT_CLOSED$"):
+            self.client.assign(self.observed)
+        self.assertTrue(self.client._post_attempted)
+        with self.assertRaisesRegex(transport.Refusal, "^POST_REPLAY_REFUSED$"):
+            self.client.assign(self.observed)
+        self.assertEqual(self.calls, [])
+
+    def test_connection_creation_failure_already_fences_post(self):
+        with mock.patch.object(transport, "BoundedHTTPSConnection", side_effect=OSError("fixture")) as connect:
+            with self.assertRaisesRegex(transport.Refusal, "^TRANSPORT_UNVERIFIED$"):
+                self.client.assign(self.observed)
+            with self.assertRaisesRegex(transport.Refusal, "^POST_REPLAY_REFUSED$"):
+                self.client.assign(self.observed)
+            self.assertEqual(connect.call_count, 1)
+        self.assertEqual(self.calls, [])
+
+    def test_chunked_missing_stream_refuses(self):
+        response = mock.Mock(chunked=True, fp=None)
+        with self.assertRaisesRegex(transport.Refusal, "^INVALID_HTTP_FRAMING$"):
+            transport.read_chunked(response, transport.MAX_BYTES)
+        response.close.assert_not_called()
+
     def test_scope_does_not_authorize_private_repo(self):
         self.repo["private"] = True
         self.identity_responses("public_repo")
@@ -695,6 +789,54 @@ class TransportTest(unittest.TestCase):
                 connection.connect()
         self.assertLess(time.monotonic() - started, 3)
         self.assertEqual(len(reaped), 1)
+
+    def test_successful_bounded_dns_socket_and_tls_connection(self):
+        fresh = load("bounded_connect_fixture", "github-assignment-transport.py")
+        context = fresh.ssl.create_default_context()
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, fresh.ssl.CERT_REQUIRED)
+        connection = fresh.BoundedHTTPSConnection("api.github.com", 443, timeout=10, context=context)
+        raw_socket = mock.Mock()
+        tls_socket = mock.Mock()
+        events = mock.Mock()
+        events.attach_mock(raw_socket, "raw")
+        with (mock.patch.object(fresh.subprocess, "run", return_value=mock.Mock(stdout=b'"192.0.2.1"')) as resolver,
+              mock.patch.object(fresh.socket, "socket", return_value=raw_socket) as socket_factory,
+              mock.patch.object(context, "wrap_socket", return_value=tls_socket) as wrap,
+              mock.patch.object(fresh.time, "monotonic", side_effect=[100.0, 102.0])):
+            events.attach_mock(wrap, "tls")
+            connection.connect()
+        resolver.assert_called_once()
+        argv = resolver.call_args.args[0]
+        self.assertEqual(argv[:4], [sys.executable, "-I", "-B", "-c"])
+        self.assertIn("socket.getaddrinfo('api.github.com',443", argv[4])
+        self.assertNotIn("ghp_", " ".join(argv))
+        self.assertEqual(resolver.call_args.kwargs, {
+            "env": {}, "cwd": "/", "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE, "stderr": subprocess.DEVNULL,
+            "close_fds": True, "timeout": 10, "check": True})
+        socket_factory.assert_called_once_with(fresh.socket.AF_INET, fresh.socket.SOCK_STREAM)
+        self.assertEqual(events.mock_calls, [mock.call.raw.settimeout(8.0),
+                                            mock.call.raw.connect(("192.0.2.1", 443)),
+                                            mock.call.tls(raw_socket, server_hostname="api.github.com")])
+        self.assertIs(connection.sock, tls_socket)
+        connection.close()
+        tls_socket.close.assert_called_once_with()
+        self.assertIsNone(connection.sock)
+
+    def test_bounded_connection_requires_finite_explicit_timeout(self):
+        fresh = load("bounded_timeout_fixture", "github-assignment-transport.py")
+        with (mock.patch.object(fresh.subprocess, "run") as resolver,
+              mock.patch.object(fresh.socket, "socket") as socket_factory,
+              mock.patch.object(fresh.ssl, "create_default_context") as context):
+            for timeout in (None, True, "1", 0, -1, 31, float("inf"), float("nan")):
+                with self.subTest(timeout=timeout), self.assertRaisesRegex(fresh.Refusal, "^DEADLINE_EXCEEDED$"):
+                    fresh.BoundedHTTPSConnection("api.github.com", timeout=timeout)
+            with self.assertRaises(TypeError):
+                fresh.BoundedHTTPSConnection("api.github.com")
+            resolver.assert_not_called()
+            socket_factory.assert_not_called()
+            context.assert_not_called()
 
 
 if __name__ == "__main__":

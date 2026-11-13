@@ -14,9 +14,11 @@ import importlib.util
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import time
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 # Only settlement lock acquisition retries; never transport or durability work.
@@ -35,7 +37,8 @@ def require(condition, reason):
 
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
-    require(spec is not None and spec.loader is not None, "ADAPTER_UNAVAILABLE")
+    if spec is None or spec.loader is None:
+        raise Refusal("ADAPTER_UNAVAILABLE")
     value = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(value)
     return value
@@ -73,7 +76,7 @@ def implementation_head(expected):
 
     head = git(source, "rev-parse", "HEAD")
     require(head.returncode == 0 and head.stdout.strip() == expected, "IMPLEMENTATION_HEAD_CHANGED")
-    core.git_probe = git
+    setattr(core, "git_probe", git)
     core.verify_clean_checkout(str(source))
     return expected
 
@@ -116,18 +119,20 @@ class Store:
                 "directories": [list(pair) for pair in identities]}
 
     @contextlib.contextmanager
-    def locked(self):
+    def locked(self) -> Iterator[sqlite3.Connection]:
         with self._locked() as db:
+            if db is None:
+                raise Refusal("EXISTING_JOURNAL_REQUIRED")
             yield db
 
     @contextlib.contextmanager
-    def qualification_locked(self, *, initial_store_id=None):
+    def qualification_locked(self, *, initial_store_id: str | None = None) -> Iterator[sqlite3.Connection | None]:
         """Controller installation only; missing stores remain absent until approval."""
         with self._locked(qualification=True, initial_store_id=initial_store_id) as db:
             yield db
 
     @contextlib.contextmanager
-    def _locked(self, *, qualification=False, initial_store_id=None):
+    def _locked(self, *, qualification: bool = False, initial_store_id: str | None = None) -> Iterator[sqlite3.Connection | None]:
         with self.directories(prepare=qualification and self.directory_identity is None) as directories:
             if self.directory_identity is None:
                 self.directory_identity = directories
@@ -179,7 +184,8 @@ class Store:
                 and task["transition_intent"] is None and task.get("transition_recovery", {}).get("phase") != "pending",
                 "OWNERSHIP_UNVERIFIED")
         worker = task["worker"]
-        require(worker is not None and worker["hostname"] == socket.gethostname(), "WORKER_HOST_CHANGED")
+        if worker is None or worker["hostname"] != socket.gethostname():
+            raise Refusal("WORKER_HOST_CHANGED")
         require((task["leases"]["implementation_lane"] is not None) == (task["state"] == "Implementing")
                 and (task["state"] != "Implementing" or task["kind"] == "implementation"), "LANE_CHANGED")
         # Core semantic validation plus no-symlink, private, single-link physical
@@ -454,9 +460,9 @@ def recover(args, publisher):
     with store.locked() as db:
         require(db.execute("SELECT version FROM meta").fetchone()[0] in {6, 7}, "RESERVATION_NOT_FOUND")
         request = t.get(db, "assignment_requests", args.assignment_operation_id)
-        require(request is not None and request["version"] == 1 and request["binding"]["implementation_head"] == args.implementation_head
-                and request["binding"]["intent_operation_id"] == args.intent_operation_id,
-                "RESERVATION_REQUEST_CHANGED")
+        if (request is None or request["version"] != 1 or request["binding"]["implementation_head"] != args.implementation_head
+                or request["binding"]["intent_operation_id"] != args.intent_operation_id):
+            raise Refusal("RESERVATION_REQUEST_CHANGED")
         require(store.task()["revision"] == args.expected_revision, "REVISION_MISMATCH")
         store.guard(db, request, recovery=True)
         receipt = t.get(db, "assignment_evidence", request["evidence_id"])
@@ -466,7 +472,8 @@ def recover(args, publisher):
             c.assignment_release(store.root, request["reserved_task"])
             return {"status": terminal["outcome"], "reservation": "settled", "completion": terminal["completion"],
                     "satisfaction": terminal["satisfaction"]}
-        require(receipt is not None and receipt["completion"] != "UNKNOWN", "PRODUCER_TERMINATION_PROOF_UNSUPPORTED")
+        if receipt is None or receipt["completion"] == "UNKNOWN":
+            raise Refusal("PRODUCER_TERMINATION_PROOF_UNSUPPORTED")
         if receipt["completion"] == "NOT_SENT":
             outcome = "NOT_SENT" if receipt["result_ids"] is None else "SATISFIED_NO_POST"
         elif receipt["result_ids"] is not None:
