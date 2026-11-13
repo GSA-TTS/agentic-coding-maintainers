@@ -182,50 +182,12 @@ def build(store, grant, definition, selected, task, action, prior, current, crea
 
 
 def guard(store, db, request, *, original=False, recovering=False, closed_receipt=None):
-    store.journal.validate_store(db)
-    store.typed.validate_request(db, request)
-    if closed_receipt is not None:
-        store.typed.require(not original and not recovering)
-        store.typed.validate_evidence(request, closed_receipt)
-    if recovering:
-        store.typed.require(not original)
-        retained = store.typed.get(db, "assignment_evidence", request["evidence_id"])
-        store.typed.require(retained is not None and retained["completion"] in {"CONFIRMED", "NOT_SENT"})
-        store.typed.validate_evidence(request, retained)
-    expected = request["original_task" if original else "reserved_task"]
-    store.typed.require(store.task() == expected)
-    previous = store.args.expected_revision
-    try:
-        store.args.expected_revision = expected["revision"]
-        store.ownership(expected, active=not recovering and closed_receipt is None)
-    finally:
-        store.args.expected_revision = previous
-    if not original:
-        store.typed.require(store.typed.get(db, "assignment_requests", request["binding"]["operation_id"]) == request)
+    store.guard(db, request, original=original, recovery=recovering, closed_receipt=closed_receipt, standing=True)
 
 
 def finish(store, request, receipt, outcome, *, recovering=False, observed_ids=None):
-    t = store.typed
     adapter, _, _ = modules()
-    # Shared bounded entry-contention retry. Never retry validation, persistence,
-    # fsync or release failures after the coordinator has been acquired.
-    with adapter.settlement_lock(store) as db:
-        guard(store, db, request, recovering=recovering, closed_receipt=None if recovering else receipt)
-        if recovering:
-            t.require(t.get(db, "assignment_evidence", request["evidence_id"]) == receipt)
-        t.fill(db, "assignment_evidence", request["evidence_id"], receipt)
-        store.durable(db)
-        if outcome is None:
-            return {"status": "UNKNOWN", "completion": receipt["completion"], "reservation": "pending"}
-        completion, satisfaction = (("CONFIRMED", True) if outcome == "ISSUE_CREATED_OBSERVED" else t.OUTCOMES[outcome])
-        terminal = {"version": 2, "attempt_id": request["binding"]["attempt_id"], "evidence_sha256": t.digest(receipt),
-                    "outcome": outcome, "completion": completion, "satisfaction": satisfaction,
-                    "result_ids": receipt["result_ids"] if observed_ids is None else observed_ids, "issue": receipt["issue"]}
-        t.fill(db, "assignment_settlements", request["settlement_id"], terminal)
-        store.durable(db)
-        guard(store, db, request, recovering=recovering, closed_receipt=None if recovering else receipt)
-        final = store.core.assignment_release(store.root, request["reserved_task"])
-        return {"status": outcome, "completion": completion, "reservation": "settled", "revision": final["revision"]}
+    return adapter._settle(store, request, receipt, outcome, observed_ids, recovery=recovering, standing=True)
 
 
 def dispatch(args):

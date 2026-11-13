@@ -170,8 +170,10 @@ class Store:
             require(all(p.fingerprint(os.fstat(fd)) == before for fd, before in retained), "TASK_CHANGED")
             return task
 
-    def ownership(self, task, *, active=True):
+    def ownership(self, task, *, active=True, expected_revision=None):
         c, args = self.core, self.args
+        if expected_revision is None:
+            expected_revision = args.expected_revision
         c.verify_reservations(self.root, task)
         require(task["schema_version"] == 3 and task["state"] in c.ACTIVE
                 and task["transition_intent"] is None and task.get("transition_recovery", {}).get("phase") != "pending",
@@ -196,7 +198,7 @@ class Store:
                 require(p.read_selected(root, [group, key + ".lock", "owner.json"], stack, retained) == expected,
                         "LEASE_CHANGED")
             require(all(p.fingerprint(os.fstat(fd)) == before for fd, before in retained), "LEASE_CHANGED")
-        require(task["revision"] == args.expected_revision
+        require(task["revision"] == expected_revision
                 and worker["worker_id"] == args.expected_worker_id
                 and worker["session_id"] == args.expected_session_id
                 and worker["generation"] == args.expected_generation, "OWNERSHIP_CHANGED")
@@ -215,34 +217,39 @@ class Store:
         require(intent["schema_version"] == 2 and row[1] == self.typed.digest(intent), "INTENT_CHANGED")
         return intent
 
-    def guard(self, db, request, *, original=False, recovery=False, closed_receipt=None):
+    def guard(self, db, request, *, original=False, recovery=False, closed_receipt=None, standing=False):
+        """One guard sequence, retaining each entrypoint's refusal vocabulary.
+
+        The compatibility branch changes only refusals; request/evidence version
+        validation remains the typed journal's responsibility.
+        """
         self.journal.validate_store(db)
         self.typed.validate_request(db, request)
         if closed_receipt is not None:
             # Private synchronous dispatch continuation only, after client.close().
             # This is not recovery authority: no CLI/file/worker-death inference.
-            require(not original and not recovery, "RECOVERY_BINDING_INVALID")
+            self._guard_require(not original and not recovery, "RECOVERY_BINDING_INVALID", standing)
             self.typed.validate_evidence(request, closed_receipt)
         if recovery:
-            require(not original, "RECOVERY_BINDING_INVALID")
+            self._guard_require(not original, "RECOVERY_BINDING_INVALID", standing)
             receipt = self.typed.get(db, "assignment_evidence", request["evidence_id"])
-            require(receipt is not None and receipt["completion"] in {"CONFIRMED", "NOT_SENT"},
-                    "PRODUCER_TERMINATION_PROOF_UNSUPPORTED")
+            self._guard_require(receipt is not None and receipt["completion"] in {"CONFIRMED", "NOT_SENT"},
+                                "PRODUCER_TERMINATION_PROOF_UNSUPPORTED", standing)
             self.typed.validate_evidence(request, receipt)
         task = self.task()
         expected = request["original_task" if original else "reserved_task"]
-        require(task == expected, "TASK_CHANGED")
+        self._guard_require(task == expected, "TASK_CHANGED", standing)
         # Reserve advances only revision; original command's counters stay explicit.
-        args = copy.copy(self.args)
-        self.args = copy.copy(args)
-        self.args.expected_revision = expected["revision"]
-        try:
-            self.ownership(task, active=not recovery and closed_receipt is None)
-        finally:
-            self.args = args
+        self.ownership(task, active=not recovery and closed_receipt is None, expected_revision=expected["revision"])
         if not original:
-            require(self.typed.get(db, "assignment_requests", request["binding"]["operation_id"]) == request,
-                    "RESERVATION_REQUEST_CHANGED")
+            self._guard_require(self.typed.get(db, "assignment_requests", request["binding"]["operation_id"]) == request,
+                                "RESERVATION_REQUEST_CHANGED", standing)
+
+    def _guard_require(self, condition, reason, standing):
+        if standing:
+            self.typed.require(condition)
+        else:
+            require(condition, reason)
 
     def durable(self, db):
         self.durability.durable(self.journal, db, self.monitor)
@@ -308,31 +315,43 @@ def settlement_lock(store):
 
 
 def settle(store, request, receipt, outcome, result_ids=None, *, recovery=False):
+    return _settle(store, request, receipt, outcome, result_ids, recovery=recovery, standing=False)
+
+
+def _settle(store, request, receipt, outcome, result_ids=None, *, recovery=False, standing=False):
     """Retain the closed producer's result in memory while acquiring coordinator.
 
+    Manual and standing wrappers select only their historical compatibility
+    branch. Both follow this fixed ordering and the same core release reproof.
     Exhaustion/crash before evidence durability can still lose that result. Never
     retry a guard, write, barrier or release failure, nor infer durability from it.
     """
     t = store.typed
     with settlement_lock(store) as db:
-        store.guard(db, request, recovery=recovery, closed_receipt=None if recovery else receipt)
+        store.guard(db, request, recovery=recovery, closed_receipt=None if recovery else receipt, standing=standing)
         if recovery:
-            require(t.get(db, "assignment_evidence", request["evidence_id"]) == receipt,
-                    "RECOVERY_EVIDENCE_CHANGED")
+            store._guard_require(t.get(db, "assignment_evidence", request["evidence_id"]) == receipt,
+                                 "RECOVERY_EVIDENCE_CHANGED", standing)
         t.fill(db, "assignment_evidence", request["evidence_id"], receipt)
         store.durable(db)
         if outcome is None:
+            if standing:
+                return {"status": "UNKNOWN", "completion": receipt["completion"], "reservation": "pending"}
             return {"status": "UNKNOWN", "reservation": "pending", "completion": receipt["completion"],
                     **({"diagnostics": receipt["diagnostics"]} if receipt["version"] == 2 else {})}
-        completion, satisfaction = t.OUTCOMES[outcome]
-        terminal = {"version": 1, "attempt_id": request["binding"]["attempt_id"],
+        completion, satisfaction = (("CONFIRMED", True) if standing and outcome == "ISSUE_CREATED_OBSERVED" else t.OUTCOMES[outcome])
+        terminal = {"version": 2 if standing else 1, "attempt_id": request["binding"]["attempt_id"],
                     "evidence_sha256": t.digest(receipt), "outcome": outcome,
                     "completion": completion, "satisfaction": satisfaction,
                     "result_ids": receipt["result_ids"] if result_ids is None else result_ids}
+        if standing:
+            terminal["issue"] = receipt["issue"]
         t.fill(db, "assignment_settlements", request["settlement_id"], terminal)
         store.durable(db)
-        store.guard(db, request, recovery=recovery, closed_receipt=None if recovery else receipt)
-        store.core.assignment_release(store.root, request["reserved_task"])
+        store.guard(db, request, recovery=recovery, closed_receipt=None if recovery else receipt, standing=standing)
+        final = store.core.assignment_release(store.root, request["reserved_task"])
+        if standing:
+            return {"status": outcome, "completion": completion, "reservation": "settled", "revision": final["revision"]}
         return {"status": outcome, "reservation": "settled", "completion": completion,
                 "satisfaction": satisfaction,
                 **({"diagnostics": receipt["diagnostics"]} if receipt["version"] == 2 else {})}
