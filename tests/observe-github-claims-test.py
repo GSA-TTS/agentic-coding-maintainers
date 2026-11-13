@@ -383,6 +383,26 @@ class ObservationTests(unittest.TestCase):
         steps[3]["raw"] = "[]"
         self.refused(steps, "HTTP_METADATA_MISSING")
 
+    def test_link_order_requires_current_page_for_relative_relations(self):
+        # Internal callers must provide a current page for comparisons. Keep
+        # earlier metadata/URL validation and the page-independent first link.
+        for relation in ("next", "prev", "last"):
+            with self.subTest(relation=relation):
+                raw = http([comment()], f'Link: <{COMMENTS}?per_page=100&page=2>; rel="{relation}"\r\n')
+                with self.assertRaisesRegex(observer.Unverified, "^LINK_ORDER_INVALID$"):
+                    observer.parse_http(raw.encode(), COMMENTS)
+        for header, reason in (("Link: malformed\r\n", "LINK_INVALID"),
+                ('Link: <https://evil.invalid/?per_page=100&page=2>; rel="next"\r\n',
+                 "LINK_ENDPOINT_MISMATCH")):
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(observer.Unverified, "^" + reason + "$"):
+                    observer.parse_http(http([comment()], header).encode(), COMMENTS)
+        raw = http([comment()], f'Link: <{COMMENTS}?per_page=100&page=1>; rel="first"\r\n')
+        self.assertEqual(observer.parse_http(raw.encode(), COMMENTS), ([comment()], None))
+        with self.assertRaisesRegex(observer.Unverified, "^IDENTITY_PAGINATION_REFUSED$"):
+            observer.parse_http(raw.encode())
+        self.assertFalse(self.calls.exists())
+
     def test_proxy_is_refused_before_process_launch(self):
         with patch.dict(os.environ, {"HTTPS_PROXY": "https://evil.invalid"}):
             with self.assertRaises(observer.Unverified) as caught:

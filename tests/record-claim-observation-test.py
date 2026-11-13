@@ -125,6 +125,23 @@ class ReceiptTests(unittest.TestCase):
         self.assertFalse(self.calls.exists())
         self.assertEqual(self.task_path.read_bytes(), task_bytes)
 
+    def test_receipt_report_requires_its_fingerprint_provider(self):
+        receipt = {"observation_id": OBSERVATION, "status": "VISIBLE_MATCH"}
+        with self.assertRaisesRegex(ValueError, "^receipt requires a journal$"):
+            self.module.result("HISTORICAL_SHOWN", "LOCAL_HISTORY_ONLY", receipt)
+        # The outer CLI boundary must still emit only its fixed failure report.
+        with mock.patch.object(sys, "argv", self.argv()), \
+                mock.patch.object(self.module, "modules", return_value=(self.prepare, self.core,
+                    self.journal, self.intent, self.observe, self.observer)), \
+                mock.patch.object(self.module, "record", side_effect=lambda *args:
+                    self.module.result("HISTORICAL_SHOWN", "LOCAL_HISTORY_ONLY", receipt)), \
+                mock.patch("builtins.print") as printed:
+            self.assertEqual(self.module.main(), 3)
+        output = json.loads(printed.call_args.args[0])
+        self.assertEqual(output, self.module.result("UNVERIFIED", "STORE_OR_DURABILITY_UNVERIFIED"))
+        self.assertNotIn("observation_id", output)
+        self.assertFalse(self.calls.exists())
+
     def test_complete_missing_and_conflict_are_durable_zero_authority(self):
         for records, expected, code in (([], "NO_MATCH_OBSERVED", 3),
                                         ([self.comment(login="other")], "CONFLICT", 4)):

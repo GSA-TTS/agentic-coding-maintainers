@@ -149,7 +149,8 @@ def parse_http(raw, endpoint=None, page=None, *, repository_id=None, issue_numbe
         last_page = None
         for entry in headers["link"].split(","):
             match = re.fullmatch(r'\s*<([^<>\s]+)>;\s*rel="(next|prev|first|last)"\s*', entry)
-            require(match is not None, "LINK_INVALID")
+            if match is None:
+                raise Unverified("LINK_INVALID")
             target, relation = match.groups()
             require(relation not in relations, "LINK_DUPLICATE_RELATION")
             relations.add(relation)
@@ -169,10 +170,10 @@ def parse_http(raw, endpoint=None, page=None, *, repository_id=None, issue_numbe
             require(1 <= target_page <= MAX_PAGES, "PAGE_BOUND")
             require(target in {f"{base}?per_page=100&page={target_page}",
                                f"{base}?page={target_page}&per_page=100"}, "LINK_QUERY_INVALID")
-            require((relation != "next" or target_page == page + 1)
-                    and (relation != "prev" or target_page == page - 1)
+            require((relation != "next" or (page is not None and target_page == page + 1))
+                    and (relation != "prev" or (page is not None and target_page == page - 1))
                     and (relation != "first" or target_page == 1)
-                    and (relation != "last" or target_page >= page), "LINK_ORDER_INVALID")
+                    and (relation != "last" or (page is not None and target_page >= page)), "LINK_ORDER_INVALID")
             if relation == "next":
                 successor = target_page
             if relation == "last":
@@ -239,8 +240,9 @@ def observe(repository, number, transport, *, expected_body=None):
             seen.add(identifier)
             require(len(seen) <= MAX_COMMENTS, "COMMENT_BOUND")
             author = comment.get("user")
-            require(type(author) is dict and codec.positive(author.get("id"))
-                    and codec.captured_login(author.get("login")), "COMMENT_AUTHOR_INVALID")
+            if not (type(author) is dict and codec.positive(author.get("id"))
+                    and codec.captured_login(author.get("login"))):
+                raise Unverified("COMMENT_AUTHOR_INVALID")
             require(comment.get("issue_url") == transport.issue_url, "COMMENT_ISSUE_MISMATCH")
             created, updated = timestamp(comment.get("created_at")), timestamp(comment.get("updated_at"))
             order = (created, identifier)

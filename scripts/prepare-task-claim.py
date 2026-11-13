@@ -79,6 +79,9 @@ def prepare(args, claim):
         unchanged(args, stack, retained, task, root)
         if evidence["status"] != "STATIC_MATCH":
             return report(evidence["status"], evidence["reason"])
+        if task is None:
+            # A successful preflight cannot match a missing selected task.
+            raise TypeError("matched preflight requires a selected task")
         if task["tracker_type"] != "issue" or task["tracker_number"] != claim["issue"]:
             return report("CONFLICT", "TRACKER_ISSUE_MISMATCH")
         if task["repo"] != claim["repo"] or task["branch"] != claim["branch"]:
