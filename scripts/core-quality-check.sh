@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ruff check --isolated --select E4,E7,E9,F,I \
-  .agents/skills/cross-repo-epic/bin .agents/skills/workspace-orchestrator/bin \
+python_roots=(
+  .agents/skills/cross-repo-epic/bin
+  .agents/skills/workspace-orchestrator/bin
   .agents/skills/federal-authority-research/bin
-pyright .agents/skills/cross-repo-epic/bin .agents/skills/workspace-orchestrator/bin \
-  .agents/skills/federal-authority-research/bin
-bandit -q -ll -r .agents/skills/cross-repo-epic/bin .agents/skills/workspace-orchestrator/bin \
-  .agents/skills/federal-authority-research/bin -x '*/tests/*'
+  scripts
+)
+ruff check --isolated --select E4,E7,E9,F,I "${python_roots[@]}"
+pyright "${python_roots[@]}"
+bandit -q -ll -r "${python_roots[@]}" -x '*/tests/*'
 git ls-files -z -- '*.sh' '.agents/skills/*/tests/fixtures/*/gh' | xargs -0 shellcheck
 
 shopt -s nullglob

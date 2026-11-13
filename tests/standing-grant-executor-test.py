@@ -1585,6 +1585,29 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("status", self.install())
         self.assert_installed()
 
+    def test_lock_contexts_distinguish_absence_initialization_and_existing_store(self):
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        with store.qualification_locked() as absent:
+            self.assertIsNone(absent)
+            self.assertFalse(self.database.exists())
+        with self.assertRaisesRegex(self.adapter.Refusal, "^EXISTING_JOURNAL_REQUIRED$"), store.locked():
+            self.fail("ordinary lock yielded an absent store")
+        self.assertFalse(self.database.exists())
+
+        identity = "b" * 32
+        with store.qualification_locked(initial_store_id=identity) as initialized:
+            self.assertIsInstance(initialized, sqlite3.Connection)
+            self.assertEqual(initialized.execute("SELECT store_id FROM meta").fetchone()[0], identity)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            initialized.execute("SELECT 1")
+        for locked in (store.locked, store.qualification_locked):
+            with self.subTest(context=locked.__name__), locked() as existing:
+                self.assertIsInstance(existing, sqlite3.Connection)
+                self.assertEqual(existing.execute("SELECT store_id FROM meta").fetchone()[0], identity)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                existing.execute("SELECT 1")
+        self.assertFalse((self.local.state / "locks/coordinator.lock").exists())
+
     def test_decline_preserves_artifacts_without_creating_journal(self):
         before = {path: path.read_bytes() for path in self.evidence_dir.iterdir()}
         self.assertIn("error", self.install(approve=False))

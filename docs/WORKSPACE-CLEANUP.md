@@ -193,9 +193,9 @@ make check
 pre-commit run --all-files
 ```
 
-The Makefile preserves existing suites and includes cleanup fixtures. The root
-cleanup Python files also need direct pinned Ruff/Pyright/Bandit review: the
-existing core-quality script does not scan root scripts automatically. Tests
+The Makefile preserves existing suites and includes cleanup fixtures. The
+core-quality gate runs pinned Ruff/Pyright/Bandit over root `scripts` and the three
+skill-bin roots automatically through hosted CI and the strict checks above. Tests
 exercise byte/mode roundtrips, no-write previews, tracked/staged-deleted paths,
 unsafe types/hierarchies, lock contention, malformed/corrupt journals, bounded
 inputs, differing directory/file devices with real file identities, directory

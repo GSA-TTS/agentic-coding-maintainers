@@ -149,8 +149,9 @@ def creation_for_task(store, db, task, logical):
                 and request["original_task"]["task_id"] == task["task_id"]
                 and request["original_task"]["created_at"] == task["created_at"]):
             terminal = store.typed.get(db, "assignment_settlements", request["settlement_id"])
-            store.typed.require(terminal is not None and terminal["outcome"] == "ISSUE_CREATED_OBSERVED"
-                                and task["tracker_type"] == "issue" and task["tracker_number"] == terminal["issue"]["number"])
+            if (terminal is None or terminal["outcome"] != "ISSUE_CREATED_OBSERVED"
+                    or task["tracker_type"] != "issue" or task["tracker_number"] != terminal["issue"]["number"]):
+                raise store.typed.Invalid("assignment journal unverified")
             found.append((request, terminal["issue"]))
     store.typed.require(len(found) == 1)
     return found[0]
@@ -285,12 +286,14 @@ def recover(args):
     with store.locked() as db:
         adapter.require(store.task()["revision"] == args.expected_revision, "REVISION_MISMATCH")
         request = store.typed.get(db, "assignment_requests", args.operation_id)
-        adapter.require(request is not None and request["version"] == 2, "RESERVATION_NOT_FOUND")
+        if request is None or request["version"] != 2:
+            raise adapter.Refusal("RESERVATION_NOT_FOUND")
         adapter.require(request["binding"]["implementation_head"] == args.implementation_head, "IMPLEMENTATION_HEAD_CHANGED")
         guard(store, db, request, recovering=True)
         receipt = store.typed.get(db, "assignment_evidence", request["evidence_id"])
         terminal = store.typed.get(db, "assignment_settlements", request["settlement_id"])
-        adapter.require(receipt is not None and receipt["completion"] != "UNKNOWN", "PRODUCER_TERMINATION_PROOF_UNSUPPORTED")
+        if receipt is None or receipt["completion"] == "UNKNOWN":
+            raise adapter.Refusal("PRODUCER_TERMINATION_PROOF_UNSUPPORTED")
         definition = grant.get(db, request["authorization"]["grant_id"])["definition"]
     # Acquiring the same persistent gate refuses a crash owner, even with evidence.
     with effect_gate(store, request["authorization"]["grant_id"]):
