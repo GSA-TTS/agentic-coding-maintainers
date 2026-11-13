@@ -43,6 +43,7 @@ controller = load("grant_controller", SOURCE / "scripts/control-standing-grant.p
 class ExecutorTests(unittest.TestCase):
     def setUp(self):
         self.real_environment = dict(os.environ)
+        self.module_loader = dispatch.modules
         self.fixture = fixtures.DispatchTest()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
@@ -53,8 +54,9 @@ class ExecutorTests(unittest.TestCase):
         self.adapter.modules = lambda: self.parts
         self.real_implementation_head = self.adapter.implementation_head
         self.adapter.implementation_head = lambda head: head
-        self.addCleanup(mock.patch.stopall)
-        mock.patch.object(dispatch, "modules", return_value=(self.adapter, self.publisher, self.grant)).start()
+        modules_patch = mock.patch.object(dispatch, "modules", return_value=(self.adapter, self.publisher, self.grant))
+        modules_patch.start()
+        self.addCleanup(modules_patch.stop)
         task = copy.deepcopy(self.local.task)
         old_scope = task["scope_key"]
         old_lane = task["leases"]["implementation_lane"]
@@ -83,12 +85,16 @@ class ExecutorTests(unittest.TestCase):
         self.before_fresh = None
         self.before_create = None
         self.before_observe = None
+        self.http_calls = []
+        self.clients = []
         fixture = self
 
         class HTTP:
             def __init__(self, repository, number, token):
                 fixture.assertEqual(repository, fixture.grant.REPOSITORY)
                 self.number, self.http_status = number, None
+                self.closed = False
+                fixture.clients.append(self)
 
             def no_locks(self):
                 fixture.assertFalse((fixture.local.state / "locks/coordinator.lock").exists())
@@ -101,15 +107,18 @@ class ExecutorTests(unittest.TestCase):
 
             def fresh_repository(self, observed):
                 self.no_locks()
+                fixture.http_calls.append("fresh-repository")
                 fixture.assertEqual(observed["actor_id"], 11)
                 if fixture.before_fresh is not None:
                     fixture.before_fresh()
 
             def complete_issues(self):
                 self.no_locks()
+                fixture.http_calls.append("list")
                 return []
 
             def create(self, payload, observed):
+                fixture.http_calls.append("CREATE")
                 fixture.assertEqual(observed["actor_id"], 11)
                 self.no_locks()
                 fixture.assertEqual(fixture.task()["assignment_dispatch"]["phase"], "pending")
@@ -124,6 +133,7 @@ class ExecutorTests(unittest.TestCase):
                 return {"id": 901, "node_id": "I_synthetic", "number": 501, **payload}
 
             def observe_created(self, created, expected, observed):
+                fixture.http_calls.append("observe")
                 fixture.assertEqual(observed["actor_id"], 11)
                 self.no_locks()
                 if fixture.before_observe is not None:
@@ -143,19 +153,23 @@ class ExecutorTests(unittest.TestCase):
 
             def assign(self, observed):
                 self.no_locks()
+                fixture.http_calls.append("ASSIGN")
                 with fixture.trace.open("a") as stream:
                     stream.write("ASSIGN\n")
 
             def issue(self, observed):
                 self.no_locks()
+                fixture.http_calls.append("GET")
                 if fixture.scenario == "assignment-get-failed":
                     raise OSError("synthetic observation lost")
                 return [11, 12]
 
             def close(self):
-                pass
+                self.closed = True
 
-        mock.patch.object(self.parts[-1], "Transport", HTTP).start()
+        transport_patch = mock.patch.object(self.parts[-1], "Transport", HTTP)
+        transport_patch.start()
+        self.addCleanup(transport_patch.stop)
 
     def admit_intake(self, task_id, work_item):
         core = self.parts[1]
@@ -304,7 +318,18 @@ class ExecutorTests(unittest.TestCase):
 
     def test_full_vertical_real_terminal_and_bound_issue(self):
         self.activate()
-        self.assertEqual(self.runtime("issue-create")["status"], "ISSUE_CREATED_OBSERVED")
+        finish = dispatch.finish
+        events = []
+
+        def checked_finish(store, *args, **kwargs):
+            self.assertTrue(self.clients and all(client.closed for client in self.clients))
+            with fixtures.settlement_probe(store, self.adapter, "success", events):
+                return finish(store, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "finish", side_effect=checked_finish):
+            self.assertEqual(self.runtime("issue-create"), {"status": "ISSUE_CREATED_OBSERVED", "completion": "CONFIRMED",
+                             "reservation": "settled", "revision": self.task()["revision"]})
+        self.assertEqual(events, ["entry", "guard1", "evidence", "sync1", "terminal", "sync2", "guard2", "release", "exit"])
         self.assertEqual((self.task()["kind"], self.task()["tracker_type"], self.task()["tracker_number"]), ("intake", "issue", 501))
         self.assertEqual(self.runtime("assignees-add")["status"], "ASSIGNMENT_CONFIRMED_OBSERVED")
         self.assertEqual(self.trace.read_text(), "CREATE\nASSIGN\n")
@@ -318,6 +343,36 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(self.human("revoke")["status"], "GRANT_REVOKED_QUIESCENT")
         with self.assertRaises(Exception):
             self.runtime("assignees-add")
+
+    def test_settlement_fault_boundaries_retain_exact_progress(self):
+        for stage in fixtures.SETTLEMENT_STAGES:
+            with self.subTest(stage=stage):
+                with (mock.patch.object(dispatch, "modules", self.module_loader),
+                      fixtures.settlement_fixture(ExecutorTests(), self.real_environment) as fixture):
+                    fixture.activate()
+                    finish = dispatch.finish
+                    events = []
+
+                    def failing_finish(store, *args, **kwargs):
+                        self.assertTrue(fixture.clients and all(client.closed for client in fixture.clients))
+                        with fixtures.settlement_probe(store, fixture.adapter, stage, events):
+                            return finish(store, *args, **kwargs)
+
+                    error = OSError if stage == "entry" else fixture.parts[1].BusyError
+                    with mock.patch.object(dispatch, "finish", side_effect=failing_finish), self.assertRaises(error):
+                        fixture.runtime("issue-create")
+                    request = fixture.requests()[0]
+                    db = fixture.parts[2].open_store(fixture.fixture.fixture.monitor)
+                    try:
+                        receipt = fixture.parts[3].get(db, "assignment_evidence", request["evidence_id"])
+                        terminal = fixture.parts[3].get(db, "assignment_settlements", request["settlement_id"])
+                    finally:
+                        db.close()
+                    fixtures.assert_settlement_fault(self, stage, events, request, receipt, terminal, fixture.task())
+                    self.assertEqual(fixture.trace.read_text(), "CREATE\n")
+                    self.assertEqual(fixture.http_calls, ["fresh-repository", "list", "CREATE", "observe"])
+                    self.assertFalse((fixture.local.state / "locks/coordinator.lock").exists())
+                    self.assertFalse((fixture.local.state / "locks" / ("standing-effect-" + fixture.definition["grant_id"] + ".lock")).exists())
 
     def complete_intake(self):
         before = self.task()
@@ -720,6 +775,94 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(self.runtime("issue-create")["status"], "ISSUE_CREATED_OBSERVED")
         self.assertEqual(len(entries), 2)
         self.assertEqual(self.trace.read_text(), "CREATE\n")
+
+    def test_standing_terminal_recovery_refills_and_preserves_output(self):
+        self.activate()
+        with mock.patch.object(self.parts[1], "assignment_release", side_effect=OSError("fixture terminal interruption")):
+            with self.assertRaises(OSError):
+                self.runtime("issue-create")
+        request = self.requests()[0]
+        self.args.operation_id = request["binding"]["operation_id"]
+        self.args.expected_revision = self.task()["revision"]
+        self.fixture.stop_worker()
+        db = self.parts[2].open_store(self.fixture.fixture.monitor)
+        try:
+            retained = tuple(self.parts[3].get(db, table, request[key]) for table, key in
+                             (("assignment_evidence", "evidence_id"), ("assignment_settlements", "settlement_id")))
+        finally:
+            db.close()
+        finish = dispatch.finish
+        events = []
+
+        def checked_finish(store, *args, **kwargs):
+            with fixtures.settlement_probe(store, self.adapter, "success", events):
+                return finish(store, *args, **kwargs)
+
+        with (mock.patch.object(dispatch, "finish", side_effect=checked_finish),
+              mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("terminal recovery network")),
+              mock.patch.dict(os.environ, {}, clear=True)):
+            result = dispatch.recover(self.args)
+        self.assertEqual(result, {"status": "ISSUE_CREATED_OBSERVED", "completion": "CONFIRMED",
+                         "reservation": "settled", "revision": request["reserved_task"]["revision"] + 1})
+        self.assertEqual(events, ["entry", "guard1", "evidence", "sync1", "terminal", "sync2", "guard2", "release", "exit"])
+        self.assertEqual(self.trace.read_text(), "CREATE\n")
+        db = self.parts[2].open_store(self.fixture.fixture.monitor)
+        try:
+            self.assertEqual(retained, tuple(self.parts[3].get(db, table, request[key]) for table, key in
+                             (("assignment_evidence", "evidence_id"), ("assignment_settlements", "settlement_id"))))
+        finally:
+            db.close()
+
+    def test_standing_settlement_entry_exhaustion_retains_pending(self):
+        self.activate()
+        finish = dispatch.finish
+        entries, delays = [], []
+
+        def failing_finish(store, *args, **kwargs):
+            locked = store.locked
+
+            @contextlib.contextmanager
+            def contended():
+                entries.append(True)
+                with locked() as db:
+                    yield db
+
+            with (store.core.CoordinatorLock(store.root),
+                  mock.patch.object(store, "locked", contended),
+                  mock.patch.object(self.adapter, "time", SimpleNamespace(sleep=delays.append))):
+                return finish(store, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "finish", side_effect=failing_finish), self.assertRaises(self.parts[1].BusyError):
+            self.runtime("issue-create")
+        self.assertEqual(len(entries), 21)
+        self.assertEqual(delays, [0.1] * 20)
+        request = self.requests()[0]
+        db = self.parts[2].open_store(self.fixture.fixture.monitor)
+        try:
+            self.assertIsNone(self.parts[3].get(db, "assignment_evidence", request["evidence_id"]))
+            self.assertIsNone(self.parts[3].get(db, "assignment_settlements", request["settlement_id"]))
+        finally:
+            db.close()
+        self.assertEqual(self.task(), request["reserved_task"])
+        self.assertEqual(self.trace.read_text(), "CREATE\n")
+
+    def test_standing_guard_refusals_and_args_identity(self):
+        self.activate()
+        self.scenario = "get-failed"
+        self.assertEqual(self.runtime("issue-create"), {"status": "UNKNOWN", "completion": "CONFIRMED", "reservation": "pending"})
+        request = self.requests()[0]
+        store, _ = dispatch.make_store(self.args, self.adapter)
+        before = copy.deepcopy(vars(self.args))
+        with store.locked() as db:
+            receipt = store.typed.get(db, "assignment_evidence", request["evidence_id"])
+            for flags in ({"original": True}, {"recovering": True}):
+                with self.subTest(flags=flags), self.assertRaisesRegex(store.typed.Invalid, "assignment journal unverified"):
+                    dispatch.guard(store, db, request, closed_receipt=receipt, **flags)
+            dispatch.guard(store, db, request, recovering=True)
+        with self.assertRaisesRegex(store.typed.Invalid, "assignment journal unverified"):
+            dispatch.finish(store, request, dict(receipt, diagnostics=[]), None, recovering=True)
+        self.assertIs(store.args, self.args)
+        self.assertEqual(vars(self.args), before)
 
     def test_actual_clean_checkout_verifier_refuses_changed_implementation(self):
         self.activate()

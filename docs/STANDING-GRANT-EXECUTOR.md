@@ -232,6 +232,18 @@ pending marker fence. Both legacy and standing dispatch consult opposing pending
 targets, including marker-only failures. Existing #154 UNKNOWN and #158 history
 are not rewritten, released or reinterpreted.
 
+The standing `guard` and `finish` wrappers delegate to `assignment-dispatch.py`'s
+shared guard and fixed evidence/durability/terminal/durability/guard/core-release
+sequence. Explicit standing compatibility preserves typed-journal refusals,
+evidence v3 and settlement v2, pending output without diagnostics, and terminal
+output with revision rather than satisfaction or diagnostics. Retained terminal
+recovery still goes through `finish`, including idempotent fills and both barriers.
+Only entry to `Store.locked()` retries `BusyError`, with 21 attempts and 100 ms
+between attempts; guards, writes, syncs, release and context cleanup never retry.
+The synchronous continuation supplies its receipt only after actual client close;
+recovery still requires retained known completion. UNKNOWN remains fenced.
+Ownership uses an explicit expected revision without mutating command arguments.
+
 The initial supported clock platform is Linux with `/proc` boot identity and
 `CLOCK_BOOTTIME`. Wall, elapsed and awake clocks must advance consistently within
 two seconds. Rollback, suspension, reboot or uncertainty pauses new dispatch

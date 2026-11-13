@@ -238,6 +238,28 @@ class NativeClaimTests(unittest.TestCase):
         self.rejected([{}], "INVALID_COMMENT")
         self.rejected([comment()] * (CODEC.MAX_COMMENTS + 1), "INVALID_CAPTURE")
 
+    def test_json_shape_refusals_preserve_validation_precedence(self):
+        for value in (None, [], "claim", 1):
+            with self.subTest(claim=value):
+                with self.assertRaisesRegex(CODEC.Unverified, "^INVALID_CLAIM$"):
+                    CODEC.prepare(value)
+        for field in ("repo", "branch"):
+            for value in (None, [], {}, 1):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(CODEC.Unverified, "^INVALID_CLAIM$"):
+                        CODEC.prepare(dict(CLAIM, **{field: value}))
+        for value in (None, [], "comment", 1):
+            with self.subTest(comment=value):
+                self.rejected([value], "INVALID_COMMENT")
+        invalid = dict(comment(), user=None, body=None, issue_url="wrong")
+        self.rejected([comment(), invalid], "DUPLICATE_COMMENT_ID")
+        self.rejected([invalid], "INVALID_COMMENT")
+        result, output = self.run_cli(value=[invalid])
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(output, CODEC.report("UNVERIFIED", "INVALID_COMMENT"))
+        self.assertEqual(result.stdout,
+                         (CODEC.canonical(CODEC.report("UNVERIFIED", "INVALID_COMMENT")) + "\n").encode())
+
     def test_unsafe_public_fields_refused(self):
         invalid = {"claim_id": ["a" * 31, "A" * 32, "../private", "a" * 33],
                    "operation_id": ["token", "g" * 32],

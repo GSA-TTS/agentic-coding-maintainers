@@ -286,6 +286,18 @@ between attempts (at most two seconds of requested sleep). Each attempt reselect
 physical storage; no lock is held while waiting. Guard, journal, durability and
 release failures are not retried. There is no network/POST replay.
 
+`assignment-dispatch.py` owns the shared guard and settlement sequence used by
+manual `settle` and standing `finish`: guard, evidence fill, durability, optional
+pending return, terminal construction/fill, durability, guard, then core release
+with its existing independent reproof. Ownership receives the expected reserved
+revision explicitly; the caller's argument object is never temporarily rebound
+or edited. The two compatibility branches retain their refusal vocabulary and
+document/output versions. Manual results include satisfaction when terminal and
+diagnostics only for evidence v2; standing results instead include the released
+revision when terminal. Manual recovery of an already durable terminal retains
+its direct durability/release shortcut and omits diagnostics, whereas standing
+recovery continues through `finish`. Neither wrapper is new recovery authority.
+
 This is bounded contention tolerance, **not crash-durable in-memory evidence**.
 If contention outlasts the bound, or the dispatcher dies before evidence durability,
 the result may still be lost. The command reports unverified, not durable completion;
