@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.6.0...v0.7.0) (2026-11-13)
+
+
+### Features
+
+* **executor:** add qualified standing-grant issue pilot ([#170](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/170)) ([36e98f7](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/36e98f74f698b297c604eaea16f84a97d8f60b49))
+
+
+### Bug Fixes
+
+* **checks:** validate syntax before behavioral test suites ([#174](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/174)) ([eaa3ea5](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/eaa3ea5abe6096a452aae710606dcd0ba2f640bc))
+* **claims:** make validated type contracts explicit ([#178](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/178)) ([88e823e](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/88e823e9ad19a27654b20b699e6ed27a98431094))
+* **grants:** bootstrap qualification on fresh controller stores ([#172](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/172)) ([5b137ba](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/5b137bade94121e63ba6a80284e6ee03d11ced4f))
+
 ## [0.6.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.5.0...v0.6.0) (2026-11-11)
 
 
