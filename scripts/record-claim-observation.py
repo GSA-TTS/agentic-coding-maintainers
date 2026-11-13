@@ -33,6 +33,8 @@ def result(status, reason, receipt=None, journal=None):
               "absence_authorizing": False, "remote_effects_enabled": False,
               "current_task_authority": "UNVERIFIED", "remote_operation_completion": "UNVERIFIED"}
     if receipt is not None:
+        if journal is None:
+            raise ValueError("receipt requires a journal")
         output.update(observation_id=receipt["observation_id"], receipt_sha256=journal.fingerprint(receipt),
                       observation_status="HISTORICAL_" + receipt["status"])
     return output

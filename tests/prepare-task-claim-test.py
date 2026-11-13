@@ -148,6 +148,29 @@ class PreparationTest(unittest.TestCase):
             self.write(self.task_path, self.task)
             self.assert_result((4, "CONFLICT", "TRACKER_ISSUE_MISMATCH"))
 
+    def test_inconsistent_selection_cannot_prepare_a_public_claim(self):
+        with mock.patch.object(sys, "argv", self.argv()):
+            args, claim = self.module.arguments()
+        # A real successful preflight cannot coexist with a missing task. If an
+        # internal composition violates that contract, retain the CLI refusal.
+        for evidence, expected in (({"status": "CONFLICT", "reason": "REVISION_MISMATCH"},
+                                     ("CONFLICT", "REVISION_MISMATCH")),
+                                    ({"status": "STATIC_MATCH"},
+                                     ("UNVERIFIED", "STORE_UNAVAILABLE"))):
+            with self.subTest(evidence=evidence), \
+                    mock.patch.object(self.module, "arguments", return_value=(args, claim)), \
+                    mock.patch.object(self.module, "selected", return_value=(None, (1, 2))), \
+                    mock.patch.object(self.module, "unchanged"), \
+                    mock.patch.object(self.module.preflight, "inspect", return_value=evidence), \
+                    mock.patch.object(self.module.codec, "prepare") as render, \
+                    mock.patch("builtins.print") as printed:
+                code = self.module.main()
+                output = json.loads(printed.call_args.args[0])
+                self.assertEqual((output["status"], output["reason"]), expected)
+                self.assertEqual(code, 4 if expected[0] == "CONFLICT" else 3)
+                self.assertNotIn("comment", output)
+                render.assert_not_called()
+
     def test_explicit_repository_branch_kind_expectations(self):
         for overrides, reason in (({"repo": "other/project"}, "REPOSITORY_OR_BRANCH_MISMATCH"),
                                   ({"branch": "feat/other"}, "REPOSITORY_OR_BRANCH_MISMATCH"),
