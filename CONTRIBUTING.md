@@ -38,6 +38,12 @@ gate, human close/reopen CI route for bot PRs, and release review requirements.
 Run checks only inside an independently justified workspace sandbox; a worktree
 alone is not a sandbox.
 
+Use `make check-syntax` for a fast Python, shell and JSON syntax pass during
+development. `make check`, `make check-rest`, `make test`, `make test-foreground`
+and `make test-rest` run that pass before behavioral tests, including with
+`make -j`. Full checks still require the behavioral suites and post-test
+integrity/security checks.
+
 Every merge requires explicit human approval bound to the exact PR head,
 repository/PR identity, base, method and policy revision before the agent submits
 the normal guarded merge. Follow the [scoped autonomy contract](docs/SCOPED-AUTONOMY.md);
