@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -154,6 +155,89 @@ class BoundedProbeTests(unittest.TestCase):
     def test_unexpected_exceptions_are_not_swallowed(self):
         with self.assertRaises(ValueError):
             self.probe(side_effect=ValueError("not an observation failure"))
+
+
+class EpochConversionTests(unittest.TestCase):
+    @staticmethod
+    def procps_lstart_model(boot_epoch, start_ticks, hertz):
+        # procps-ng v4.0.2 src/ps/output.c pr_lstart: boot_time() +
+        # TICS_BEGAN / Hertz, then ctime. Model positive integer inputs in UTC
+        # with fixed English names; do not invoke ps or change TZ/host clocks.
+        stamp = datetime.fromtimestamp(boot_epoch + start_ticks // hertz, timezone.utc)
+        weekday = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[stamp.weekday()]
+        month = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")[stamp.month - 1]
+        return (f"{weekday} {month} {stamp.day:2d} {stamp.hour:02d}:"
+                f"{stamp.minute:02d}:{stamp.second:02d} {stamp.year:04d}")
+
+    def retained_task(self, root, worker):
+        scope = "fixture:epoch-conversion"
+        record = {
+            "schema_version": 2, "task_id": worker["task_id"], "state": "Implementing",
+            "scope": scope, "scope_key": core.scope_key(scope), "kind": "implementation",
+            "owner": worker["owner"], "repo": "fixture/project", "branch": "fixture",
+            "worktree": str(root), "base_sha": "a" * 40, "head_sha": "a" * 40,
+            "reviewed_sha": "", "tracker_type": "issue", "tracker_number": 182,
+            "owned_paths": ["source.py"], "restricted_paths": [],
+            "acceptance_criteria": ["exact identity comparison preserves ownership"],
+            "dependencies": [], "reviewers": [], "findings": [], "validation": [],
+            "next_action": "observe", "worker": worker,
+            "leases": {"global_slot": 0, "implementation_lane": 0, "scope_token": "c" * 32},
+            "transition_intent": None, "rework_count": 0, "revision": 1,
+            "created_at": worker["created_at"], "updated_at": worker["created_at"],
+        }
+        core.validate_record(record, worker["task_id"])
+        for group in ("scopes", "slots", "implementation"):
+            (root / group).mkdir(mode=0o700)
+        core.acquire_dir(root / "scopes" / (record["scope_key"] + ".lock"),
+                         {"schema_version": 2, "task_id": worker["task_id"],
+                          "scope": scope, "token": record["leases"]["scope_token"]})
+        for group in ("slots", "implementation"):
+            core.acquire_dir(root / group / "0.lock", worker)
+        core.atomic_json(core.task_path(root, worker["task_id"]), record)
+        record = core.read_task(root, worker["task_id"])
+        core.verify_reservations(root, record)
+        return record
+
+    def test_modeled_epoch_shift_refuses_without_changing_retained_identity(self):
+        # Synthetic observations only: this reproduces a conversion mechanism,
+        # not a real process spanning drift or the cause of the original failure.
+        pid, boot_epoch, ticks, hertz = 4242, 1_600_000_000, 12_345, 100
+        original = self.procps_lstart_model(boot_epoch, ticks, hertz)
+        self.assertEqual(original, "Sun Sep 13 12:28:43 2020")
+        cases = (
+            ("same epoch and ticks", boot_epoch, ticks, False),
+            ("epoch shift only", boot_epoch + 2, ticks, True),
+            ("different start ticks only", boot_epoch, ticks + 200, True),
+        )
+        for label, observed_epoch, observed_ticks, mismatch in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="epoch-model-") as directory:
+                current = self.procps_lstart_model(observed_epoch, observed_ticks, hertz)
+                self.assertEqual(current, "Sun Sep 13 12:28:45 2020" if mismatch else original)
+                with mock.patch.object(core._observation.subprocess, "run", side_effect=[
+                        completed(0, original + "\n"), completed(0, current + "\n")]) as run:
+                    worker = core.worker_metadata("epoch-fixture", "fixture-owner", pid)
+                    self.assertEqual((worker["pid"], worker["process_start"]), (pid, original))
+                    root = Path(directory)
+                    record = self.retained_task(root, worker)
+                    before_record = core.serialized_json(record)
+                    before_files = {path.relative_to(root): path.read_bytes()
+                                    for path in root.rglob("*") if path.is_file()}
+                    self.assertEqual(len(before_files), 4)
+                    if mismatch:
+                        with self.assertRaisesRegex(core.UnknownError, "pid was reused or ownership changed"):
+                            core.reconcile_one(root, record)
+                    else:
+                        result, changed = core.reconcile_one(root, record)
+                        self.assertIs(result, record)
+                        self.assertFalse(changed)
+                    self.assertEqual(core.serialized_json(record), before_record)
+                    self.assertEqual({path.relative_to(root): path.read_bytes()
+                                      for path in root.rglob("*") if path.is_file()}, before_files)
+                    core.verify_reservations(root, record)
+                    expected_call = mock.call(["ps", "-p", str(pid), "-o", "lstart="], check=False,
+                                              capture_output=True, text=True, timeout=3, env=None)
+                    self.assertEqual(run.call_args_list, [expected_call, expected_call])
 
 
 class FacadeCompatibilityTests(unittest.TestCase):
