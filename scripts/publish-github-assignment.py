@@ -16,6 +16,7 @@ import stat
 import sys
 import termios
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 MAX_APPROVAL_SECONDS = 120
@@ -105,61 +106,70 @@ class _Approval:
                 "maximum_age_seconds": MAX_APPROVAL_SECONDS}
 
 
-def validate_binding(binding):
-    require(type(binding) is dict and set(binding) == {
+def validate_binding(binding: object):
+    if type(binding) is not dict or set(binding) != {
         "schema_version", "action", "intent_operation_id", "operation_id", "attempt_id",
         "intent_sha256", "store_id", "target", "publisher", "payload", "payload_sha256",
-        "prior_assignee_ids", "task_binding", "implementation_head"}, "INVALID_APPROVAL_BINDING")
+        "prior_assignee_ids", "task_binding", "implementation_head"}:
+        raise Refusal("INVALID_APPROVAL_BINDING")
     require(type(binding["schema_version"]) is int and binding["schema_version"] == 1
             and binding["action"] == "add-assignee", "INVALID_APPROVAL_BINDING")
     for key in ("intent_operation_id", "operation_id", "attempt_id", "store_id"):
-        require(type(binding[key]) is str and re.fullmatch(r"[0-9a-f]{32}", binding[key]),
+        value = binding[key]
+        require(type(value) is str and re.fullmatch(r"[0-9a-f]{32}", value),
                 "INVALID_APPROVAL_BINDING")
     require(len({binding[key] for key in ("intent_operation_id", "operation_id", "attempt_id", "store_id")}) == 4,
             "REUSED_OPERATION_ID")
     for key in ("intent_sha256", "payload_sha256"):
-        require(type(binding[key]) is str and re.fullmatch(r"[0-9a-f]{64}", binding[key]),
+        value = binding[key]
+        require(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value),
                 "INVALID_APPROVAL_BINDING")
-    require(type(binding["implementation_head"]) is str
-            and re.fullmatch(r"[0-9a-f]{40}", binding["implementation_head"]), "INVALID_APPROVAL_BINDING")
+    head = binding["implementation_head"]
+    require(type(head) is str and re.fullmatch(r"[0-9a-f]{40}", head), "INVALID_APPROVAL_BINDING")
     publisher = binding["publisher"]
-    require(type(publisher) is dict and set(publisher) == {"id", "node_id", "login"},
-            "INVALID_APPROVAL_BINDING")
+    if type(publisher) is not dict or set(publisher) != {"id", "node_id", "login"}:
+        raise Refusal("INVALID_APPROVAL_BINDING")
     login = publisher["login"]
     require(type(login) is str and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login)
             and "--" not in login, "INVALID_APPROVAL_BINDING")
-    require(type(publisher["id"]) is int and 0 < publisher["id"] <= 2**63 - 1,
+    publisher_id = publisher["id"]
+    require(type(publisher_id) is int and 0 < publisher_id <= 2**63 - 1,
             "INVALID_APPROVAL_BINDING")
-    require(type(publisher["node_id"]) is str
-            and re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", publisher["node_id"]), "INVALID_APPROVAL_BINDING")
+    node_id = publisher["node_id"]
+    require(type(node_id) is str
+            and re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", node_id), "INVALID_APPROVAL_BINDING")
     expected_payload = canonical({"assignees": [login]})
     require(binding["payload"] == expected_payload
             and binding["payload_sha256"] == hashlib.sha256(expected_payload.encode("ascii")).hexdigest(),
             "INVALID_APPROVAL_BINDING")
     target = binding["target"]
-    require(type(target) is dict and set(target) == {
-        "repository", "repository_id", "repository_node_id", "issue", "issue_id", "issue_node_id"},
-        "INVALID_APPROVAL_BINDING")
-    require(type(target["repository"]) is str and re.fullmatch(
+    if type(target) is not dict or set(target) != {
+        "repository", "repository_id", "repository_node_id", "issue", "issue_id", "issue_node_id"}:
+        raise Refusal("INVALID_APPROVAL_BINDING")
+    repository = target["repository"]
+    require(type(repository) is str and re.fullmatch(
         r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9][A-Za-z0-9._-]{0,99}",
-        target["repository"]), "INVALID_APPROVAL_BINDING")
+        repository), "INVALID_APPROVAL_BINDING")
     for key in ("repository_id", "issue", "issue_id"):
-        require(type(target[key]) is int and 0 < target[key] <= 2**63 - 1, "INVALID_APPROVAL_BINDING")
+        value = target[key]
+        require(type(value) is int and 0 < value <= 2**63 - 1, "INVALID_APPROVAL_BINDING")
     for key in ("repository_node_id", "issue_node_id"):
-        require(type(target[key]) is str and re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", target[key]),
+        value = target[key]
+        require(type(value) is str and re.fullmatch(r"[A-Za-z0-9_+/=-]{1,256}", value),
                 "INVALID_APPROVAL_BINDING")
     ids = binding["prior_assignee_ids"]
     require(type(ids) is list and len(ids) <= 10
             and all(type(value) is int and 0 < value <= 2**63 - 1 for value in ids)
-            and ids == sorted(set(ids)) and (publisher["id"] in ids or len(ids) < 10),
+            and ids == sorted(set(ids)) and (publisher_id in ids or len(ids) < 10),
             "INVALID_APPROVAL_BINDING")
     # The journal validates the complete retained task binding. This collector
     # binds those exact bytes; it does not replace the core ownership validator.
     task = binding["task_binding"]
-    require(type(task) is dict and set(task) == {
-        "task_id", "created_at", "task_sha256", "revision", "generation", "session_id", "worker"},
-        "INVALID_APPROVAL_BINDING")
-    require(type(task["task_sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", task["task_sha256"])
+    if type(task) is not dict or set(task) != {
+        "task_id", "created_at", "task_sha256", "revision", "generation", "session_id", "worker"}:
+        raise Refusal("INVALID_APPROVAL_BINDING")
+    task_sha256 = task["task_sha256"]
+    require(type(task_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", task_sha256)
             and type(task["worker"]) is dict, "INVALID_APPROVAL_BINDING")
     require(len(canonical(binding)) <= MAX_DISPLAY_BYTES, "APPROVAL_DISPLAY_BOUND")
 
@@ -242,11 +252,13 @@ def collect_terminal(binding, verb, description):
         os.close(fd)
 
 
-def public_failure(error):
+def public_failure(error: Exception) -> dict[str, str | int]:
     """Exact fixed codes only, including known refusals from imported preflight modules."""
     reason = error.args[0] if len(error.args) == 1 and type(error.args[0]) is str else None
-    output = {"status": "UNVERIFIED", "reason": reason if reason in PUBLIC_REASONS else
-              "DISPATCH_OR_DURABILITY_UNVERIFIED", "reservation": "unverified", "completion": "UNKNOWN"}
+    output: dict[str, str | int] = {
+        "status": "UNVERIFIED",
+        "reason": reason if type(reason) is str and reason in PUBLIC_REASONS else "DISPATCH_OR_DURABILITY_UNVERIFIED",
+        "reservation": "unverified", "completion": "UNKNOWN"}
     status = getattr(error, "http_status", None)
     if reason in PUBLIC_REASONS and type(status) is int and 100 <= status <= 599:
         output["http_status"] = status
@@ -294,14 +306,15 @@ def emit_result(output):
 
 def load_adapter():
     spec = importlib.util.spec_from_file_location("assignment_dispatch", Path(__file__).with_name("assignment-dispatch.py"))
-    require(spec is not None and spec.loader is not None, "ADAPTER_UNAVAILABLE")
+    if spec is None or spec.loader is None:
+        raise Refusal("ADAPTER_UNAVAILABLE")
     adapter = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(adapter)
     return adapter
 
 
 def main():
-    output = {"status": "UNVERIFIED", "reason": "DISPATCH_OR_DURABILITY_UNVERIFIED",
+    output: Mapping[str, object] = {"status": "UNVERIFIED", "reason": "DISPATCH_OR_DURABILITY_UNVERIFIED",
               "reservation": "unverified", "completion": "UNKNOWN"}
     try:
         require(sys.flags.isolated and sys.dont_write_bytecode, "ISOLATED_PYTHON_REQUIRED")

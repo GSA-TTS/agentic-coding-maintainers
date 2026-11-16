@@ -146,6 +146,17 @@ def assert_settlement_fault(test, stage, events, request, receipt, terminal, tas
             test.assertEqual(terminal, expected)
 
 
+class AdapterLoaderTests(unittest.TestCase):
+    def test_missing_spec_or_loader_refuses_before_module_creation(self):
+        for spec in (None, importlib.util.spec_from_loader("unavailable_adapter", loader=None)):
+            with (self.subTest(spec=spec),
+                  mock.patch.object(adapter.importlib.util, "spec_from_file_location", return_value=spec),
+                  mock.patch.object(adapter.importlib.util, "module_from_spec") as create,
+                  self.assertRaisesRegex(adapter.Refusal, "^ADAPTER_UNAVAILABLE$")):
+                adapter.load("unavailable_adapter", SOURCE / "scripts/assignment-dispatch.py")
+            create.assert_not_called()
+
+
 class DispatchTest(unittest.TestCase):
     def setUp(self):
         self.real_environment = dict(os.environ)
