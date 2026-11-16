@@ -15,6 +15,7 @@ test-rest: check-syntax
 	python3 -I -B tests/ci-tool-installer-test.py
 	python3 -I -B tests/ci-partition-test.py
 	python3 -I -B tests/syntax-first-test.py
+	python3 -I -B tests/core-quality-check-test.py
 	python3 -I -B tests/cooperative-session-binding-test.py
 	python3 -I -B tests/release-config-test.py
 	python3 -I -B tests/shared-authority-admission-test.py
