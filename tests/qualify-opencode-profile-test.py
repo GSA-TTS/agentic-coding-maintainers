@@ -9,6 +9,7 @@ import sys
 if not sys.flags.isolated or not sys.dont_write_bytecode:
     raise SystemExit("Run this guest test with python3 -I -B")
 
+import errno
 import hashlib
 import importlib.util
 import io
@@ -20,7 +21,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import mock_open, patch
+from unittest.mock import Mock, mock_open, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/qualify-opencode-profile.py"
 SPEC = importlib.util.spec_from_file_location("qualify_profile", SCRIPT)
@@ -173,6 +174,72 @@ elif args[0] == 'api':
 else:
     sys.exit(2)
 '''
+
+
+def assert_descendant_stopped(proc, deadline):
+    """Accept only a vanished or zombie test child, without an exists/read race."""
+    while True:
+        try:
+            stat = proc.read_text()
+        except OSError as error:
+            if error.errno in (errno.ENOENT, errno.ESRCH):
+                return
+            raise
+        # The parenthesized comm may itself contain spaces and closing parens.
+        state = stat.rsplit(")", 1)[1].split()[0]
+        if state == "Z":
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"descendant still live at deadline: {state}")
+        time.sleep(0.01)
+
+
+class DescendantStoppedTest(unittest.TestCase):
+    """Deterministic polling fixtures: no real processes, procfs reads or waits."""
+
+    def test_absence_errors_before_or_after_live_read(self):
+        for code in (errno.ENOENT, errno.ESRCH):
+            for prefix in ([], ["123 (child) S 1 2 3"]):
+                with self.subTest(errno=code, after_live=bool(prefix)):
+                    proc = Mock(spec=Path)
+                    proc.read_text.side_effect = [*prefix, OSError(code, "child vanished")]
+                    with patch.object(time, "monotonic", return_value=0), \
+                            patch.object(time, "sleep") as sleep:
+                        assert_descendant_stopped(proc, 1)
+                    self.assertEqual(proc.read_text.call_count, len(prefix) + 1)
+                    self.assertEqual(sleep.call_count, len(prefix))
+
+    def test_zombie_with_spaces_and_parens_in_comm(self):
+        proc = Mock(spec=Path)
+        proc.read_text.return_value = "123 (child ) with (spaces)) Z 1 2 3"
+        with patch.object(time, "sleep") as sleep:
+            assert_descendant_stopped(proc, 1)
+        proc.read_text.assert_called_once_with()
+        sleep.assert_not_called()
+
+    def test_live_until_deadline_fails_even_with_z_in_comm(self):
+        proc = Mock(spec=Path)
+        proc.read_text.return_value = "123 (child Z ) still (live)) S 1 2 3"
+        with patch.object(time, "monotonic", side_effect=[0, 0.5, 1]) as clock, \
+                patch.object(time, "sleep") as sleep:
+            with self.assertRaisesRegex(AssertionError, "descendant still live at deadline: S"):
+                assert_descendant_stopped(proc, 1)
+        self.assertEqual(proc.read_text.call_count, 3)
+        self.assertEqual(clock.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_permission_and_unexpected_errors_propagate(self):
+        for error in (PermissionError(errno.EACCES, "denied"),
+                      OSError(errno.EIO, "unexpected read failure"), RuntimeError("unexpected")):
+            with self.subTest(error=error):
+                proc = Mock(spec=Path)
+                proc.read_text.side_effect = error
+                with patch.object(time, "sleep") as sleep:
+                    with self.assertRaises(type(error)) as caught:
+                        assert_descendant_stopped(proc, 1)
+                self.assertIs(caught.exception, error)
+                proc.read_text.assert_called_once_with()
+                sleep.assert_not_called()
 
 
 class QualificationTest(unittest.TestCase):
@@ -378,13 +445,7 @@ class QualificationTest(unittest.TestCase):
         pid = int((runner.cwd / "child.pid").read_text())
         # Linux /proc is guest-local and checks only the child created by this test.
         proc = Path(f"/proc/{pid}/stat")
-        end = time.monotonic() + 1
-        while proc.exists() and time.monotonic() < end:
-            if proc.read_text().split()[2] == "Z":
-                break
-            time.sleep(0.01)
-        if proc.exists():
-            self.assertEqual(proc.read_text().split()[2], "Z")
+        assert_descendant_stopped(proc, time.monotonic() + 1)
 
     def test_no_server_left_after_success(self):
         self.observe()
