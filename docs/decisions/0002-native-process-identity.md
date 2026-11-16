@@ -262,8 +262,10 @@ no remote action. Rollback cannot erase intervening state or revive approvals.
 3. Implement immutable origins and converter/resume, mutation guards, reference
    integrity and task-bound journal eligibility. Run crash and old-reader tests.
 4. Resolve [#173](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/173)
-   controller schema support **and confinement** with its owner. Its schema-2-only
-   boundary and static preflight's schema-1/2 boundary remain unresolved gates;
+   controller schema support **and confinement** with its owner. The unimplemented
+   integration proposal limits eligibility to schema 2; its deployment and
+   confinement remain unqualified. Separately, the implemented static preflight
+   supports schemas 1/2. These remain unresolved integration gates;
    schema 4 needs explicit support, schema 5 also needs resolution of existing
    schema-3 restrictions. Do not widen guards silently, add another controller,
    create a new authority store, or bypass confinement to make activation pass.
