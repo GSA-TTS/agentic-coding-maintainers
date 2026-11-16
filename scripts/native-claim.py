@@ -10,7 +10,7 @@ import os
 import re
 import stat
 import sys
-from typing import NotRequired, TypeGuard, TypedDict
+from typing import NotRequired, TypedDict, TypeGuard
 
 MAX_BYTES = 1_000_000
 MAX_BODY_BYTES = 65_536
