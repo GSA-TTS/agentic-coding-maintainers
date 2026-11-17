@@ -351,3 +351,25 @@ new test is introduced. The installed start command mirrors the packaged copy.
 This is a canonical documentation adaptation, not a new upstream import or a
 claim of runtime validation. Original import history and `SOURCE-SHA256SUMS`
 remain unchanged; regenerate `CANONICAL-SHA256SUMS` for the completed assets.
+
+## Deterministic process-start conversion reproduction
+
+Issue #182, based on canonical revision
+`afc0869660c75b765e85b68bfeda48a0fcb756ef`: extend
+`tests/runtime-observation-test.py` with a synthetic model of procps-ng v4.0.2
+`pr_lstart` (`src/ps/output.c`: boot epoch plus integer start ticks divided by
+Hertz, rendered as a date). The upstream reference is
+<https://gitlab.com/procps-ng/procps/-/blob/v4.0.2/src/ps/output.c>.
+The model uses fixed UTC/English rendering and injects successful subprocess
+results through the actual observer, `worker_metadata`, and `reconcile_one`.
+Temporary validated task, scope, slot and implementation-lane records must remain
+byte-identical after a modeled epoch-shift refusal. Controls cover unchanged
+inputs and changed process-start ticks with an unchanged epoch.
+
+This is a test-only canonical adaptation, not evidence that a live process crossed
+an epoch change or that the original intermittent failure had this cause.
+Production identity behavior and persisted formats are unchanged; platform,
+versioning, legacy compatibility and rollback choices still require separate
+review. Run the fixture only in an independently justified isolated environment;
+this provenance entry does not assert a passing run. Original source history and
+`SOURCE-SHA256SUMS` remain unchanged; `CANONICAL-SHA256SUMS` binds the adapted assets.
