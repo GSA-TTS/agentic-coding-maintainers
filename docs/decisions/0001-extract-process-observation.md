@@ -166,6 +166,23 @@ Reported for separate triage; the extraction deliberately does not change them:
   probe does not distinguish why `ps` found no row.
 - `ps` is resolved through `PATH` of the supplied (or inherited) environment.
 
+### Deterministic conversion fixture (issue #182)
+
+`tests/runtime-observation-test.py` models the procps-ng v4.0.2
+[`pr_lstart` conversion](https://gitlab.com/procps-ng/procps/-/blob/v4.0.2/src/ps/output.c):
+boot epoch plus integer process-start ticks divided by Hertz, rendered as a date.
+With fixed UTC/English rendering, a two-second epoch change and unchanged PID and
+start ticks yield a different start string. Injected subprocess results exercise
+the actual observer, worker metadata capture and reconciliation refusal, requiring
+the temporary task and all reservation bytes to remain unchanged. Same-input and
+changed-start-tick controls distinguish stable conversion from identity mismatch.
+
+This fixture models the mechanism; it does not run procps across a clock change or
+prove the cause of the original intermittent failure. It changes no production
+observer or persisted identity format. A production fix still needs reviewed
+platform support, identity versioning, retained-legacy comparison, reader rollout
+and rollback decisions. No tolerance or rewriting of retained identity is implied.
+
 ## Rollback
 
 Revert the change set: restore the function body in `orchestrator-state.py`,
