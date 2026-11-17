@@ -22,6 +22,10 @@ class Refusal(Exception):
     pass
 
 
+class UnsupportedProfile(Refusal):
+    pass
+
+
 def require(condition, message):
     if not condition:
         raise Refusal(message)
@@ -81,7 +85,8 @@ def validate_report(raw):
         require(type(report[key]) is list and len(report[key]) == 2
                 and all(type(item) is int for item in report[key]), "errno shape mismatch")
     require(report["bad_fstatfs"] == [-1, errno.EBADF], "C errno mismatch")
-    require(report["openat2"] != [-1, errno.ENOSYS], "UNQUALIFIED: openat2 unavailable")
+    if report["openat2"] == [-1, errno.ENOSYS]:
+        raise UnsupportedProfile("openat2 unavailable")
     require(report["openat2"] == [0, 0], "C openat2 refused")
     return report
 
@@ -104,9 +109,11 @@ def run(command, timeout=3):
                         if not chunk:
                             selector.unregister(key.fd)
                         output.extend(chunk)
-            require(child.wait(timeout=max(0.001, deadline - time.monotonic())) == 0,
-                    "external command failed")
+            returncode = child.wait(timeout=max(0.001, deadline - time.monotonic()))
+            require(returncode == 0, f"external command failed: exit={returncode}")
             return bytes(output)
+        except subprocess.TimeoutExpired as error:
+            raise Refusal("external command timeout") from error
         finally:
             if child.poll() is None:
                 child.kill()
@@ -117,15 +124,19 @@ def profile():
     observed = {"system": platform.system(), "machine": platform.machine(),
                 "kernel": platform.release(), "python": platform.python_version(),
                 "byteorder": sys.byteorder, "libc": "unmeasured"}
-    require(observed["system"] == "Linux" and observed["machine"] == "aarch64"
+    if not (observed["system"] == "Linux" and observed["machine"] == "aarch64"
             and sys.byteorder == "little" and c.sizeof(c.c_void_p) == 8
-            and c.sizeof(c.c_long) == 8 and c.sizeof(c.c_int) == 4,
-            "UNQUALIFIED: requires Linux aarch64 little-endian LP64")
+            and c.sizeof(c.c_long) == 8 and c.sizeof(c.c_int) == 4):
+        raise UnsupportedProfile("requires Linux aarch64 little-endian LP64")
     libc = c.CDLL(None, use_errno=True)
-    version = libc.gnu_get_libc_version
+    try:
+        version = libc.gnu_get_libc_version
+    except AttributeError as error:
+        raise UnsupportedProfile("loaded libc lacks gnu_get_libc_version") from error
     version.argtypes, version.restype = [], c.c_char_p
     observed["libc"] = version().decode("ascii")
-    require(observed["libc"] == "2.36", "UNQUALIFIED: requires loaded glibc 2.36")
+    if observed["libc"] != "2.36":
+        raise UnsupportedProfile("requires loaded glibc 2.36")
     return observed, libc
 
 
@@ -214,10 +225,22 @@ def self_test():
             for name, count in ((name, {"f_fsid": 2, "f_spare": 4}.get(name, 0))
                                 for name, _ in StatFS._fields_)},
             "bad_fstatfs": [-1, errno.EBADF], "openat2": [0, 0]}
-    validate_report(json.dumps(good))
+    encoded = json.dumps(good)
+    validate_report(encoded)
+    duplicates = ('{"openat2": [0, 0], ' + encoded[1:],
+                  encoded.replace('"constants": {', '"constants": {"syscall": 437, ', 1))
+    for raw in duplicates:
+        require(json.loads(raw) == good, "invalid duplicate-key control")
+        try:
+            validate_report(raw)
+        except Refusal as error:
+            require(type(error) is Refusal and str(error) == "duplicate JSON key",
+                    "self-test wrong duplicate-key refusal")
+        else:
+            raise Refusal("self-test accepted duplicate JSON key")
     bad = copy.deepcopy(good)
     bad["statfs"]["fields"]["f_flags"][0] += 1
-    for raw in (json.dumps(bad), '{}', '{"x":1,"x":2}', '{',
+    for raw in (json.dumps(bad), '{}', '{',
                 json.dumps({**good, "openat2": [-1, errno.ENOSYS]}),
                 json.dumps({**good, "openat2": [False, 0]}),
                 json.dumps({**good, "bad_fstatfs": [-1, errno.EPERM]})):
@@ -226,13 +249,19 @@ def self_test():
         except (Refusal, ValueError):
             continue
         raise Refusal("self-test accepted bad witness")
-    for code, deadline in (("raise SystemExit(7)", 3), ("print('x' * 20000)", 3),
-                           ("import time; time.sleep(10)", 0.2)):
+    require(run([sys.executable, "-I", "-B", "-c", "print('control')"]) == b"control\n",
+            "self-test successful command output mismatch")
+    for code, deadline, expected in (
+            ("raise SystemExit(7)", 3, "external command failed: exit=7"),
+            ("print('x' * 20000)", 3, "external output limit"),
+            ("import time; time.sleep(10)", 0.2, "external command timeout")):
         try:
             run([sys.executable, "-I", "-B", "-c", code], deadline)
-        except (Refusal, subprocess.SubprocessError):
-            continue
-        raise Refusal("self-test accepted external failure")
+        except Refusal as error:
+            require(type(error) is Refusal and str(error) == expected,
+                    f"self-test wrong external refusal: expected {expected}, got {error}")
+        else:
+            raise Refusal("self-test accepted external failure")
     return {"status": "SELF_TEST_PASSED", "backend_qualified": False}
 
 
@@ -257,7 +286,7 @@ def main():
         print(json.dumps(result, sort_keys=True))
         return 0
     except (Refusal, OSError, ValueError, AttributeError, subprocess.SubprocessError) as error:
-        unsupported = isinstance(error, AttributeError) or str(error).startswith("UNQUALIFIED:")
+        unsupported = isinstance(error, UnsupportedProfile)
         print(json.dumps({"status": "UNQUALIFIED" if unsupported else "FAILED",
                           "backend_qualified": False, "reason": str(error)}))
         return 3 if unsupported else 1

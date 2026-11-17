@@ -41,13 +41,18 @@ Process creation and uninterruptible kernel waits do not have universal bounded
 cleanup guarantees; the harness itself is not the proposed bounded production
 helper. No production timeout qualification is claimed.
 
-Exit 0 with `SELF_TEST_PASSED` covers only report-shape/duplicate-key/ABI-offset
-and syscall-error refusals, plus actual fixed subprocess nonzero-exit, output-cap
-and timeout propagation. It performs no C compilation or proc qualification.
+Exit 0 with `SELF_TEST_PASSED` covers only report-shape/ABI-offset and syscall-error
+refusals, plus otherwise-valid top-level and nested duplicate keys requiring the
+exact duplicate-key refusal. A successful fixed subprocess must return exact bytes;
+exit 7, output-cap and timeout cases must each produce their specific refusal.
+It performs no C compilation or proc qualification.
 Exit 0 with `PRIMITIVES_VERIFIED` covers the actual guest checks. Unsupported
 platform/libc or `ENOSYS` yields `UNQUALIFIED`, exit 3. Missing capabilities, compiler or
 primitive errors and mismatches yield `FAILED`, exit 1; these never pass or
 fall back to weaker opens. Invalid CLI use follows argparse's exit 2.
+Only the dedicated unsupported-profile exception produces `UNQUALIFIED`;
+missing `gnu_get_libc_version` is classified at that symbol lookup. Unexpected
+attribute errors elsewhere produce `FAILED`.
 
 ## Evidence produced
 
