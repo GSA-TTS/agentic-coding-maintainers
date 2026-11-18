@@ -19,11 +19,13 @@ from pathlib import Path
 from typing import Any
 
 MODULES = ("execution-plan.py", "execution-observe.py", "orchestrator-state.py", "runtime-observation.py",
-           "review-collect.py", "review-evidence.py", "review-run.py", "review-accept.py")
+           "native-process-observation.py", "review-collect.py", "review-evidence.py", "review-run.py", "review-accept.py")
 # Plans admitted before process observation moved out of orchestrator-state.py never bound
 # runtime-observation.py. Their retained bytes stay valid ledger entries, but they can never
 # equal the current manifest, so dispatch and assessment refuse them.
-LEGACY_MODULES = tuple(name for name in MODULES if name != "runtime-observation.py")
+OBSERVER_MODULES = tuple(name for name in MODULES if name != "native-process-observation.py")
+LEGACY_MODULES = tuple(name for name in OBSERVER_MODULES if name != "runtime-observation.py")
+MANIFEST_SHAPES = (frozenset(LEGACY_MODULES), frozenset(OBSERVER_MODULES), frozenset(MODULES))
 
 
 class Unverified(Exception):
@@ -164,8 +166,8 @@ def validate_plans(record: dict[str, Any], root: Path) -> None:
         revisions.add(plan["resulting_revision"])
         operation_ids.add(request["operation_id"])
         controller = plan["controller"]
-        e.fields(controller, set(MODULES) if isinstance(controller, dict) and "runtime-observation.py" in controller
-                 else set(LEGACY_MODULES))
+        if not isinstance(controller, dict) or frozenset(controller) not in MANIFEST_SHAPES:
+            raise Unverified("unsupported controller manifest shape")
         for sha in plan["controller"].values():
             e.hash_value(sha)
         operations = requirements(request["payload"], generation, e)

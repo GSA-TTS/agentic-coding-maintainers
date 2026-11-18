@@ -22,6 +22,24 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Additive native observer foundation candidate (2026-11-17)
+
+Repository-owned implementation based at
+`d051a72c8295334b11bca85f5488c51995c45dc4`, following ADR 0002 and the independent
+installed-header primitive experiment in PR #187. No external implementation is
+copied. The measured Linux aarch64 LP64 little-endian glibc 2.36 ABI is pinned to
+the initial Linux 6.12.113 / CPython 3.12.16 profile; other profiles refuse.
+`runtime-observation.py` retains its exact legacy function and adds strict
+native/record-directed APIs. The new one-shot sibling uses constrained procfs
+descriptors, two samples, caller-thread/context binding and fresh-root mount-ID
+association checks. Finite seven/eight/nine-module controller manifests preserve
+historical readability and invalidate old applicability. Native claims and core
+callers remain legacy pending separate integration. Parser/race/wire and opt-in
+guest lifecycle fixtures are candidate evidence, not full backend qualification;
+see `docs/NATIVE-PROCESS-QUALIFICATION.md` for the outstanding actual namespace,
+mount and privilege cases. Canonical checksum generation and isolated validation
+must precede review; original imported source history remains unchanged.
+
 ### Synthetic standing-grant executor candidate
 
 Issue #68 implementation on canonical base

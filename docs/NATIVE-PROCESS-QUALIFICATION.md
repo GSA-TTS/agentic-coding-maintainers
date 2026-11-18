@@ -1,5 +1,118 @@
 # Native process primitive qualification (first slice)
 
+## Additive observer foundation candidate
+
+The sibling `native-process-observation.py` now implements a candidate backend;
+`runtime-observation.py` adds `native_process_identity(pid)` and the record-directed
+`observe_worker_process(worker, *, environment=None)`. No task claim or production
+consumer selects these entry points yet. The primitive experiment below retains
+its original meaning. **Neither its result nor ordinary unit tests establish full
+backend qualification.**
+
+The candidate admits exactly Linux 6.12.113 / aarch64 / little-endian LP64 /
+loaded glibc 2.36 / CPython 3.12.16. ABI declarations and flags use the independent
+installed-header measurements from PR #187, based at
+`d051a72c8295334b11bca85f5488c51995c45dc4`; runtime never compiles a witness or
+falls back to weaker opens. Other profiles return `unknown`.
+
+### Fixed wire and source contract
+
+The parent invokes its checksum-verified installed sibling through its absolute
+interpreter with `-I -B`, a fixed PATH/locale environment, and one ASCII JSON
+argument. The trusted installation includes `CANONICAL-SHA256SUMS`; this detects
+mixed or substituted helper bytes, not a hostile owner rewriting the installation.
+Controller manifests also bind the new helper. Retained exact seven- and
+eight-module manifests remain readable but cannot equal the current nine-module
+installation; new execution uses the existing new-generation/new-plan route.
+
+Request (4096-byte maximum), exact fields:
+
+```text
+version: 1
+pid: positive signed-32-bit integer
+caller_tgid: positive signed-32-bit integer
+caller_tid: positive signed-32-bit integer
+expected_context: null | {boot_id, pid_namespace_inode}
+```
+
+Response (4096-byte maximum including any stderr), exact fields:
+
+```text
+version: 1
+pid, caller_tgid, caller_tid: exact request bindings
+status: alive | absent | unknown
+context: null | {boot_id, pid_namespace_inode}
+identity: null | exact ADR 0002 five-field identity
+```
+
+`alive` requires qualified context equal to the identity's boot/namespace;
+`absent` requires qualified context and null identity; `unknown` requires both
+null. Both ends enforce any expected recorded context. Duplicate keys, extra
+fields, coercions, boolean integer substitutions, malformed/trailing JSON data,
+nonzero exits and nonempty stderr refuse. Native failures never run `ps`.
+
+The helper holds fixed `/proc` and target/source descriptors, uses
+`openat2(BENEATH|NO_SYMLINKS|NO_XDEV)`, and reads kernel links through
+`O_PATH|O_NOFOLLOW` plus empty-path `readlinkat`. Byte and read-call limits apply
+to every proc read. It checks actual helper and caller thread stat/status,
+single-entry `NSpid`, `Pid`/`Tgid`, parent TGID, PID namespaces and current/child
+time namespaces twice, with exactly zero monotonic/boottime offsets. Target
+`Tgid` must equal requested PID. Two complete samples and a final fresh `/proc`
+resolution compare mount ID/device/inode/type for root, target and sources while
+descriptors remain held. Caller/helper lifetime ticks are also compared.
+
+Offsets are read from the helper's process-level `timens_offsets` **after**
+proving helper current/child time namespaces equal the actual caller thread's
+current/child time namespaces. Linux v6.12 [`fs/proc/base.c`](https://github.com/torvalds/linux/blob/v6.12/fs/proc/base.c)
+includes this file in `tgid_base_stuff`, not `tid_base_stuff`;
+[`proc_timens_show_offsets`](https://github.com/torvalds/linux/blob/v6.12/kernel/time/namespace.c)
+reads the selected task's `time_for_children` namespace. Thus the helper's offsets
+qualify the proven shared namespace without assuming the caller's leader has
+the same thread-local context. Both equality and zero offsets are checked in
+each complete sample. The actual-guest regression includes leader and nonleader
+callers observing both a child and their own process PID.
+
+Whole-root policy accepts genuine procfs with filesystem root `/` and mountpoint
+`/proc`, including an equivalent whole-root bind. Inner bind crossings refuse.
+This cannot authenticate a privileged mount administrator or rule out every
+transient replacement between observations. Zero-offset noninitial time
+namespaces can satisfy the profile; arbitrary nonzero time offsets cannot.
+
+Only initial target-directory `ENOENT`, then `kill(pid, 0)` returning `ESRCH`,
+then repeated fresh-root missing lookup/`ESRCH` and stable context can return
+absence. An opened target that disappears returns unknown. Zombies cannot be
+absent before reaping; unavailable zombie namespace evidence may yield unknown.
+
+Collection has a three-second deadline and a separate one-second kill/reap
+cleanup deadline. Spawn and uninterruptible kernel operations have no universal
+wall-clock guarantee. Cleanup failure yields unknown; the caller retains cleanup
+responsibility for the unreaped direct helper (ordinary Popen bookkeeping retains
+it), rather than treating the deadline as proof of termination.
+
+### Required candidate checks in the isolated guest
+
+After regenerating the canonical checksum inventory for the reviewed candidate:
+
+```sh
+python3 -I -B .agents/skills/workspace-orchestrator/tests/native-process-observation-test.py
+python3 -I -B .agents/skills/workspace-orchestrator/tests/native-process-observation-test.py --qualify
+python3 -I -B .agents/skills/workspace-orchestrator/tests/runtime-observation-test.py
+python3 -I -B .agents/skills/workspace-orchestrator/tests/execution-plan-test.py
+make check
+pre-commit run --all-files
+```
+
+Ordinary native fixtures cover strict parsing/wire refusal, mocked source/context
+races and absence sequencing, actual bounded subprocess flooding/stall/exit
+cleanup, and copied-helper integrity. `--qualify` requires the exact profile and
+tests actual repeated live identity, adversarial comm bytes, copied installation,
+zombie/reaped lifecycle and recorded boot mismatch. Unsupported profile returns
+`UNQUALIFIED`, exit 3; successful lifecycle assertions report
+`LIFECYCLE_VERIFIED`, with `backend_qualified: false`. This is a bounded case result.
+Namespace/mount capabilities and adversarial actual-guest cases remain separate
+unqualified gates, never implicit passing skips. Record command exits and exact
+candidate revision with the guest results before changing any qualification claim.
+
 This opt-in experiment supports [ADR 0002](decisions/0002-native-process-identity.md).
 It is not a backend implementation, deployment approval, or native task claim gate.
 `PRIMITIVES_VERIFIED` means only the checks below passed in the reported guest.
@@ -80,9 +193,9 @@ presence alone and synthetic self-tests are not actual-guest evidence.
 
 ## Remaining qualification gates
 
-No complete two-sample backend, caller-thread namespace association, descriptor
-mount-ID recheck, target lifecycle or absence protocol is implemented here.
-Still required: new/ancestor PID namespace cases including numeric coincidence;
+The primitive fixture itself does not test the candidate two-sample backend,
+caller-thread association, mount-ID rechecks or absence protocol described above.
+Actual adversarial qualification still requires new/ancestor PID namespace cases including numeric coincidence;
 positive/negative/fractional time offsets and parent child-namespace transitions;
 same-procfs bind overlays, whole-root mount policy, foreign-filesystem overlays
 and deterministic replacement races; target exit/reuse, adversarial comm bytes,

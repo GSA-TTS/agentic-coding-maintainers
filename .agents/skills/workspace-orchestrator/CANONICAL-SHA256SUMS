@@ -1,17 +1,18 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-a035d32f7d847a1d0ee2969b82c5a73860b4354a671e64b298a4298097428630  ./PROVENANCE.md
+cab6c8c8d842380666eec97c8cbd85c28781222a7c9b6f8627cd63d740ecbbf0  ./PROVENANCE.md
 dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 ee185aae0dce4704ed54de7a5a92bd6e95cbf3dcb0b519f0b691cabe1cea7287  ./bin/assignment-journal.py
 8642ff2fcc6670adabcff247df168d367103c989b357c12d28b0215dde050738  ./bin/candidate-binding.py
 c5d6a343f20765c2ac73c4447fce1968fa96bb9c84d19d869603454d6ced7143  ./bin/execution-observe.py
-80e78603112ceed7e8ddfaee58051ff3810682abfbbe33f85709ae577b2e20f3  ./bin/execution-plan.py
+8749fe984b0997e7b3a7875e871f306bc2b442d3d3a01860f970403518e01739  ./bin/execution-plan.py
 d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foreground-admission.py
 96968c4758a2c51af1a0ac836f0ed41a69ad423a4a9633a69a8f30177327e61a  ./bin/foreground-adopt.py
 e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foreground-delivery.py
 55df01c80de182298ab9d6e7026f50755058396bb21bb3c5e39940439970fab8  ./bin/foreground-repair.py
 8a57114282fb1afe9e6135bbae31f46c70e0fdaa32b084da2c71ec5cf3194fcc  ./bin/foreground-review.py
 5516de7a432339a62949729ba5baddb7de0b78805ec5a2a53e707b4c047fd225  ./bin/monitor-journal.py
+e0dcddd2b0c147980e88cd62764329022a27367c240c2fc3a89d5e5df7fa8f9e  ./bin/native-process-observation.py
 da6efdd36dd0f16f9a4de3a88ade80add80d94c50ec16863e2210869c557129a  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
 d838cc46cce55f2d3a4c2db4c35d9b1209ae560501bd10693e1ef7a8ebf79441  ./bin/orchestrator-state.py
@@ -28,7 +29,7 @@ f19900a2f33673adccfa5b668859a9b3a7393275d066f5d8775aee28f45cc153  ./bin/review-p
 7308b5b1ab52c83eaa33a60568aa379831384085c14141557f327e09d76b81b8  ./bin/review-reservation.py
 33d5e96d08adf79e91c298d62bb08c53d1d4dec4f5e0725e031020d13fd261ab  ./bin/review-run.py
 c4d0b8d520adf30b5489dc8a4f782daf451956f4ba9498fc105988ff04ccf930  ./bin/review-source-map.py
-0d469c47108847fe483dadfb97adb619999ed7b04a528029ac85a01879d978d6  ./bin/runtime-observation.py
+95ead0dd1b4af91679d86e73a95fb97bb1db977087e7b12b02ffaad0b72e8f90  ./bin/runtime-observation.py
 47221921f3d61a5df545fbc8893d7aed3a111e0c697ef80aedef4865598feb5b  ./bin/standing-grant.py
 046083dca2865f063041a8078c9f7e64374148c3817a90003f57cd5f03fa3d32  ./docs/CANDIDATE-BINDING.md
 3a74cb0ba40c6d3e643aed6f20a0d4b8c9cf059bae05d236cb79a7930b1e1059  ./docs/DURABLE-PR-MONITOR.md
@@ -57,7 +58,7 @@ d7d452edc6a4072bca8ffffcbaaefcaa9cc89150312c1bea6f84f9df9c4f79dd  ./profiles/ope
 d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 10c4282def67c1f8fe05af3b5d5e1e27b10548f7531d44c667ce70cab16ab607  ./tests/candidate-binding-test.py
 507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py
-014abb62e34f59636db9bb79aba3e18092f41b3fa3e6e93e89d3617fd7dbe992  ./tests/execution-plan-test.py
+166713c268aacfdb70ad273d890b29359824ba2b2f42f5ade268b3d5d8e99e0f  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
 68a769e6c16f28321581bf109f0fb4341676d93f3e996935d94931d5ebfd963a  ./tests/foreground-admission-cases.py
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
@@ -68,6 +69,7 @@ d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 1a68af3feaf26d8d90e7b409b3b807f5144d2669730b03b5ce1f2145e70ed2fc  ./tests/foreground-review-cases.py
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
 8ce5076dba28c115920af104121fe93cf7cdc1d2fe74b73009de55f9ebd8c98d  ./tests/monitor-journal-test.py
+571eff232092a604526e2b67b89f3c777a38bc473d76b5bbe32ae785d59d26f0  ./tests/native-process-observation-test.py
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh
 4bae49777b9a2877d72df1f6567ee324164c99854f91e7be9ff53875707f1ad7  ./tests/orchestrator-monitor-test.sh
 949e5f105af9557320681191f430ce815dae47d0594f1d353132ea7e4ea16bd2  ./tests/orchestrator-production-worktree-test.sh
@@ -84,4 +86,4 @@ f23a3c65205e4f516ada032b5bea554c8e58a3d1cd7999f5f840b00b8621b18b  ./tests/review
 26ae85a438c8ba8e6ff30be79147eecc5db009ac585805f502cfdb82cd2f786b  ./tests/review-packet-test.py
 01cd0620783fe018e446b3323a7abbad7f9e60ff89144ac58f7c88d249b5648b  ./tests/review-reservation-test.py
 47884a2338d1db1fab1ef4106859c8556d0f4b66702c1bba3e72991ad1cd6375  ./tests/review-run-test.py
-94a4ac7f46d55a0e7accdbd7c51fb2392d5714e365dbc100a9358ea4c0b09283  ./tests/runtime-observation-test.py
+181861c3b9f2c9c49fb6896821000568830818179269f0f662a152f2fd6e9e5e  ./tests/runtime-observation-test.py
