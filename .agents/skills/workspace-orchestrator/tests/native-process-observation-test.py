@@ -4,10 +4,13 @@ Qualification is opt-in and reports unavailable capabilities explicitly. Never
 run these tests on the maintainer host; no test hooks enter production code.
 """
 
+import base64
 import copy
 import ctypes
 import errno
+import hashlib
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -51,6 +54,32 @@ def stat_bytes(comm=b"normal", ticks=b"12345"):
 
 
 class ParserTests(unittest.TestCase):
+    def test_profile_admits_only_complete_measured_tuples(self):
+        admitted = {("6.12.113", "3.12.16", b"2.36"), ("6.8.0-147-generic", "3.12.3", b"2.39")}
+        tuples = list(itertools.product(("6.12.113", "6.8.0-147-generic"),
+                                        ("3.12.16", "3.12.3"), (b"2.36", b"2.39")))
+        tuples.extend((("unknown", "3.12.3", b"2.39"), ("6.12.113", "3.12.16", b"2.40")))
+        for kernel, python, glibc in tuples:
+            lib = mock.Mock()
+            lib.gnu_get_libc_version.return_value = glibc
+            with self.subTest(kernel=kernel, python=python, glibc=glibc), \
+                    mock.patch.object(probe.platform, "system", return_value="Linux"), \
+                    mock.patch.object(probe.platform, "machine", return_value="aarch64"), \
+                    mock.patch.object(probe.platform, "python_implementation", return_value="CPython"), \
+                    mock.patch.object(probe.platform, "release", return_value=kernel), \
+                    mock.patch.object(probe.platform, "python_version", return_value=python), \
+                    mock.patch.object(probe.sys, "byteorder", "little"), \
+                    mock.patch.object(probe.os, "O_PATH", 0o10000000, create=True), \
+                    mock.patch.object(probe.os, "O_NOFOLLOW", 0o100000), \
+                    mock.patch.object(probe.os, "O_CLOEXEC", 0o2000000), \
+                    mock.patch.object(probe.os, "O_DIRECTORY", 0o40000), \
+                    mock.patch.object(probe.c, "CDLL", return_value=lib):
+                if (kernel, python, glibc) in admitted:
+                    self.assertIs(probe.profile(), lib)
+                else:
+                    with self.assertRaisesRegex(probe.Unknown, "unqualified kernel/interpreter/libc tuple"):
+                        probe.profile()
+
     def test_comm_is_bytes_and_final_parenthesis_delimits(self):
         for comm in (b"ordinary", b"a b)(c\n\xff", b")))))", b"(nested)"):
             self.assertEqual(probe.start_ticks(stat_bytes(comm), 42), "12345")
@@ -285,14 +314,15 @@ class ParentTests(unittest.TestCase):
             return json.dumps(reply()).encode()
 
         with mock.patch.object(observer.sys, "platform", "linux"), \
-                mock.patch.object(observer, "_trusted_helper", return_value=BIN / "native-process-observation.py"), \
+                mock.patch.object(observer, "_trusted_helper", return_value=(BIN / "native-process-observation.py", b"snapshot")), \
                 mock.patch.object(observer.os, "getpid", return_value=24), \
                 mock.patch.object(observer.threading, "get_native_id", return_value=25), \
                 mock.patch.object(observer, "_collect", side_effect=collect), \
                 mock.patch.object(observer, "process_identity") as legacy:
             self.assertEqual(observer.observe_worker_process({"pid": 42, "process_identity": IDENTITY},
                              environment={"PYTHONPATH": "/untrusted", "PATH": "/untrusted"}), ("alive", IDENTITY))
-            self.assertEqual(captured[0][:-1], [sys.executable, "-I", "-B", str(BIN / "native-process-observation.py")])
+            self.assertEqual(captured[0][:-1], [sys.executable, "-I", "-B", "-c", observer._NATIVE_BOOTSTRAP,
+                                              base64.b64encode(b"snapshot").decode(), str(BIN / "native-process-observation.py")])
             legacy.assert_not_called()
 
     def test_actual_collection_failure_modes_and_cleanup(self):
@@ -307,14 +337,118 @@ class ParentTests(unittest.TestCase):
         with mock.patch.object(observer.subprocess, "Popen", side_effect=spawn):
             self.assertEqual(observer._collect([sys.executable, "-I", "-B", "-c", "print('ok')"]), b"ok\n")
             for code, message in (("print('x'*10000)", "output limit"),
+                                  ("import sys;sys.stderr.write('x'*10000)", "output limit"),
                                   ("import sys;sys.stderr.write('bad')", "exit/stderr"),
                                   ("raise SystemExit(7)", "exit/stderr"),
+                                  ("import os,signal;os.kill(os.getpid(),signal.SIGSTOP)", "deadline"),
                                   ("import time;time.sleep(60)", "deadline")):
                 start = time.monotonic()
                 with self.assertRaisesRegex(observer.NativeUnknown, message):
                     observer._collect([sys.executable, "-I", "-B", "-c", code])
                 self.assertLess(time.monotonic() - start, 5)
                 self.assertIsNotNone(children[-1].poll(), "direct helper was not reaped")
+            with self.assertRaises(subprocess.TimeoutExpired):
+                observer._collect([sys.executable, "-I", "-B", "-c",
+                                   "import os,time;os.close(1);os.close(2);time.sleep(60)"])
+            self.assertIsNotNone(children[-1].poll(), "closed-pipe child was not reaped")
+
+    def test_final_wait_deadline_and_cleanup_timeout_map_to_unknown(self):
+        # Deterministic clock/child doubles place expiry exactly at final wait,
+        # and separately demonstrate bounded cleanup without claiming reaping.
+        for cleanup_timeout in (False, True):
+            child = mock.Mock()
+            child.poll.return_value = None if cleanup_timeout else 0
+            child.wait.side_effect = subprocess.TimeoutExpired("helper", 1) if cleanup_timeout else None
+            child.wait.return_value = 0
+            selector = mock.MagicMock()
+            selector.__enter__.return_value.get_map.return_value = {}
+            with mock.patch.object(observer.sys, "platform", "linux"), \
+                    mock.patch.object(observer, "_trusted_helper", return_value=(BIN / "native-process-observation.py", b"pass")), \
+                    mock.patch.object(observer.subprocess, "Popen", return_value=child), \
+                    mock.patch.object(observer.selectors, "DefaultSelector", return_value=selector), \
+                    mock.patch.object(observer.time, "monotonic", side_effect=[0, 2, 4]):
+                self.assertEqual(observer.native_process_identity(42), ("unknown", None))
+            child.stdout.close.assert_called_once()
+            child.stderr.close.assert_called_once()
+            if cleanup_timeout:
+                self.assertEqual(child.wait.call_args_list, [mock.call(timeout=1), mock.call(timeout=1)])
+                child.kill.assert_called_once()
+                self.assertIsNone(child.poll(), "fixture must leave cleanup unresolved")
+            else:
+                child.wait.assert_called_once_with(timeout=1)
+
+    def test_partial_reply_and_launch_failure_are_unknown(self):
+        original = observer._collect
+        with mock.patch.object(observer.sys, "platform", "linux"), \
+                mock.patch.object(observer, "_trusted_helper", return_value=(BIN / "native-process-observation.py", b"pass")):
+            with mock.patch.object(observer.subprocess, "Popen", side_effect=OSError("launch failed")):
+                self.assertEqual(observer.native_process_identity(42), ("unknown", None))
+            with mock.patch.object(observer, "_collect", side_effect=lambda command: original(
+                    [sys.executable, "-I", "-B", "-c", "print('{\"version\":1,')"])):
+                self.assertEqual(observer.native_process_identity(42), ("unknown", None))
+
+    def test_verified_snapshot_executes_despite_post_verification_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            skill = Path(directory)
+            (skill / "bin").mkdir()
+            copied_path = skill / "bin/runtime-observation.py"
+            shutil.copyfile(BIN / "runtime-observation.py", copied_path)
+            copied = load("snapshot_race_test", copied_path)
+            helper = skill / "bin/native-process-observation.py"
+            marker = skill / "substituted-executed"
+            # Trusted synthetic fixture proves execution of verified bytes,
+            # __file__/argv preservation, direct parent and calling-thread wire.
+            source = ("import json,os,sys\n"
+                      "r=json.loads(sys.argv[1])\n"
+                      "assert __file__ == sys.argv[0]\n"
+                      "assert os.getppid() == r['caller_tgid']\n"
+                      "assert r['caller_tid'] > 0\n"
+                      f"i={IDENTITY!r}\n"
+                      f"c={CONTEXT!r}\n"
+                      "print(json.dumps({**{k:r[k] for k in ('version','pid','caller_tgid','caller_tid')},"
+                      "'status':'alive','context':c,'identity':i}))\n").encode()
+            helper.write_bytes(source)
+            (skill / "CANONICAL-SHA256SUMS").write_text(
+                hashlib.sha256(source).hexdigest() + "  ./bin/native-process-observation.py\n")
+            original = copied._collect
+
+            def replace_then_launch(command):
+                helper.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\nraise SystemExit(9)\n")
+                return original(command)
+
+            with mock.patch.object(copied.sys, "platform", "linux"), \
+                    mock.patch.object(copied, "_collect", side_effect=replace_then_launch):
+                self.assertEqual(copied.native_process_identity(42), ("alive", IDENTITY))
+            self.assertFalse(marker.exists(), "unverified replacement executed")
+            with self.assertRaises(copied.NativeUnknown):
+                copied._trusted_helper()
+
+    def test_fifo_substitution_refuses_under_external_watchdog(self):
+        for which in ("helper", "manifest"):
+            with self.subTest(which=which), tempfile.TemporaryDirectory() as directory:
+                skill = Path(directory)
+                (skill / "bin").mkdir()
+                copied = skill / "bin/runtime-observation.py"
+                shutil.copyfile(BIN / "runtime-observation.py", copied)
+                helper = skill / "bin/native-process-observation.py"
+                manifest = skill / "CANONICAL-SHA256SUMS"
+                marker = skill / "executed"
+                source = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n".encode()
+                helper.write_bytes(source)
+                manifest.write_text(hashlib.sha256(source).hexdigest() + "  ./bin/native-process-observation.py\n")
+                target = helper if which == "helper" else manifest
+                target.unlink()
+                os.mkfifo(target)
+                code = ("import importlib.util,sys;"
+                        f"s=importlib.util.spec_from_file_location('fifo_test',{str(copied)!r});"
+                        "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                        "sys.platform='linux';"
+                        "assert m.native_process_identity(42)==('unknown',None);print('FIFO_REFUSED')")
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", code],
+                                        capture_output=True, check=True, timeout=5)
+                self.assertEqual(result.stdout, b"FIFO_REFUSED\n")
+                self.assertEqual(result.stderr, b"")
+                self.assertFalse(marker.exists())
 
     def test_copied_installation_integrity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -322,8 +456,8 @@ class ParentTests(unittest.TestCase):
             shutil.copytree(BIN.parent, skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             copied = load("native_copied_test", skill / "bin/runtime-observation.py")
             helper = skill / "bin/native-process-observation.py"
-            self.assertEqual(copied._trusted_helper(), helper)
             original = helper.read_bytes()
+            self.assertEqual(copied._trusted_helper(), (helper, original))
             helper.write_bytes(original + b"\n# changed\n")
             with self.assertRaises(copied.NativeUnknown):
                 copied._trusted_helper()

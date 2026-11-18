@@ -9,18 +9,40 @@ consumer selects these entry points yet. The primitive experiment below retains
 its original meaning. **Neither its result nor ordinary unit tests establish full
 backend qualification.**
 
-The candidate admits exactly Linux 6.12.113 / aarch64 / little-endian LP64 /
-loaded glibc 2.36 / CPython 3.12.16. ABI declarations and flags use the independent
+The candidate admits two complete kernel/interpreter/loaded-libc tuples, both
+Linux / aarch64 / little-endian LP64 / CPython:
+
+| Guest | Kernel | CPython | Loaded glibc |
+|---|---|---|---|
+| Bookworm | 6.12.113 | 3.12.16 | 2.36 |
+| Noble | 6.8.0-147-generic | 3.12.3 | 2.39 |
+
+Cross-combinations refuse. ABI declarations and flags use the independent
 installed-header measurements from PR #187, based at
-`d051a72c8295334b11bca85f5488c51995c45dc4`; runtime never compiles a witness or
-falls back to weaker opens. Other profiles return `unknown`.
+`d051a72c8295334b11bca85f5488c51995c45dc4`, and the 2026-11-18 Noble primitive
+run. Both measured the same 120-byte/alignment-8 `statfs`, all field offsets,
+24-byte `open_how`, resolver constants, actual fstatfs and syscall/errno behavior.
+The Noble run reported `SELF_TEST_PASSED` and `PRIMITIVES_VERIFIED`, each with
+`backend_qualified: false`. Its primitive Python source SHA-256 was
+`25f54387b16a2974f465fe095e174102c4b6d3f469666f914085055b0b61ab1d`; independent
+C witness source was `eb10c61c9650b5cb8a603684e9c3fdd30b3831d8928e5355b0597d2315d65145`.
+These are primitive measurements, not full-backend results. Runtime never
+compiles a witness or falls back to weaker opens. Other profiles return `unknown`.
 
 ### Fixed wire and source contract
 
-The parent invokes its checksum-verified installed sibling through its absolute
-interpreter with `-I -B`, a fixed PATH/locale environment, and one ASCII JSON
-argument. The trusted installation includes `CANONICAL-SHA256SUMS`; this detects
+The parent executes an immutable snapshot of its checksum-verified installed
+sibling through its absolute interpreter with `-I -B -c`, a fixed trusted
+bootstrap and a fixed PATH/locale environment. The bootstrap decodes the verified
+source bytes from a base64 data argument, preserves the sibling path as `__file__`
+and its compile filename, and presents one ASCII JSON request in `sys.argv[1]`.
+It never reopens the helper pathname. The trusted installation includes
+`CANONICAL-SHA256SUMS`; this detects
 mixed or substituted helper bytes, not a hostile owner rewriting the installation.
+Both inventory and helper are opened once with
+`O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC`, checked as regular files before reads, and read
+with 64 KiB byte caps and finite call budgets. FIFO substitution therefore refuses
+before any read; regular-file I/O can still encounter uninterruptible kernel waits.
 Controller manifests also bind the new helper. Retained exact seven- and
 eight-module manifests remain readable but cannot equal the current nine-module
 installation; new execution uses the existing new-generation/new-plan route.
@@ -104,7 +126,15 @@ pre-commit run --all-files
 
 Ordinary native fixtures cover strict parsing/wire refusal, mocked source/context
 races and absence sequencing, actual bounded subprocess flooding/stall/exit
-cleanup, and copied-helper integrity. `--qualify` requires the exact profile and
+cleanup, and copied-helper integrity. Additional security regressions replace
+the helper pathname after verification and before launch, requiring the original
+verified snapshot to execute while the replacement payload does not. Separate
+watchdog subprocesses substitute FIFOs for both inventory and helper and require
+unknown without payload execution. Cleanup cases include SIGSTOP, both closed
+output pipes with a live child, stderr flooding, partial replies, launch failure,
+final-wait deadline expiry, and mocked cleanup timeout. The latter explicitly
+leaves reaping unresolved and verifies unknown rather than claiming termination.
+`--qualify` requires the exact profile and
 tests actual repeated live identity, adversarial comm bytes, copied installation,
 zombie/reaped lifecycle and recorded boot mismatch. Unsupported profile returns
 `UNQUALIFIED`, exit 3; successful lifecycle assertions report
@@ -112,6 +142,60 @@ zombie/reaped lifecycle and recorded boot mismatch. Unsupported profile returns
 Namespace/mount capabilities and adversarial actual-guest cases remain separate
 unqualified gates, never implicit passing skips. Record command exits and exact
 candidate revision with the guest results before changing any qualification claim.
+
+### Opt-in privileged namespace matrix
+
+The repository-owned `native-process-namespace-qualification.py` fixture is
+integrated from the corrected, separately reviewed namespace qualification task.
+It is deliberately outside default test execution. In the approved disposable,
+credential-free guest, with guest-local storage and independently qualified
+external watchdog/descendant teardown, invoke:
+
+```sh
+python3 -I -B .agents/skills/workspace-orchestrator/tests/native-process-namespace-qualification.py --qualify-disposable-guest
+```
+
+Guest-local root is setup authority only: candidate imports happen after dropping
+to UID/GID 1000, clearing groups and capabilities, setting NoNewPrivs, closing
+privileged descriptors and limiting resources. Cases cover fresh/ancestor PID
+views, nonleader caller, recorded reaped absence, same-proc bind overlays of stat,
+boot, namespace directory and target directory, PID-child divergence, zero and
+positive/negative/fractional time offsets, current/child time divergence, and
+seccomp EPERM/ENOSYS. Negative cases require an alive baseline and independent
+injection witness; ancestor targets use retained pidfd-derived numeric mappings.
+
+The external watchdog must cover the complete 480-second invocation and confirm
+descendant teardown on every exit/timeout; internal deadlines are cooperative.
+Missing facilities yield `UNQUALIFIED`, expectation/cleanup failures `FAILED`.
+The root cases now use a test-only bootstrap over the immutable helper bytes
+returned by the production checksum gate. It wraps only `Proc.__init__` to pause
+before the second or third construction, leaving profile, observations, errors
+and wire serialization intact. Evidence is labeled **instrumented exact-source
+helper qualification**, distinct from the unmodified public-launch baseline and
+stable whole-root-bind controls. There is no production fault switch or inventory
+bypass. An abstract socket in the private network namespace carries only bounded
+readiness/resume packets, with SO_PEERCRED, helper parent/PID view, capabilities,
+NoNewPrivs and namespace witnesses checked by the privileged coordinator. No
+privileged descriptor reaches candidate execution.
+
+The coordinator self-binds `/proc` only at the requested barrier, independently
+proving genuine procfs, equal device/inode, changed fresh mount ID, unchanged
+held-root association, root `/` at `/proc`, and successful fresh constrained
+target traversal before release. No-change controls at both placements require
+alive; replacements before sample two or the final fresh-root check require
+unknown. Fresh uninstrumented observations require the baseline identity while
+the stable whole-root bind is present and after its witnessed removal.
+
+For the fixed three-case subset under the same guest/watchdog requirements:
+
+```sh
+python3 -I -B .agents/skills/workspace-orchestrator/tests/native-process-namespace-qualification.py --qualify-root-replacement
+```
+
+Exit 0 means every selected case actually reported `VERIFIED`; exit 3 means a
+case remains `UNQUALIFIED`, and exit 1 means a failure. Reports always retain
+`backend_qualified: false`. Implementation alone supplies no actual-guest
+root-replacement evidence; retain UNQUALIFIED until those runs are observed.
 
 This opt-in experiment supports [ADR 0002](decisions/0002-native-process-identity.md).
 It is not a backend implementation, deployment approval, or native task claim gate.
@@ -123,10 +207,13 @@ experiment and cannot establish native qualification.
 
 Use the operator-approved, credential-free, independently isolated Linux guest.
 A worktree alone is not isolation. Review both fixture files before executing.
-The initial ABI profile is **Linux / aarch64 / little-endian / LP64 / loaded
-glibc 2.36**; the intended validation tuple is **Linux 6.12.113 / CPython
-3.12.16 / aarch64 / glibc 2.36**. Kernel and Python versions are reported, not
-silently generalized into qualified backend support. Other ABI profiles refuse
+The original primitive ABI profile is **Linux / aarch64 / little-endian / LP64 /
+loaded glibc 2.36**; the intended validation tuple is **Linux 6.12.113 / CPython
+3.12.16 / aarch64 / glibc 2.36**. The primitive harness additionally admits only
+the exact Noble **6.8.0-147-generic / CPython 3.12.3 / glibc 2.39** tuple above.
+Its original glibc-2.36 experiment still reports arbitrary kernel/Python versions;
+the production helper is stricter and admits only the two complete tuples.
+Primitive results are not generalized into qualified backend support. Other ABI profiles refuse
 before compilation. Require trusted guest `/usr/bin/cc` (C11 plus GNU
 `__alignof__`), installed Linux/glibc development headers, `/usr/bin/ps`, Python,
 and genuine fixed `/proc` with accessible `NSpid`, namespace links and

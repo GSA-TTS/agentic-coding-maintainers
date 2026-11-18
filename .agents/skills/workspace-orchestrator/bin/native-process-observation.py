@@ -1,7 +1,7 @@
 """One-shot Linux procfs observer. Fixed sources, no environment fault hooks.
 
-Only the measured aarch64 LP64 glibc 2.36 / CPython 3.12.16 / Linux 6.12.113
-profile is admitted. This additive foundation does not enable native claims.
+Only the two independently measured aarch64 LP64 Bookworm/Noble tuples below
+are admitted. This additive foundation does not enable native claims.
 """
 
 import ctypes as c
@@ -77,12 +77,17 @@ class OpenHow(c.Structure):
     _fields_ = [(name, c.c_uint64) for name in ("flags", "mode", "resolve")]
 
 
+PROFILES = frozenset({("6.12.113", "3.12.16", b"2.36"),
+                      ("6.8.0-147-generic", "3.12.3", b"2.39")})
+
+
 def profile():
-    # Measured independently against installed C headers in PR 187. No runtime
+    # Measured independently against installed C headers in PR 187 and the
+    # Noble primitive qualification. Admit whole tuples, not Cartesian mixes.
+    # No runtime
     # compiler, guessed buffer, find_library, or weaker syscall fallback.
     require(platform.system() == "Linux" and platform.machine() == "aarch64"
-            and platform.release() == "6.12.113" and platform.python_implementation() == "CPython"
-            and platform.python_version() == "3.12.16" and sys.byteorder == "little"
+            and platform.python_implementation() == "CPython" and sys.byteorder == "little"
             and c.sizeof(c.c_void_p) == c.sizeof(c.c_long) == 8 and c.sizeof(c.c_int) == 4,
             "unqualified profile")
     require(c.sizeof(StatFS) == 120 and c.alignment(StatFS) == 8
@@ -97,7 +102,8 @@ def profile():
         0o10000000, 0o100000, 0o2000000, 0o40000), "ABI constants")
     libc = c.CDLL(None, use_errno=True)
     libc.gnu_get_libc_version.argtypes, libc.gnu_get_libc_version.restype = [], c.c_char_p
-    require(libc.gnu_get_libc_version() == b"2.36", "unqualified loaded libc")
+    require((platform.release(), platform.python_version(), libc.gnu_get_libc_version()) in PROFILES,
+            "unqualified kernel/interpreter/libc tuple")
     libc.fstatfs.argtypes, libc.fstatfs.restype = [c.c_int, c.POINTER(StatFS)], c.c_int
     libc.syscall.argtypes = [c.c_long, c.c_int, c.c_char_p, c.POINTER(OpenHow), c.c_size_t]
     libc.syscall.restype = c.c_long

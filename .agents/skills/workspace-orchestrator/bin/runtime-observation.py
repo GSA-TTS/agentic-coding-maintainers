@@ -9,6 +9,7 @@ released. Callers decide what an observation permits. Extracted unchanged from
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -105,6 +106,24 @@ def _reply(raw, request):
     return status, identity
 
 
+def _regular_source(path, limit):
+    # NONBLOCK prevents a substituted FIFO from stalling before its type check.
+    # Regular-file I/O and process creation still have no universal kernel bound.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        _require(stat.S_ISREG(os.fstat(fd).st_mode), "installation file type")
+        data = bytearray()
+        for _ in range(limit // 4096 + 1):
+            chunk = os.read(fd, min(4096, limit + 1 - len(data)))
+            _require(len(data) + len(chunk) <= limit, "installation source limit")
+            if not chunk:
+                return bytes(data)
+            data.extend(chunk)
+        raise NativeUnknown("installation read call limit")
+    finally:
+        os.close(fd)
+
+
 def _trusted_helper():
     """The installed checksum inventory is trusted alongside this module.
 
@@ -113,26 +132,25 @@ def _trusted_helper():
     """
     helper = Path(__file__).resolve().with_name("native-process-observation.py")
     manifest = helper.parent.parent / "CANONICAL-SHA256SUMS"
-    with manifest.open("rb") as stream:
-        inventory = stream.read(65537)
-    _require(len(inventory) <= 65536, "installation inventory limit")
+    inventory = _regular_source(manifest, 65536)
     entries = [line.split(b"  ", 1)[0] for line in inventory.splitlines()
                if line.endswith(b"  ./bin/native-process-observation.py")]
     _require(len(entries) == 1 and re.fullmatch(rb"[0-9a-f]{64}", entries[0]), "helper inventory")
-    fd = os.open(helper, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        _require(stat.S_ISREG(os.fstat(fd).st_mode), "helper file type")
-        data = bytearray()
-        for _ in range(33):
-            chunk = os.read(fd, 4096)
-            if not chunk:
-                break
-            data.extend(chunk)
-        _require(len(data) <= 131072, "helper source limit")
-        _require(hashlib.sha256(data).hexdigest().encode() == entries[0], "helper checksum")
-    finally:
-        os.close(fd)
-    return helper
+    data = _regular_source(helper, 65536)
+    _require(hashlib.sha256(data).hexdigest().encode() == entries[0], "helper checksum")
+    return helper, data
+
+
+# Only this fixed bootstrap is interpreter code supplied with -c. The verified
+# immutable snapshot is data, never a pathname reopened by the child. Compile's
+# filename and __file__ preserve diagnostics and installed-sibling semantics.
+_NATIVE_BOOTSTRAP = (
+    "import base64,sys;"
+    "source=base64.b64decode(sys.argv[1],validate=True);"
+    "path=sys.argv[2];request=sys.argv[3];sys.argv=[path,request];"
+    "exec(compile(source,path,'exec'),"
+    "{'__name__':'__main__','__file__':path,'__package__':None,'__spec__':None})"
+)
 
 
 def _collect(command):
@@ -181,10 +199,12 @@ def _native_observation(pid, expected=None):
         return "unknown", None
     try:
         _require(sys.platform == "linux" and os.path.isabs(sys.executable), "native platform")
-        helper = _trusted_helper()
+        helper, snapshot = _trusted_helper()
+        encoded = base64.b64encode(snapshot).decode("ascii")
         request = {"version": 1, "pid": pid, "caller_tgid": os.getpid(),
                    "caller_tid": threading.get_native_id(), "expected_context": expected}
-        raw = _collect([sys.executable, "-I", "-B", str(helper), json.dumps(request, separators=(",", ":"))])
+        raw = _collect([sys.executable, "-I", "-B", "-c", _NATIVE_BOOTSTRAP, encoded,
+                        str(helper), json.dumps(request, separators=(",", ":"))])
         return _reply(raw, request)
     except (NativeUnknown, OSError, ValueError, RecursionError, subprocess.SubprocessError):
         return "unknown", None
