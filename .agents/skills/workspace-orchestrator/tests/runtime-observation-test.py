@@ -241,6 +241,14 @@ class EpochConversionTests(unittest.TestCase):
 
 
 class FacadeCompatibilityTests(unittest.TestCase):
+    def test_record_directed_legacy_observation_keeps_exact_text_and_environment(self):
+        env = {"PATH": "/legacy-only"}
+        with mock.patch.object(observation, "process_identity", return_value=("alive", "one\ntwo")) as legacy:
+            result = observation.observe_worker_process({"pid": 42, "process_start": "unparsed old text"},
+                                                        environment=env)
+        self.assertEqual(result, ("alive", "one\ntwo"))
+        legacy.assert_called_once_with(42, environment=env)
+
     def test_signature_is_preserved(self):
         facade = inspect.signature(core.process_identity)
         self.assertEqual(facade, inspect.signature(observation.process_identity))

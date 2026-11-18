@@ -153,6 +153,7 @@ class PlanTests(unittest.TestCase):
 
     def test_controller_manifest_binds_the_process_observation_module(self):
         self.assertIn("runtime-observation.py", plan.MODULES)
+        self.assertIn("native-process-observation.py", plan.MODULES)
         manifest = plan.controller_manifest()
         self.assertEqual(manifest["runtime-observation.py"], plan.digest((BIN / "runtime-observation.py").read_bytes()))
         self.assertEqual(set(manifest), set(plan.MODULES))
@@ -183,12 +184,14 @@ class PlanTests(unittest.TestCase):
         probe.write_bytes(original)
         self.assertEqual(plan.assess(self.record, self.state)["execution"]["correctness"]["status"], "PASS")
 
-    def legacy_record(self):
+    def legacy_record(self, observer_only=False):
         """Rebuild the retained plan as admitted before the probe was a controller module."""
         self.execution()
         old_id = self.plan_id
         legacy = self.record["execution_plans"].pop(old_id)
-        del legacy["controller"]["runtime-observation.py"]
+        del legacy["controller"]["native-process-observation.py"]
+        if not observer_only:
+            del legacy["controller"]["runtime-observation.py"]
         legacy_id = plan.digest(plan.canonical(legacy))
         self.assertNotEqual(legacy_id, old_id)
         self.record["execution_plans"][legacy_id] = legacy
@@ -213,6 +216,7 @@ class PlanTests(unittest.TestCase):
 
     def test_plan_controller_shapes_other_than_current_or_legacy_are_refused(self):
         for mutate in (
+            lambda controller: controller.pop("runtime-observation.py"),
             lambda controller: controller.pop("execution-observe.py"),
             lambda controller: controller.update({"unexpected.py": "a" * 64}),
             lambda controller: (controller.pop("runtime-observation.py"), controller.pop("review-run.py")),
@@ -227,6 +231,29 @@ class PlanTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 plan.validate_plans(self.record, self.state)
             self.assertEqual(plan.assess(self.record, self.state)["status"], "UNVERIFIED")
+
+    def test_observer_only_plan_retained_but_not_current(self):
+        plan_id, retained = self.legacy_record(observer_only=True)
+        before = copy.deepcopy(self.record)
+        self.assertEqual(set(retained["controller"]), set(plan.OBSERVER_MODULES))
+        plan.validate_plans(self.record, self.state)
+        self.assertEqual(plan.digest(plan.canonical(retained)), plan_id)
+        self.assertEqual(plan.assess(self.record, self.state)["status"], "UNVERIFIED")
+        with self.assertRaisesRegex(Exception, "controller or owner differs"):
+            plan.dispatch_plan(self.record, self.state, "execution", self.sha)
+        self.assertEqual(self.record, before)
+
+    def test_native_helper_change_invalidates_current_plan(self):
+        installed = self.install_copy()
+        self.execution()
+        helper = installed / "native-process-observation.py"
+        helper.write_bytes(helper.read_bytes() + b"\n# helper changed\n")
+        self.assertEqual(plan.assess(self.record, self.state)["status"], "UNVERIFIED")
+        with self.assertRaisesRegex(Exception, "controller or owner differs"):
+            plan.dispatch_plan(self.record, self.state, "execution", self.sha)
+        helper.unlink()
+        with self.assertRaises(FileNotFoundError):
+            plan.controller_manifest()
 
     def test_no_empty_evidence_pass_or_invented_cases(self):
         self.request["payload"]["obligations"]["correctness"] = []

@@ -135,8 +135,9 @@ def profile():
         raise UnsupportedProfile("loaded libc lacks gnu_get_libc_version") from error
     version.argtypes, version.restype = [], c.c_char_p
     observed["libc"] = version().decode("ascii")
-    if observed["libc"] != "2.36":
-        raise UnsupportedProfile("requires loaded glibc 2.36")
+    if observed["libc"] != "2.36" and (observed["kernel"], observed["python"], observed["libc"]) != (
+            "6.8.0-147-generic", "3.12.3", "2.39"):
+        raise UnsupportedProfile("requires glibc 2.36 or the explicit Noble qualification tuple")
     return observed, libc
 
 

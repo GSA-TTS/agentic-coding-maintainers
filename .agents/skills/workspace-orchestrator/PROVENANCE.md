@@ -22,6 +22,51 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Additive native observer foundation candidate (2026-11-17)
+
+The successor qualified-foundation task integrates the repository-owned Noble
+primitive-harness patch and corrected namespace fixture on 2026-11-18, after
+their prior writers retired. Noble's independently compiled installed-header
+witness measured the same ABI on Linux 6.8.0-147-generic / CPython 3.12.3 /
+loaded glibc 2.39 / aarch64 LP64 little-endian. Its primitive source hash is
+`25f54387b16a2974f465fe095e174102c4b6d3f469666f914085055b0b61ab1d`, C source hash
+`eb10c61c9650b5cb8a603684e9c3fdd30b3831d8928e5355b0597d2315d65145`.
+Runtime admits only that complete tuple and the original complete Bookworm tuple;
+mocked Cartesian-mix refusals supplement, not replace, real guest measurements.
+The opt-in namespace fixture preserves reviewed containment, privilege-drop,
+independent injection witnesses and pidfd target mapping; three root-barrier
+cases initially remained explicitly UNQUALIFIED. Subsequent repository-owned
+fixture work adds exact verified-byte instrumentation before the second/third
+Proc construction, bounded authenticated readiness/resume, independent privileged
+whole-root-bind mount witnesses, and uninstrumented alive controls. Production
+helpers and checksum gates are unchanged. Root-case qualification remains
+UNQUALIFIED until actual observed execution; no full-backend qualification is asserted.
+
+Security rework on 2026-11-18, following candidate `3c25eb2`, replaces the
+hash-then-path-execution handoff with immutable verified source bytes executed
+by a fixed trusted bootstrap. It preserves helper filename/argv and direct-parent
+semantics while preventing post-verification pathname replacement from selecting
+executed code. Inventory and helper opens are nonblocking, no-follow regular-file
+checks with bounded reads, including FIFO-substitution refusal. Added deterministic
+replacement, watchdog FIFO and bounded cleanup regressions require independent
+isolated validation; the admitted ABI/profile is unchanged.
+
+Repository-owned implementation based at
+`d051a72c8295334b11bca85f5488c51995c45dc4`, following ADR 0002 and the independent
+installed-header primitive experiment in PR #187. No external implementation is
+copied. The measured Linux aarch64 LP64 little-endian glibc 2.36 ABI is pinned to
+the initial Linux 6.12.113 / CPython 3.12.16 profile; other profiles refuse.
+`runtime-observation.py` retains its exact legacy function and adds strict
+native/record-directed APIs. The new one-shot sibling uses constrained procfs
+descriptors, two samples, caller-thread/context binding and fresh-root mount-ID
+association checks. Finite seven/eight/nine-module controller manifests preserve
+historical readability and invalidate old applicability. Native claims and core
+callers remain legacy pending separate integration. Parser/race/wire and opt-in
+guest lifecycle fixtures are candidate evidence, not full backend qualification;
+see `docs/NATIVE-PROCESS-QUALIFICATION.md` for the outstanding actual namespace,
+mount and privilege cases. Canonical checksum generation and isolated validation
+must precede review; original imported source history remains unchanged.
+
 ### Synthetic standing-grant executor candidate
 
 Issue #68 implementation on canonical base
