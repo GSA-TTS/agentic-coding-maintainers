@@ -342,6 +342,112 @@ class DualFormatCoreTest(unittest.TestCase):
             with self.assertRaises(self.core.UnknownError):
                 self.core.read_json(path, "ambiguous")
 
+    def test_mixed_reverse_scans_preserve_legacy_duplicate_lease_semantics(self):
+        for legacy_bound in (False, True):
+            for native_bound in (False, True):
+                suffix = f"{legacy_bound}-{native_bound}"
+                legacy_name, native_name = "legacy-" + suffix, "native-" + suffix
+                self.create(legacy_name, native=False)
+                legacy = self.transition(self.claim(legacy_name, bound=legacy_bound), "Implementing")
+                legacy_bytes = {}
+                for group, index in (("slots", legacy["leases"]["global_slot"]),
+                                     ("implementation", legacy["leases"]["implementation_lane"]),
+                                     ("scopes", legacy["scope_key"])):
+                    path = self.state / group / f"{index}.lock" / "owner.json"
+                    owner = json.loads(path.read_bytes())
+                    field = "token" if group == "scopes" else "owner"
+                    raw = json.dumps(owner).replace('"' + field + '":',
+                        '"' + field + '":"discarded-legacy-value", "' + field + '":', 1)
+                    path.write_text(raw)
+                    legacy_bytes[path] = path.read_bytes()
+                    self.assertEqual(self.core.read_json(path, "legacy owner"), owner)
+
+                # Admission and lane acquisition must not strictly reparse the
+                # unrelated legacy leases merely because native state is present.
+                self.create(native_name)
+                native = self.claim(native_name, bound=native_bound)
+                native = self.transition(native, "Implementing")
+                self.validate(native)
+                # Family-sensitive decoding must not weaken physical selection
+                # even for a historically acceptable unrelated legacy lease.
+                for owner_path in legacy_bytes:
+                    lease = owner_path.parent
+                    external = self.root / ("external-legacy-" + owner_path.parent.parent.name)
+                    lease.rename(external)
+                    lease.symlink_to(external, target_is_directory=True)
+                    try:
+                        self.assert_no_effect(lambda: self.transition(native, "Reviewing"))
+                        self.assertEqual((external / "owner.json").read_bytes(), legacy_bytes[owner_path])
+                    finally:
+                        lease.unlink()
+                        external.rename(lease)
+                for target in ("Reviewing", "Cancelled"):
+                    native = self.transition(native, target)
+                    self.assertEqual({p: p.read_bytes() for p in legacy_bytes}, legacy_bytes)
+                self.assertEqual(self.core.read_task(self.state, legacy_name, allow_bound=True), legacy)
+                # The original legacy release path still accepts its historical
+                # last-value duplicates (both ordinary and cooperative families).
+                self.transition(legacy, "Cancelled")
+
+    def test_mixed_reverse_scan_family_is_task_bound_and_discriminators_stay_strict(self):
+        for bound in (False, True):
+            name = f"family-native-{bound}"
+            self.create(name)
+            native = self.transition(self.claim(name, bound=bound), "Implementing")
+            legacy_name = f"family-legacy-{bound}"
+            self.create(legacy_name, native=False)
+            legacy = self.claim(legacy_name)
+            native_scope = self.state / "scopes" / f"{native['scope_key']}.lock" / "owner.json"
+            legacy_scope = self.state / "scopes" / f"{legacy['scope_key']}.lock" / "owner.json"
+            legacy_slot = self.state / "slots" / f"{legacy['leases']['global_slot']}.lock" / "owner.json"
+            cases = []
+            for path in (native_scope, legacy_scope):
+                raw = path.read_text()
+                # Scope schema 2 is shared: repeated discriminator must refuse
+                # for BOTH families even when the final projection is unchanged.
+                cases.append((path, raw.replace('"schema_version": 2',
+                    '"schema_version": 2, "schema_vers\\u0069on": 2', 1)))
+            # Native scope has no process_identity hint. Task-based selection,
+            # not worker format, must cause this non-discriminator refusal.
+            cases.append((native_scope, native_scope.read_text().replace('"token":',
+                '"token":"discarded", "t\\u006fken":', 1)))
+            # An unrelated legacy record is not permission to hide native hints.
+            cases.append((legacy_slot, legacy_slot.read_text().replace('"owner":',
+                '"process_identity":{}, "owner":"discarded", "owner":', 1)))
+            for path, raw in cases:
+                original = path.read_bytes()
+                try:
+                    path.write_text(raw)
+                    with self.subTest(schema=native["schema_version"], group=path.parent.parent.name):
+                        self.assert_no_effect(lambda: self.core.mixed_reservation_owner(path.parent))
+                        self.assert_no_effect(lambda: self.transition(native, "Reviewing"))
+                        self.assert_no_effect(lambda: self.create("refused-admission"))
+                finally:
+                    path.write_bytes(original)
+            # A forged task_id must not choose legacy duplicate semantics for
+            # a native scope: association includes its selected index and token.
+            raw = native_scope.read_text().replace('"task_id": "' + name + '"',
+                '"task_id": "' + legacy_name + '"')
+            raw = raw.replace('"token":', '"token":"discarded", "token":', 1)
+            original = native_scope.read_bytes()
+            try:
+                native_scope.write_text(raw)
+                self.assert_no_effect(lambda: self.core.mixed_reservation_owner(native_scope.parent))
+            finally:
+                native_scope.write_bytes(original)
+            # A parseable legacy-looking owner cannot select compatibility
+            # when its purported owning task fails actual schema validation.
+            task_path = self.core.task_path(self.state, legacy_name)
+            original = task_path.read_bytes()
+            try:
+                invalid = dict(legacy, schema_version=True)
+                self.core.atomic_json(task_path, invalid)
+                self.assert_no_effect(lambda: self.core.mixed_reservation_owner(legacy_slot.parent))
+            finally:
+                task_path.write_bytes(original)
+            self.transition(native, "Cancelled")
+            self.transition(legacy, "Cancelled")
+
     def test_native_implementation_requalifies_before_any_lane_or_task_effect(self):
         for bound in (False, True):
             name = f"qualification-{bound}"

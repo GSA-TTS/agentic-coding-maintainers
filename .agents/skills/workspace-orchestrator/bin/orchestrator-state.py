@@ -352,8 +352,8 @@ def physical_directory(path: Path):
             raise UnknownError("physical directory unavailable") from exc
 
 
-def read_physical_json(parent: int, name: str) -> tuple[dict[str, Any], tuple[int, int]]:
-    """Bounded, unique-key read through a held directory; no FIFO/device opens."""
+def read_physical_json(parent: int, name: str, *, strict: bool = True) -> tuple[dict[str, Any], tuple[int, int]]:
+    """Bounded physical read; strict by default, ambiguous schemas always refuse."""
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     try:
         before = os.fstat(fd)
@@ -370,7 +370,7 @@ def read_physical_json(parent: int, name: str) -> tuple[dict[str, Any], tuple[in
             remaining -= len(chunk)
         if not remaining:
             raise UnknownError("native JSON exceeds byte bound")
-        raw, _ = decode_record_json(b"".join(chunks).decode("utf-8"), strict=True)
+        raw, _ = decode_record_json(b"".join(chunks).decode("utf-8"), strict=strict)
         after = os.fstat(fd)
         selected = os.stat(name, dir_fd=parent, follow_symlinks=False)
         if (not stat.S_ISREG(selected.st_mode)
@@ -384,7 +384,7 @@ def read_physical_json(parent: int, name: str) -> tuple[dict[str, Any], tuple[in
 
 
 @contextlib.contextmanager
-def native_lease(path: Path):
+def native_lease(path: Path, *, owning_family: bool = False):
     """Select a lease and its owner using held ancestor/directory descriptors."""
     try:
         with physical_directory(path.parent) as (parent, ancestors_unchanged):
@@ -396,7 +396,38 @@ def native_lease(path: Path):
                 info = os.fstat(fd)
                 if info.st_uid != os.getuid() or info.st_mode & 0o077 or set(os.listdir(fd)) != {"owner.json"}:
                     raise UnknownError("native lease directory is not private exact storage")
-                owner, identity = read_physical_json(fd, "owner.json")
+
+                def read_owner():
+                    if not owning_family:
+                        return read_physical_json(fd, "owner.json")
+                    # A tentative projection is only a lookup, never authority
+                    # to choose legacy semantics from a worker's field shape.
+                    # Native hints and repeated discriminators already refuse
+                    # duplicates in this read. Scope schema 2 alone says nothing
+                    # about its owning task's family.
+                    candidate, file_identity = read_physical_json(fd, "owner.json", strict=False)
+                    task_id = candidate.get("task_id")
+                    if not isinstance(task_id, str) or not TASK_RE.fullmatch(task_id):
+                        raise UnknownError("reservation owning task is invalid")
+                    task = read_task(path.parent.parent, task_id, allow_bound=True, allow_native=True)
+                    group = path.parent.name
+                    if group == "scopes":
+                        index, token = task["scope_key"], task["leases"]["scope_token"]
+                    elif group in {"slots", "implementation"}:
+                        index = task["leases"]["global_slot" if group == "slots" else "implementation_lane"]
+                        token = (task["worker"] or {}).get("token")
+                    else:
+                        raise UnknownError("reservation group is invalid")
+                    if index is None or path.name != f"{index}.lock" or candidate.get("token") != token:
+                        raise UnknownError("reservation owning task association changed")
+                    if is_native_task(task):
+                        strict_owner = read_physical_json(fd, "owner.json")
+                        if strict_owner != (candidate, file_identity):
+                            raise UnknownError("reservation changed during family selection")
+                        verify_native_reservation_owner(task, group, candidate)
+                    return candidate, file_identity
+
+                owner, identity = read_owner()
 
                 def unchanged():
                     ancestors_unchanged()
@@ -404,7 +435,7 @@ def native_lease(path: Path):
                     if (not stat.S_ISDIR(selected.st_mode)
                             or (selected.st_dev, selected.st_ino) != (info.st_dev, info.st_ino)
                             or set(os.listdir(fd)) != {"owner.json"}
-                            or read_physical_json(fd, "owner.json") != (owner, identity)):
+                            or read_owner() != (owner, identity)):
                         raise UnknownError("native lease selection changed")
 
                 unchanged()
@@ -417,6 +448,17 @@ def native_lease(path: Path):
 
 def native_reservation_owner(path: Path) -> dict[str, Any]:
     with native_lease(path) as (_, _, owner, unchanged):
+        unchanged()
+        return owner
+
+
+def mixed_reservation_owner(path: Path) -> dict[str, Any]:
+    """Physical reverse scan, with duplicate policy bound to the owning task.
+
+    read_task validates only the record, not its reservations: no reverse-scan
+    recursion or cache of family/authority. Native release remains strict.
+    """
+    with native_lease(path, owning_family=True) as (_, _, owner, unchanged):
         unchanged()
         return owner
 
@@ -1865,7 +1907,7 @@ def verify_native_capacity_release(root: Path, record: dict[str, Any]) -> None:
             if path.exists() or path.is_symlink():
                 verify_native_reservation_owner(record, group, native_reservation_owner(path))
         for lock in native_reservation_paths(root, group):
-            owner = native_reservation_owner(lock)
+            owner = mixed_reservation_owner(lock)
             if owner.get("task_id") == record["task_id"]:
                 if index is None or lock.name != f"{index}.lock":
                     raise UnknownError("native reverse capacity lease disagrees")
@@ -1912,7 +1954,7 @@ def verify_reservations(root: Path, record: dict[str, Any]) -> None:
     if is_native_task(record):
         verify_native_capacity_release(root, record)
         for lock in native_reservation_paths(root, "scopes"):
-            owner = native_reservation_owner(lock)
+            owner = mixed_reservation_owner(lock)
             if owner.get("task_id") == record["task_id"]:
                 if record["state"] in TERMINAL or lock.name != f"{record['scope_key']}.lock":
                     raise UnknownError("native reverse scope reservation disagrees")

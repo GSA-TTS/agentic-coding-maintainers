@@ -32,6 +32,12 @@ self-contained; repository-level integration owns independent-reader comparisons
 and exercises a copied skill without maintainer-root scripts. These repairs need
 fresh isolated validation and review; the earlier candidate's pass is not reused.
 
+A subsequent mixed-store review corrected reverse-scan parsing of unrelated
+legacy leases. Physical selection remains mandatory; the validated owning task
+and matching lease index/token select duplicate-key policy. Native records and
+ambiguous discriminators remain strict. Mixed-family admission and transition
+fixtures cover legacy byte preservation, invalid associations and symlinks.
+
 Repository-owned integration based at
 `638763a521d2c86f8d453b603d3bdcb983eba116`, following ADR 0002 / issue #182.
 This supersedes only the earlier foundation note that core/manual callers remain

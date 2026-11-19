@@ -45,6 +45,17 @@ scope metadata is selected strictly using its owning task's family. The independ
 reader remains strict for all families. Mixed scans do not downgrade ambiguous
 native bytes to legacy. These are parsing/selection fences, not migration.
 
+Core native reverse scans retain physical no-follow checks for every encountered
+lease, but select duplicate-key policy from its validated owning task rather than
+strictly decoding all unrelated legacy leases. A tentative owner projection is
+only a task lookup: the selected lease index and token must match that task before
+legacy non-discriminator duplicates are accepted. Native leases, including native
+scope metadata with outer schema 2, are re-read strictly. Repeated discriminators
+and native identity hints remain fail-closed even during tentative lookup; an
+unresolvable or misassociated owner cannot opt into legacy parsing. This restores
+legacy admission/lifecycle compatibility, not the independent reader's stricter
+contract or the existing explicit recovery scanner's strict parsing policy.
+
 This is a bounded lifecycle/manual-assignment slice, **not full backend
 qualification** (`full_backend_qualified` remains false). Native monitor/intake,
 foreground, review protocol, repair, execution, candidate/reservation, standing
