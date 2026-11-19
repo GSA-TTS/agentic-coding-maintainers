@@ -12,6 +12,28 @@ delta_head: 55c1721250f0c8c1b20c057e1791f21f99bc4244
 
 ## 1. Purpose and status
 
+### Alignment checkpoint — 2026-11-19 UTC
+
+The [portable-work roadmap](PORTABLE-WORK-ROADMAP.md) reconciles this tracker
+against main `638763a521d2c86f8d453b603d3bdcb983eba116`. PRs #169, #179 and #180
+are merged (respectively `1c0e8244e2f43529dedd08f9f562d32b9e666cf7`,
+`ba5dfa0bb0c37f95ffdecdddb2668aac14dc3619`, and
+`f06f49d2397893f654f36383c5a0bb480d6657f9`). The stacking/pending-publication
+description below is historical; it is no longer an outstanding merge gate.
+
+The operator's ALIGN request authorizes refreshed planning. It does not complete
+W0's exhaustive consumer re-pin or choose an implementation/migration by merging
+an inventory. W0–W7 remain the canonical conditional tracker; #167 still excludes
+code movement and adapters. D1–D10 need current-source dispositions before the
+affected step. The #182 core/manual candidates retain their owners and require
+combined validation/review; refresh affected consumers after their integration.
+The generic contract/examples slice can proceed without touching those paths.
+A Markdown/Git binding is additional scope, not a duplicate W1 extraction.
+
+Preserve historical source pins and findings below. New decisions and qualified
+results must state their revision and changed conditions; do not reset a Blocked
+row from an old checkbox or an agent summary.
+
 The tracking rule (the repository playbook's "Track All Identified Work" section, which the inventory also invokes) is that identified work, including deferred work, must be
 captured in a durable record and not only in a PR bullet, a code comment or a conversation.
 `docs/TASK-STORE-INVENTORY.md` names migration steps 1 to 5 as conditional possibilities and
