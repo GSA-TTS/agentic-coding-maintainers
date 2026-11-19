@@ -1,9 +1,54 @@
 # MSB-first full maintainer workspace plan
 
 Status: **planned, not qualified**. This is the bounded release-groundwork plan,
-not an installer or a claim of completed runtime tests. The initial source
-release target is v0.1.0. OpenCode is the first reference harness; Pi follows.
+not an installer or a claim of completed runtime tests. The historical initial
+source release target was v0.1.0; v0.7.0 is published as of 2026-11-19 UTC.
+Release numbering is not reset by this plan. OpenCode is the first reference harness; Pi follows.
 Prime retirement is separate work and is not performed or certified here.
+
+## Portable-work alignment — 2026-11-19 UTC
+
+The [aligned roadmap](PORTABLE-WORK-ROADMAP.md) reuses issue #125 for full
+workspace installation, persistence and real sandbox qualification. Maintainers
+owns one canonical versioned workflow payload; Patterns owns thin kit/catalog
+composition; Quickstart owns lifecycle, materialization and capability enforcement.
+Use the actual supported descriptor at pinned source revisions. Kit v3 remains
+the existing Quickstart #628 track, not a prerequisite for a first payload when
+current packaging is sufficient. Reconcile the active Quickstart #709 Python
+rewrite before choosing a backend adapter; an unmerged path is not a capability.
+
+Add both reference workflows to the OpenCode acceptance below: a synthetic
+documentation-link repair and a public/synthetic-document evidence brief through
+one headless runner. The latter's work contract needs no forge credentials or
+repository/PR identity. Approved provider access is a separate deployment choice;
+GSA/USAi defaults stay selectable rather than becoming generic work semantics.
+
+Start with existing fixed capacity and narrower operation budgets; #190 owns
+adaptive admission. Neither 8/3 nor #196 completion is required for the first
+working profile. Host observations consumed by the guest must identify their
+resource domain, boot/clock origin and freshness; unavailable visibility cannot
+create extra host entitlement or a privileged inspection fallback.
+
+Keep optional Paseo/UI code inside the qualified topology with only intended
+controller-interface access. A trusted plugin is not a sandbox. The CLI and UI
+share revision-aware commands/admission and one authority; removing the UI cannot
+lose runs/evidence or replay commands. Qualify current APIs and actual target
+selection, including refusal of unintended host execution.
+
+Record source, payload, kit, image, backend, architecture, harness and policy/config
+identities separately. Reusable images contain immutable programs/assets, not
+secrets, prompts, active runs or mutable evidence. Repeat startup, stop/start,
+replacement, removal, backup/restore and rollback after new writes must preserve
+the declared state lifecycle. Installation, runtime qualification, activation
+and verified workflow outcomes remain separate evidence.
+
+The refreshed source/consumption pins and existing cross-repository owners are
+listed in the roadmap. In particular, Patterns #588 supplies opt-in OCI runtime
+metadata persistence, while upstream Microsandbox #2029 tracks runtime-owned
+delegated cgroup ancestry/freezer coverage. Metadata stop/start and a manually
+capped sibling subtree do not qualify candidate workloads. A newer MSB binary
+alone does not resolve that gate; require actual supported delegation or a
+separately justified equivalent and exact-tuple execution/cleanup evidence.
 
 ## Measured checkpoint — 2026-11-06
 
