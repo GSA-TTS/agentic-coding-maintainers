@@ -54,15 +54,29 @@ def binding():
                              "session_id": "fixture-session", "worker": {"pid": 1}}}
 
 
+def native_binding():
+    value = binding()
+    value["schema_version"] = 3
+    task = value["task_binding"]
+    task["task_schema_version"] = 5
+    task["worker"] = {"task_id": task["task_id"], "owner": "fixture", "pid": 123,
+        "worker_id": "a" * 32, "token": "b" * 32, "hostname": "fixture-host",
+        "created_at": task["created_at"], "session_id": task["session_id"], "generation": task["generation"],
+        "process_identity": {"schema_version": 1, "backend": "linux-procfs",
+            "boot_id": "11111111-2222-3333-4444-555555555555",
+            "pid_namespace_inode": "4026531836", "start_ticks": "12345"}}
+    return value
+
+
 class ApprovalTest(unittest.TestCase):
-    def interaction(self, answer="approve", after=None, short_deadline=False, terminal_change=None):
+    def interaction(self, answer="approve", after=None, short_deadline=False, terminal_change=None, native=False):
         """Child has a real controlling PTY, parent responds only after full prompt."""
         child, fd = pty.fork()
         if child == 0:
             try:
                 if short_deadline:
                     publisher.MAX_APPROVAL_SECONDS = 0.08
-                value = binding()
+                value = native_binding() if native else binding()
                 actual_attributes = publisher.termios.tcgetattr
                 attribute_reads = 0
 
@@ -177,6 +191,32 @@ class ApprovalTest(unittest.TestCase):
         match = re.search(rb"RESULT:([A-Z_]+)", output)
         self.assertIsNotNone(match, output)
         return match[1].decode("ascii"), bytes(output)
+
+    def test_native_real_terminal_full_envelope_and_post_interaction_fences(self):
+        result, output = self.interaction(native=True)
+        self.assertEqual(result, "APPROVED")
+        self.assertIn(publisher.canonical(native_binding()).encode("ascii"), output)
+        for after, expected in (("changed", "APPROVAL_BINDING_CHANGED"),
+                                ("expiry", "APPROVAL_EXPIRED"), ("forked", "INTERACTION_REQUIRED")):
+            self.assertEqual(self.interaction(native=True, after=after)[0], expected)
+        self.assertEqual(self.interaction(native=True, answer="wrong-digest")[0], "APPROVAL_DECLINED")
+
+    def test_native_full_worker_validation_precedes_terminal(self):
+        mutations = [lambda b: b.update(schema_version=4), lambda b: b.update(schema_version=True),
+                     lambda b: b["task_binding"].pop("task_schema_version"),
+                     lambda b: b["task_binding"].update(task_schema_version=3),
+                     lambda b: b["task_binding"].update(worker={"pid": 1}),
+                     lambda b: b["task_binding"]["worker"].update(process_start="legacy"),
+                     lambda b: b["task_binding"]["worker"].update(generation=2),
+                     lambda b: b["task_binding"]["worker"]["process_identity"].update(backend="unknown"),
+                     lambda b: b["task_binding"]["worker"]["process_identity"].update(start_ticks=True)]
+        with mock.patch.object(publisher.os, "open") as opened:
+            for mutate in mutations:
+                value = native_binding()
+                mutate(value)
+                with self.assertRaisesRegex(publisher.Refusal, "INVALID_APPROVAL_BINDING"):
+                    publisher.collect_approval(value)
+            opened.assert_not_called()
 
     def test_actual_terminal_challenge(self):
         result, output = self.interaction()

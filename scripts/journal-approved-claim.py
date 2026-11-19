@@ -71,13 +71,14 @@ def lookup(args, claim, prepare, journal):
 
 def binding(task, journal):
     return {"task_id": task["task_id"], "created_at": task["created_at"],
+            **({"task_schema_version": 5} if task["schema_version"] == 5 else {}),
             "task_sha256": journal.fingerprint(task), "revision": task["revision"],
             "generation": task["cooperative_binding"]["generation"],
             "session_id": task["cooperative_binding"]["session_id"], "worker": copy.deepcopy(task["worker"])}
 
 
 def replay_matches(args, claim, task, public, prior, journal):
-    if (prior["schema_version"] != 2 or prior["claim"] != claim
+    if (prior["schema_version"] != (4 if task["schema_version"] == 5 else 2) or prior["claim"] != claim
             or prior["binding"] != binding(task, journal) or prior["comment"] != public["comment"]
             or prior["comment_sha256"] != public["comment_sha256"]
             or any(prior["identity_observation"][key] != getattr(args, argument) for key, argument in (
@@ -130,7 +131,8 @@ def record(args, claim, prepare, core, journal, intent, approval, observer):
         prospective_store_id = storage[3] if storage is not None and len(storage) > 2 else uuid.uuid4().hex
         while prospective_store_id in public["comment"]:
             prospective_store_id = uuid.uuid4().hex
-        request = {"schema_version": 2, "action": "claim-publication", "operation_id": claim["operation_id"],
+        request = {"schema_version": 4 if before[0]["schema_version"] == 5 else 2,
+                   "action": "claim-publication", "operation_id": claim["operation_id"],
                    "store_id": prospective_store_id,
                    "claim": copy.deepcopy(claim), "comment": public["comment"],
                    "comment_sha256": public["comment_sha256"], "binding": binding(before[0], journal),

@@ -112,7 +112,7 @@ def validate_binding(binding: object):
         "intent_sha256", "store_id", "target", "publisher", "payload", "payload_sha256",
         "prior_assignee_ids", "task_binding", "implementation_head"}:
         raise Refusal("INVALID_APPROVAL_BINDING")
-    require(type(binding["schema_version"]) is int and binding["schema_version"] == 1
+    require(type(binding["schema_version"]) is int and binding["schema_version"] in {1, 3}
             and binding["action"] == "add-assignee", "INVALID_APPROVAL_BINDING")
     for key in ("intent_operation_id", "operation_id", "attempt_id", "store_id"):
         value = binding[key]
@@ -165,12 +165,26 @@ def validate_binding(binding: object):
     # The journal validates the complete retained task binding. This collector
     # binds those exact bytes; it does not replace the core ownership validator.
     task = binding["task_binding"]
-    if type(task) is not dict or set(task) != {
-        "task_id", "created_at", "task_sha256", "revision", "generation", "session_id", "worker"}:
+    native = binding["schema_version"] == 3
+    expected = {"task_id", "created_at", "task_sha256", "revision", "generation", "session_id", "worker"}
+    if native:
+        expected.add("task_schema_version")
+    if type(task) is not dict or set(task) != expected:
         raise Refusal("INVALID_APPROVAL_BINDING")
     task_sha256 = task["task_sha256"]
     require(type(task_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", task_sha256)
             and type(task["worker"]) is dict, "INVALID_APPROVAL_BINDING")
+    if native:
+        path = Path(__file__).resolve().parents[1] / ".agents/skills/workspace-orchestrator/bin/monitor-journal.py"
+        spec = importlib.util.spec_from_file_location("publisher_native_journal", path)
+        if spec is None or spec.loader is None:
+            raise Refusal("ADAPTER_UNAVAILABLE")
+        journal = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(journal)
+        try:
+            journal.validate_native_binding(task)
+        except journal.JournalError as exc:
+            raise Refusal("INVALID_APPROVAL_BINDING") from exc
     require(len(canonical(binding)) <= MAX_DISPLAY_BYTES, "APPROVAL_DISPLAY_BOUND")
 
 

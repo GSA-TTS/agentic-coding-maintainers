@@ -171,7 +171,7 @@ class Store:
             store = p.directory(authority, ".orchestrator", stack, private=True)
             retained = []
             task = p.read_selected(store, ["tasks", self.args.task_id, "task.json"], stack, retained)
-            self.core.validate_record(task, self.args.task_id, allow_bound=True)
+            self.core.validate_record(task, self.args.task_id, allow_bound=True, allow_native=True)
             require(all(p.fingerprint(os.fstat(fd)) == before for fd, before in retained), "TASK_CHANGED")
             return task
 
@@ -180,7 +180,7 @@ class Store:
         if expected_revision is None:
             expected_revision = args.expected_revision
         c.verify_reservations(self.root, task)
-        require(task["schema_version"] == 3 and task["state"] in c.ACTIVE
+        require(c.is_cooperative_task(task) and task["state"] in c.ACTIVE
                 and task["transition_intent"] is None and task.get("transition_recovery", {}).get("phase") != "pending",
                 "OWNERSHIP_UNVERIFIED")
         worker = task["worker"]
@@ -209,8 +209,8 @@ class Store:
                 and worker["session_id"] == args.expected_session_id
                 and worker["generation"] == args.expected_generation, "OWNERSHIP_CHANGED")
         if active:
-            require(c.process_identity(worker["pid"], environment={"PATH": "/usr/bin:/bin"})
-                    == ("alive", worker["process_start"]), "WORKER_NOT_ACTIVE")
+            require(c.observe_worker_process(worker, environment={"PATH": "/usr/bin:/bin"})
+                    == ("alive", c.recorded_worker_identity(worker)), "WORKER_NOT_ACTIVE")
 
     def intent(self, db):
         version = db.execute("SELECT version FROM meta").fetchone()[0]
@@ -220,7 +220,7 @@ class Store:
         require(row is not None, "INTENT_NOT_FOUND")
         intent = self.journal.decode_intent(row[0])
         self.journal.validate_claim_intent(intent)
-        require(intent["schema_version"] == 2 and row[1] == self.typed.digest(intent), "INTENT_CHANGED")
+        require(intent["schema_version"] in {2, 4} and row[1] == self.typed.digest(intent), "INTENT_CHANGED")
         return intent
 
     def guard(self, db, request, *, original=False, recovery=False, closed_receipt=None, standing=False):
@@ -263,6 +263,10 @@ class Store:
 
 def build(store, intent, task, ids, head):
     t = store.typed
+    require(store.core.is_cooperative_task(task), "OWNERSHIP_UNVERIFIED")
+    native = task["schema_version"] == 5
+    require(intent["schema_version"] == (4 if native else 2)
+            and intent["binding"] == t.task_binding(task), "ORIGINAL_INTENT_BINDING_CHANGED")
     operation, attempt = uuid.uuid4().hex, uuid.uuid4().hex
     reserved = copy.deepcopy(task)
     reserved.update(revision=task["revision"] + 1, updated_at=store.core.now(), assignment_dispatch={
@@ -271,14 +275,14 @@ def build(store, intent, task, ids, head):
         "original_revision": task["revision"], "implementation_head": head})
     observed, claim = intent["identity_observation"], intent["claim"]
     payload = t.canonical({"assignees": [observed["actor_login"]]})
-    binding = {"schema_version": 1, "action": "add-assignee", "intent_operation_id": intent["operation_id"],
+    binding = {"schema_version": 3 if native else 1, "action": "add-assignee", "intent_operation_id": intent["operation_id"],
                "operation_id": operation, "attempt_id": attempt, "intent_sha256": t.digest(intent),
                "store_id": intent["store_id"], "target": {"repository": claim["repo"], "issue": claim["issue"],
                    **{key: observed[key] for key in ("repository_id", "repository_node_id", "issue_id", "issue_node_id")}},
                "publisher": {"id": observed["actor_id"], "node_id": observed["actor_node_id"], "login": observed["actor_login"]},
                "payload": payload, "payload_sha256": hashlib.sha256(payload.encode("ascii")).hexdigest(),
                "prior_assignee_ids": ids, "task_binding": t.task_binding(reserved), "implementation_head": head}
-    return {"version": 1, "binding": binding, "original_task": task, "reserved_task": reserved,
+    return {"version": 3 if native else 1, "binding": binding, "original_task": task, "reserved_task": reserved,
             "approval": None, "evidence_id": uuid.uuid4().hex, "settlement_id": uuid.uuid4().hex}
 
 
@@ -296,7 +300,7 @@ def standing_target_fence(store, db, repository_id, issue):
             if request["version"] == 2 and store.typed.get(db, "assignment_settlements", request["settlement_id"]) is None:
                 require(not (binding["target"]["repository_id"] == repository_id and
                              (binding["action"] == "issue-create" or binding["target"].get("issue") == issue)), "TARGET_PENDING")
-    for other in store.core.command_list(store.root, allow_bound=True):
+    for other in store.core.command_list(store.root, allow_bound=True, allow_native=True):
         marker = other.get("assignment_dispatch", {})
         if marker.get("version") == 2 and marker.get("phase") == "pending":
             require(not (marker["target"]["repository_id"] == repository_id and
@@ -460,7 +464,8 @@ def recover(args, publisher):
     with store.locked() as db:
         require(db.execute("SELECT version FROM meta").fetchone()[0] in {6, 7}, "RESERVATION_NOT_FOUND")
         request = t.get(db, "assignment_requests", args.assignment_operation_id)
-        if (request is None or request["version"] != 1 or request["binding"]["implementation_head"] != args.implementation_head
+        if (request is None or type(request["version"]) is not int or request["version"] not in {1, 3}
+                or request["binding"]["implementation_head"] != args.implementation_head
                 or request["binding"]["intent_operation_id"] != args.intent_operation_id):
             raise Refusal("RESERVATION_REQUEST_CHANGED")
         require(store.task()["revision"] == args.expected_revision, "REVISION_MISMATCH")

@@ -81,7 +81,7 @@ def record(args, claim, prepare, core, journal):
             retained = []
             task, identity = prepare.selected(args, stack, retained)
             preflight.validate_task(task)
-            preflight.require(task["schema_version"] == 3, "UNSUPPORTED_SCHEMA")
+            preflight.require(task["schema_version"] in {3, 5}, "UNSUPPORTED_SCHEMA")
 
             def fresh():
                 output = prepare.prepare(args, claim)
@@ -103,12 +103,13 @@ def record(args, claim, prepare, core, journal):
             monitor_fd = preflight.directory(store, "monitor", stack, private=True)
             db = journal.open_store(monitor, writable=True)
             try:
-                request = {"schema_version": 1, "action": "claim-publication",
+                request = {"schema_version": 3 if task["schema_version"] == 5 else 1, "action": "claim-publication",
                            "operation_id": claim["operation_id"],
                            "store_id": db.execute("SELECT store_id FROM meta").fetchone()[0],
                            "claim": copy.deepcopy(claim), "comment": public["comment"],
                            "comment_sha256": public["comment_sha256"],
-                           "binding": {"task_id": task["task_id"], "created_at": task["created_at"],
+                            "binding": {"task_id": task["task_id"], "created_at": task["created_at"],
+                                        **({"task_schema_version": 5} if task["schema_version"] == 5 else {}),
                                        "task_sha256": journal.fingerprint(task), "revision": task["revision"],
                                        "generation": task["cooperative_binding"]["generation"],
                                        "session_id": task["cooperative_binding"]["session_id"],

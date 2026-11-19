@@ -177,7 +177,7 @@ def validate_store(db: sqlite3.Connection) -> None:
         for row in db.execute("SELECT * FROM claim_intents"):
             request = decode_intent(row["request"])
             validate_claim_intent(request)
-            if request["schema_version"] == 2 and meta[0]["version"] not in {5, 6, 7}:
+            if request["schema_version"] in {2, 4} and meta[0]["version"] not in {5, 6, 7}:
                 raise JournalError("identity-bound intent requires journal version 5")
             if (row["operation_id"] != request["operation_id"] or row["operation_id"] in seen
                     or request["store_id"] != meta[0]["store_id"]
@@ -319,9 +319,9 @@ def validate_claim_intent(request: dict[str, Any]) -> None:
         except ValueError as exc:
             raise JournalError("invalid claim intent timestamp") from exc
 
-    if type(request) is not dict or type(request.get("schema_version")) is not int or request["schema_version"] not in {1, 2}:
+    if type(request) is not dict or type(request.get("schema_version")) is not int or request["schema_version"] not in {1, 2, 3, 4}:
         raise JournalError("unsupported claim intent version/action")
-    extra = " identity_observation public_text_declaration" if request["schema_version"] == 2 else ""
+    extra = " identity_observation public_text_declaration" if request["schema_version"] in {2, 4} else ""
     fields(request, "schema_version action operation_id store_id claim comment comment_sha256 binding" + extra)
     if request["action"] != "claim-publication":
         raise JournalError("unsupported claim intent version/action")
@@ -355,7 +355,7 @@ def validate_claim_intent(request: dict[str, Any]) -> None:
             "<!-- native-claim:v1 " + canonical(claim) + " -->\n")
     if request["comment"] != body or hashlib.sha256(body.encode("utf-8")).hexdigest() != request["comment_sha256"]:
         raise JournalError("claim intent public body differs")
-    if request["schema_version"] == 2:
+    if request["schema_version"] in {2, 4}:
         observed = request["identity_observation"]
         fields(observed, "schema_version actor_id actor_node_id actor_login repository_id repository_node_id issue_id issue_node_id observed_at remote_coverage")
         declaration = request["public_text_declaration"]
@@ -379,7 +379,11 @@ def validate_claim_intent(request: dict[str, Any]) -> None:
                 or declaration["approved_body_sha256"] != request["comment_sha256"]):
             raise JournalError("identity declaration differs")
     binding = request["binding"]
-    fields(binding, "task_id created_at task_sha256 revision generation session_id worker")
+    native = request["schema_version"] in {3, 4}
+    fields(binding, "task_id created_at task_sha256 revision generation session_id worker" +
+           (" task_schema_version" if native else ""))
+    if native:
+        validate_native_binding(binding)
     token(binding["task_id"], r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
     stamp(binding["created_at"])
     token(binding["task_sha256"], r"[0-9a-f]{64}")
@@ -387,12 +391,13 @@ def validate_claim_intent(request: dict[str, Any]) -> None:
     number(binding["generation"])
     token(binding["session_id"], r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     worker = binding["worker"]
-    fields(worker, "task_id owner pid process_start worker_id token hostname created_at session_id generation")
+    fields(worker, "task_id owner pid worker_id token hostname created_at session_id generation " +
+           ("process_identity" if native else "process_start"))
     for key in ("worker_id", "token"):
         token(worker[key], r"[0-9a-f]{32}")
     number(worker["pid"])
     stamp(worker["created_at"])
-    for key in ("owner", "hostname", "process_start"):
+    for key in (("owner", "hostname") if native else ("owner", "hostname", "process_start")):
         value = worker[key]
         if type(value) is not str or not 1 <= len(value) <= 500 or value != value.strip() or any(ord(c) < 32 for c in value):
             raise JournalError("invalid private worker metadata")
@@ -406,6 +411,35 @@ def validate_claim_intent(request: dict[str, Any]) -> None:
         raise JournalError("private identity reused in public body")
     if len(canonical(request).encode("utf-8")) > MAX_INTENT_BYTES:
         raise JournalError("claim intent exceeds byte limit")
+
+
+def validate_native_binding(binding: dict[str, Any]) -> None:
+    """Native private envelope shared with the terminal collector, without I/O."""
+    if (type(binding) is not dict or set(binding) != {
+            "task_schema_version", "task_id", "created_at", "task_sha256", "revision",
+            "generation", "session_id", "worker"}
+            or type(binding["task_schema_version"]) is not int or binding["task_schema_version"] != 5):
+        raise JournalError("unsupported native private binding")
+    core = assignment_journal().module("orchestrator-state")
+    try:
+        core.validate_worker_for_schema(binding["worker"], 5)
+    except (core.InputError, core.UnknownError) as exc:
+        raise JournalError("invalid native worker") from exc
+    for key, pattern in (("task_id", r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}"),
+                         ("session_id", r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"),
+                         ("task_sha256", r"[0-9a-f]{64}"),
+                         ("created_at", r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z")):
+        if type(binding[key]) is not str or re.fullmatch(pattern, binding[key], re.ASCII) is None:
+            raise JournalError("invalid native private binding")
+    try:
+        datetime.fromisoformat(binding["created_at"].replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise JournalError("invalid native private timestamp") from exc
+    if (any(type(binding[key]) is not int or not 1 <= binding[key] <= 2**63 - 1
+            for key in ("generation", "revision"))
+            or binding["generation"] > binding["revision"]
+            or any(binding["worker"][key] != binding[key] for key in ("task_id", "session_id", "generation"))):
+        raise JournalError("native private binding differs")
 
 
 def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guard=None) -> str:
@@ -444,7 +478,7 @@ def record_claim_intent(db: sqlite3.Connection, request: dict[str, Any], *, guar
         if version in {1, 2}:
             db.execute("CREATE TABLE claim_intents (operation_id TEXT PRIMARY KEY NOT NULL, request TEXT NOT NULL, request_sha256 TEXT NOT NULL)")
             db.execute("UPDATE meta SET version=3")
-        if request["schema_version"] == 2 and version in {1, 2, 3, 4}:
+        if request["schema_version"] in {2, 4} and version in {1, 2, 3, 4}:
             if version in {1, 2, 3}:
                 db.execute("CREATE TABLE claim_observations (observation_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT NOT NULL REFERENCES claim_intents(operation_id), request_sha256 TEXT NOT NULL, receipt TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)")
             db.execute("UPDATE meta SET version=5")
@@ -502,7 +536,7 @@ def validate_claim_observation(db: sqlite3.Connection, receipt: dict[str, Any]) 
             or receipt["intent_request_sha256"] != row[1] or row[1] != fingerprint(request)
             or summary["issue_number"] != request["claim"]["issue"]):
         raise JournalError("claim observation intent differs")
-    if request["schema_version"] == 2 and any(
+    if request["schema_version"] in {2, 4} and any(
             summary[key] != request["identity_observation"][key] for key in ("repository_id", "issue_id")):
         raise JournalError("claim observation immutable target differs")
     if receipt["status"] == "VISIBLE_MATCH":

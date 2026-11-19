@@ -125,6 +125,32 @@ class ApprovedIntentTests(unittest.TestCase):
         return {"operation-id": OPERATION,
                 "approved-body-sha256": self.prepare.codec.digest(self.prepare.codec.render(claim))}
 
+    def test_native_declared_intent_parser_replay_and_exact_family(self):
+        fixtures.local.native_fixture(self.fixture.local)
+        self.assert_recorded()
+        request = self.request()
+        self.assertEqual(request["schema_version"], 4)
+        self.assertEqual(request["binding"]["task_schema_version"], 5)
+        self.assertEqual(self.invoke(steps=[])[1]["status"], "REPLAYED_PENDING")
+        self.assertFalse(self.calls.exists())
+        self.assertEqual(self.rows()[0], 5)
+        with mock.patch.object(sys, "argv", self.argv()):
+            args, claim = self.approval.arguments(self.prepare)
+        _, public = self.approval.snapshot(args, claim, self.prepare)
+        for version in (1, 2, 3, True, 5):
+            changed = dict(request, schema_version=version)
+            with self.subTest(version=version), self.assertRaises(self.module.Refusal):
+                self.module.replay_matches(args, claim, self.fixture.local.task, public, changed, self.journal)
+        for mutate in (lambda b: b.pop("task_schema_version"),
+                       lambda b: b.update(task_schema_version=True),
+                       lambda b: b.update(origin_task_schema=5),
+                       lambda b: b["worker"].update(process_start="legacy"),
+                       lambda b: b["worker"]["process_identity"].update(start_ticks=True)):
+            changed = copy.deepcopy(request)
+            mutate(changed["binding"])
+            with self.assertRaises(self.journal.JournalError):
+                self.journal.validate_claim_intent(changed)
+
     def test_fresh_six_gets_private_request_and_exact_zero_get_replay(self):
         self.assert_recorded()
         self.assertEqual(json.loads(self.calls.read_text()), self.fixture.urls)
@@ -589,6 +615,8 @@ class BoundObservationTests(unittest.TestCase):
         self.publication = ApprovedIntentTests()
         self.publication.setUp()
         self.addCleanup(self.publication.doCleanups)
+        if getattr(self, "native", False):
+            fixtures.local.native_fixture(self.publication.fixture.local)
         self.publication.assert_recorded()
         self.request = self.publication.request()
         self.fixture = self.publication.fixture
@@ -693,6 +721,10 @@ class BoundObservationTests(unittest.TestCase):
 
     def test_comment_author_numeric_id_must_match_bound_current_user(self):
         self.assertEqual(self.invoke(self.steps(author_id=99))[1]["observation_status"], "HISTORICAL_CONFLICT")
+
+
+class NativeBoundObservationTests(BoundObservationTests):
+    native = True
 
 
 if __name__ == "__main__":

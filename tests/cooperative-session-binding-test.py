@@ -903,6 +903,31 @@ class CooperativeBindingTest(unittest.TestCase):
             self.assertEqual(result.returncode, 3, (controller, result.stdout, result.stderr))
             self.assertEqual(self.snapshot(), before)
 
+    def test_native_formats_refuse_at_unsupported_operational_readers(self):
+        original = self.create()
+        for schema in (4, 5):
+            record = dict(original, schema_version=schema)
+            if schema == 5:
+                record.update(revision=1, cooperative_binding={"session_id": SESSION, "generation": 1})
+            self.persist_fixture(self.task_path(), record)
+            self.core_module.validate_record(record, allow_bound=True, allow_native=True)
+            before = self.snapshot()
+            commands = [("foreground-delivery.py", ["pilot"]), ("review-evidence.py", ["pilot"]),
+                        ("orchestrator-monitor.py", ["--task-id", "pilot", "--durable",
+                                                     "--config", str(self.root / "missing-config")]),
+                        ("execution-observe.py", ["pilot", "--operation-id", "fixture",
+                                                   "--definition", str(self.root / "missing-definition"),
+                                                   "--definition-sha256", "a" * 64,
+                                                   "--expected-revision", str(record["revision"])])]
+            for controller, args in commands:
+                result = subprocess.run([sys.executable, "-I", "-B", str(self.skill / controller), *args],
+                                        cwd=self.root, env=self.env, capture_output=True,
+                                        text=True, check=False, timeout=15)
+                self.assertEqual(result.returncode, 3, (schema, controller, result.stdout, result.stderr))
+                self.assertEqual(self.snapshot(), before)
+                self.assertFalse((self.state / "monitor").exists())
+                self.assertFalse((self.state / "execution-docker-config").exists())
+
     def test_verified_absent_operator_cancellation_and_lock_contention(self):
         self.create()
         child = self.live_child()
@@ -974,7 +999,7 @@ class CooperativeBindingTest(unittest.TestCase):
             for schema in (1, 2):
                 self.persist_fixture(self.task_path(), dict(legacy, schema_version=schema))
                 monitor.validate_monitor_task(root, "pilot")
-            for schema in (True, "2", 3, 4):
+            for schema in (True, "2", 3, 4, 5):
                 self.persist_fixture(self.task_path(), dict(legacy, schema_version=schema))
                 with self.assertRaisesRegex(ValueError, "schema is unsupported"):
                     monitor.validate_monitor_task(root, "pilot")

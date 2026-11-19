@@ -22,6 +22,36 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Bounded dual-format integration candidate (2026-11-19)
+
+Repository-owned integration based at
+`638763a521d2c86f8d453b603d3bdcb983eba116`, following ADR 0002 / issue #182.
+This supersedes only the earlier foundation note that core/manual callers remain
+legacy: lifecycle and manual-assignment readers now deliberately admit finite
+native families while preserving legacy formats and default consumer fences.
+There is no external code import or rewrite of original source provenance.
+
+Task 4/5 strict native worker identities, fresh observation before native capacity
+allocation, full lease comparisons/reverse scans and versioned cooperative
+recovery receipts accompany declared intent 4 / manual request and publisher
+binding 3. Weak intent 3 is non-authorizing. SQLite metadata/layout, legacy
+documents, standing budgets and controller execution shape are unchanged.
+Native creation stays default off; full-backend qualification remains false.
+Unsupported native consumers and identity migration remain fenced. Ordinary native
+terminal interruption after scope release is still UNVERIFIED, not a supported
+absence-clearing recovery path. No backend deployment, activation, conversion or
+historical pilot resolution is asserted.
+
+New core and connected integration fixtures are candidate evidence requiring
+isolated validation. The connected suite reuses the actual core/intent/PTY/manual
+dispatch/settlement producers with synthetic native observation and mock HTTP.
+Historical operational readers are retained as inert exact-source `.py.txt`
+fixtures under `tests/fixtures/dual-format-legacy/`, with source paths, full source
+revision, byte sizes and hashes in their manifest. Their provenance is that
+repository revision, not a handwritten approximation. Canonical checksums are
+regenerated only after integration source is final; fixed-head independent review
+and an exact human merge decision remain separate requirements.
+
 ### Additive native observer foundation candidate (2026-11-17)
 
 The successor qualified-foundation task integrates the repository-owned Noble

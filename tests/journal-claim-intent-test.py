@@ -86,6 +86,27 @@ class IntentTests(unittest.TestCase):
         self.monitor.mkdir(mode=0o700)
         return self.db()
 
+    def test_native_weak_intent_actual_parser_replay_and_mixed_retention(self):
+        self.assertEqual(self.invoke()[0], 0)
+        db = self.db()
+        old = tuple(db.execute("SELECT request,request_sha256 FROM claim_intents").fetchone())
+        fixture.native_fixture(self)
+        self.task_bytes = self.task_path.read_bytes()
+        overrides = {"operation-id": "e2" * 16}
+        self.assertEqual(self.invoke(overrides)[1]["status"], "INTENT_RECORDED")
+        self.assertEqual(self.invoke(overrides)[1]["status"], "REPLAYED_PENDING")
+        rows = db.execute("SELECT request,request_sha256 FROM claim_intents ORDER BY operation_id").fetchall()
+        self.assertEqual(tuple(rows[0]), old)
+        request = self.journal.decode_intent(rows[1][0])
+        self.assertEqual(request["schema_version"], 3)
+        self.assertEqual(request["binding"]["task_schema_version"], 5)
+        self.assertNotIn("identity_observation", request)
+        self.assertEqual(db.execute("SELECT version FROM meta").fetchone()[0], 3)
+        self.journal.validate_store(db)
+        with mock.patch.object(self.journal, "MAX_CLAIM_INTENTS", 2):
+            with self.assertRaisesRegex(self.journal.JournalError, "capacity"):
+                self.direct({"operation-id": "e3" * 16})
+
     def test_cli_record_exact_replay_and_private_request(self):
         code, first = self.invoke()
         self.assertEqual((code, first["status"]), (0, "INTENT_RECORDED"))

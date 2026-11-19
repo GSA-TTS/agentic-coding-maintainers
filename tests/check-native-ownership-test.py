@@ -162,6 +162,63 @@ class OwnershipTest(unittest.TestCase):
         # No fabricated immutable repository identity or native session fields.
         self.assertEqual(self.invoke({"expected-repo": None, "expected-branch": None})[1], "STATIC_MATCH")
 
+    def test_native_ordinary_and_cooperative_exact_lane_and_reverse_scan(self):
+        for schema in (4, 5):
+            self.task = task_fixture() if schema == 4 else bound_task_fixture()
+            self.task["schema_version"] = schema
+            worker = self.task["worker"]
+            worker.pop("process_start")
+            worker["process_identity"] = {
+                "schema_version": 1, "backend": "linux-procfs",
+                "boot_id": "01234567-89ab-cdef-0123-456789abcdef",
+                "pid_namespace_inode": "4026531836", "start_ticks": "123456"}
+            self.persist(include_lane=True)
+            invoke = self.invoke if schema == 4 else self.invoke_bound
+            before = {path: path.read_bytes() for path in (self.task_path, self.slot_path, self.lane_path, self.scope_path)}
+            self.assertEqual(invoke()[1], "STATIC_MATCH")
+            self.assertEqual(before, {path: path.read_bytes() for path in before})
+            changed = copy.deepcopy(worker)
+            changed["process_identity"]["start_ticks"] = "999"
+            self.write(self.lane_path, changed)
+            self.assertNotEqual(invoke()[1], "STATIC_MATCH")
+            self.write(self.lane_path, worker)
+            extra = self.lane_path.parents[1] / "1.lock/owner.json"
+            self.write(extra, worker)
+            self.assertEqual(invoke()[1], "UNVERIFIED")
+            extra.unlink()
+            extra.parent.rmdir()
+            for field, value in (("process_start", "dual"), ("extra", True)):
+                invalid = copy.deepcopy(worker)
+                invalid[field] = value
+                self.task["worker"] = invalid
+                self.persist(include_lane=True)
+                self.assertEqual(invoke()[1], "UNVERIFIED")
+            self.task["worker"] = worker
+            self.task["identity_migration"] = {}
+            self.persist(include_lane=True)
+            self.assertEqual(invoke()[1], "UNVERIFIED")
+
+    def test_native_recovery_receipt_origin_is_independent_and_exact(self):
+        self.task = bound_task_fixture()
+        self.task["schema_version"] = 5
+        self.task["worker"].pop("process_start")
+        self.task["worker"]["process_identity"] = {
+            "schema_version": 1, "backend": "linux-procfs",
+            "boot_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "pid_namespace_inode": "4026531836", "start_ticks": "123456"}
+        self.task = attach_recovery_receipt(self.task)
+        receipt = self.task["transition_recovery"]
+        receipt.update(version=1, task_schema_version=5)
+        receipt["correlation_sha256"] = recovery_digest(
+            {key: value for key, value in receipt.items() if key not in {"phase", "correlation_sha256"}})
+        self.persist(include_lane=True)
+        self.assertEqual(self.invoke_bound()[1], "STATIC_MATCH")
+        for field, value in (("version", True), ("task_schema_version", 3), ("origin_task_schema", 5)):
+            invalid = copy.deepcopy(self.task)
+            invalid["transition_recovery"][field] = value
+            self.write(self.task_path, invalid)
+            self.assertEqual(self.invoke_bound()[1], "UNVERIFIED")
+
     def test_two_same_user_callers_copying_worker_id_are_not_authenticated(self):
         self.assertEqual(self.invoke()[1], "STATIC_MATCH")
         self.assertEqual(self.invoke()[1], "STATIC_MATCH")

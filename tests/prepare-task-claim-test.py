@@ -28,6 +28,27 @@ def load(name, path):
     return module
 
 
+def native_fixture(local, pid=None):
+    """Explicit native lineage fixture, never a production conversion API."""
+    task = local.task
+    task["schema_version"] = 5
+    task.pop("transition_recovery", None)
+    worker = task["worker"]
+    worker.pop("process_start")
+    worker["process_identity"] = {"schema_version": 1, "backend": "linux-procfs",
+        "boot_id": "11111111-2222-3333-4444-555555555555",
+        "pid_namespace_inode": "4026531836", "start_ticks": "12345"}
+    if pid is not None:
+        worker["pid"] = pid
+    local.original_worker = copy.deepcopy(worker)
+    local.write(local.task_path, task)
+    for group, index in (("slots", task["leases"]["global_slot"]),
+                         ("implementation", task["leases"]["implementation_lane"])):
+        if index is not None:
+            local.write(local.state / group / (str(index) + ".lock") / "owner.json", worker)
+    return task
+
+
 class PreparationTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="task-claim-")
@@ -118,6 +139,15 @@ class PreparationTest(unittest.TestCase):
     def assert_result(self, expected, overrides=None, extra=()):
         code, output = self.invoke(overrides, extra)
         self.assertEqual((code, output["status"], output["reason"]), expected)
+
+    def test_native_preparation_actual_parser_and_exact_lease_identity(self):
+        native_fixture(self)
+        self.assert_result((3, "PREPARED_RETAINED_MATCH", "PUBLIC_REVIEW_REQUIRED"))
+        lease = self.state / "slots" / (str(self.task["leases"]["global_slot"]) + ".lock") / "owner.json"
+        changed = copy.deepcopy(self.task["worker"])
+        changed["process_identity"]["start_ticks"] = "12346"
+        self.write(lease, changed)
+        self.assertNotEqual(self.invoke()[1]["status"], "PREPARED_RETAINED_MATCH")
 
     def test_actual_schema3_fixed_public_payload(self):
         code, output = self.invoke()
@@ -244,6 +274,8 @@ class PreparationTest(unittest.TestCase):
         self.write(self.task_path, legacy)
         self.assert_result((3, "UNVERIFIED", "UNEXPECTED_BOUND_EXPECTATIONS"))
         self.write(self.task_path, dict(original, schema_version=4))
+        self.assert_result((3, "UNVERIFIED", "INVALID_METADATA"))
+        self.write(self.task_path, dict(original, schema_version=6))
         self.assert_result((3, "UNVERIFIED", "UNSUPPORTED_SCHEMA"))
 
     def test_idle_and_transitioning_tasks(self):

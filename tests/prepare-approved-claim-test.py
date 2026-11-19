@@ -82,6 +82,10 @@ class ApprovalTests(unittest.TestCase):
         calls = json.loads(self.remote.calls.read_text()) if self.remote.calls.exists() else []
         return outcome.returncode, result, calls
 
+    def test_native_actual_preparation_parser_and_six_gets(self):
+        local.native_fixture(self.local)
+        self.test_canonical_private_contract_and_exact_six_gets()
+
     def test_canonical_private_contract_and_exact_six_gets(self):
         code, result, calls = self.invoke()
         self.assertEqual((code, result["status"], calls), (3, "IDENTITY_BOUND_DECLARATION", self.urls))

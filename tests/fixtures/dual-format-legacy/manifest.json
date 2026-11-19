@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "source_revision": "638763a521d2c86f8d453b603d3bdcb983eba116",
+  "files": [
+    {
+      "source_path": ".agents/skills/workspace-orchestrator/bin/orchestrator-state.py",
+      "file": "orchestrator-state.py.txt",
+      "sha256": "d838cc46cce55f2d3a4c2db4c35d9b1209ae560501bd10693e1ef7a8ebf79441",
+      "size": 111207
+    },
+    {
+      "source_path": ".agents/skills/workspace-orchestrator/bin/runtime-observation.py",
+      "file": "runtime-observation.py.txt",
+      "sha256": "caac20af2b926ebba93850d2f803f96f2affd867795f95123a56bf72924f636c",
+      "size": 10166
+    },
+    {
+      "source_path": ".agents/skills/workspace-orchestrator/bin/monitor-journal.py",
+      "file": "monitor-journal.py.txt",
+      "sha256": "5516de7a432339a62949729ba5baddb7de0b78805ec5a2a53e707b4c047fd225",
+      "size": 47890
+    },
+    {
+      "source_path": ".agents/skills/workspace-orchestrator/bin/assignment-journal.py",
+      "file": "assignment-journal.py.txt",
+      "sha256": "ee185aae0dce4704ed54de7a5a92bd6e95cbf3dcb0b519f0b691cabe1cea7287",
+      "size": 20156
+    },
+    {
+      "source_path": ".agents/skills/workspace-orchestrator/bin/standing-grant.py",
+      "file": "standing-grant.py.txt",
+      "sha256": "47221921f3d61a5df545fbc8893d7aed3a111e0c697ef80aedef4865598feb5b",
+      "size": 35302
+    },
+    {
+      "source_path": ".agents/skills/workspace-orchestrator/bin/reservation-history.py",
+      "file": "reservation-history.py.txt",
+      "sha256": "d9cebce6eae187a6f50598e0605dc135b53e5c1fe7379691a960db2dded56837",
+      "size": 1311
+    },
+    {
+      "source_path": "scripts/check-native-ownership.py",
+      "file": "check-native-ownership.py.txt",
+      "sha256": "8683c8ab80dff47169f7a20d3bb181031b32540ed14173642282c5ddea439882",
+      "size": 26114
+    },
+    {
+      "source_path": "scripts/publish-github-assignment.py",
+      "file": "publish-github-assignment.py.txt",
+      "sha256": "221f0b2d887f9ad530d578b2c28f023754beba28f575be57463e68f1cac97ad9",
+      "size": 15840
+    }
+  ]
+}

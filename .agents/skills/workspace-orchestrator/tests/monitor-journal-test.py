@@ -2,6 +2,8 @@
 """Durable observation positives, restart, gaps and transactional refusal."""
 
 import importlib.util
+import copy
+import hashlib
 import os
 import json
 import subprocess
@@ -40,6 +42,72 @@ class JournalTests(unittest.TestCase):
 
     def snapshot(self):
         return journal.status(self.db, self.sources)
+
+    def intent(self, version, identifier):
+        claim = {"version": 1, "action": "claim", "repo": "fixture/project", "issue": 1,
+                 "claim_id": "c" * 32, "operation_id": identifier, "actor": "fixture",
+                 "branch": "feat/fixture", "task_ref": "issue:1", "scope": "implementation"}
+        body = ("Public coordination claim proposal (v1).\n"
+                "Operator review of every public field is required before posting.\n"
+                "This comment does not grant admission or mutation authority.\n\n"
+                "<!-- native-claim:v1 " + journal.canonical(claim) + " -->\n")
+        worker = {"task_id": "fixture", "owner": "fixture", "pid": 123, "process_start": "fixture start",
+                  "worker_id": "a" * 32, "token": "b" * 32, "hostname": "fixture",
+                  "created_at": "2026-11-18T00:00:00Z", "session_id": "private-session", "generation": 1}
+        binding = {"task_id": "fixture", "created_at": worker["created_at"], "task_sha256": "e" * 64,
+                   "revision": 2, "generation": 1, "session_id": worker["session_id"], "worker": worker}
+        if version in {3, 4}:
+            binding["task_schema_version"] = 5
+            del worker["process_start"]
+            worker["process_identity"] = {"schema_version": 1, "backend": "linux-procfs",
+                "boot_id": "11111111-2222-3333-4444-555555555555",
+                "pid_namespace_inode": "4026531836", "start_ticks": "12345"}
+        request = {"schema_version": version, "action": "claim-publication", "operation_id": identifier,
+                   "store_id": self.db.execute("SELECT store_id FROM meta").fetchone()[0],
+                   "claim": claim, "comment": body, "comment_sha256": hashlib.sha256(body.encode()).hexdigest(),
+                   "binding": binding}
+        if version in {2, 4}:
+            request.update(identity_observation={"schema_version": 1, "actor_id": 7, "actor_node_id": "U_fixture",
+                "actor_login": "fixture", "repository_id": 400, "repository_node_id": "R_fixture",
+                "issue_id": 500, "issue_node_id": "I_fixture", "observed_at": "2026-11-18T00:00:00.000000Z",
+                "remote_coverage": "repeated_identity_gets"}, public_text_declaration={"schema_version": 1,
+                "reviewer": "reviewer", "approved_body_sha256": request["comment_sha256"],
+                "public_text_approval": "DECLARED_UNAUTHENTICATED"})
+        return request
+
+    def test_mixed_intent_families_reopen_exact_bytes_without_schema_bump(self):
+        for version in (1, 3, 2, 4):
+            request = self.intent(version, str(version) * 32)
+            self.assertEqual(journal.record_claim_intent(self.db, request), "INTENT_RECORDED")
+            self.assertEqual(journal.record_claim_intent(self.db, request), "REPLAYED_PENDING")
+        before = [tuple(row) for row in self.db.execute("SELECT * FROM claim_intents ORDER BY operation_id")]
+        self.assertEqual(self.db.execute("SELECT version FROM meta").fetchone()[0], 5)
+        self.db.close()
+        self.db = journal.open_store(self.root, writable=True)
+        self.assertEqual([tuple(row) for row in self.db.execute("SELECT * FROM claim_intents ORDER BY operation_id")], before)
+        with mock.patch.object(journal, "MAX_CLAIM_INTENTS", 4):
+            with self.assertRaisesRegex(journal.JournalError, "capacity"):
+                journal.record_claim_intent(self.db, self.intent(4, "5" * 32))
+        for version in (3, 4):
+            with self.assertRaises(journal.JournalError), self.db:
+                self.db.execute("UPDATE meta SET version=?", (version,))
+                journal.validate_store(self.db)
+        journal.validate_store(self.db)
+
+    def test_native_intent_closed_versions_and_exact_private_identity(self):
+        request = self.intent(4, "4" * 32)
+        mutations = [lambda r: r.update(schema_version=True), lambda r: r.update(schema_version=5),
+                     lambda r: r.update(schema_version=2), lambda r: r.update(schema_version=3),
+                     lambda r: r["binding"].update(task_schema_version=True),
+                     lambda r: r["binding"].update(origin_task_schema=5),
+                     lambda r: r["binding"]["worker"].update(process_start="legacy"),
+                     lambda r: r["binding"]["worker"].update(extra="unsupported"),
+                     lambda r: r["binding"]["worker"]["process_identity"].update(start_ticks=True)]
+        for mutate in mutations:
+            changed = copy.deepcopy(request)
+            mutate(changed)
+            with self.assertRaises(journal.JournalError):
+                journal.validate_claim_intent(changed)
 
     def test_restart_unchanged_and_a_b_a_generations(self):
         first = self.start()

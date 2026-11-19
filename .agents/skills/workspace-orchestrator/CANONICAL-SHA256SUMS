@@ -1,8 +1,8 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-937da3fef5d185316962755ec862ef162752eef23aec55117805a173bb92ce04  ./PROVENANCE.md
-dd3265f63a4a313a6a102990395cd94e65bbaa0986ce42a5a5960feb5c427829  ./SKILL.md
+520db6e69d2e849f741cc8f9e90afa3787a4b75aa3d97e1e45729d5f510c81eb  ./PROVENANCE.md
+ef39d9113c781e78d81c1d38aae4c23bb2ade38dafafbd137eeb0ddc560b55ba  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
-ee185aae0dce4704ed54de7a5a92bd6e95cbf3dcb0b519f0b691cabe1cea7287  ./bin/assignment-journal.py
+c61a47f681fa7aa0bdb5b7e772c2b50912e2bd1244cf0f29908f606ea6ebd31d  ./bin/assignment-journal.py
 8642ff2fcc6670adabcff247df168d367103c989b357c12d28b0215dde050738  ./bin/candidate-binding.py
 c5d6a343f20765c2ac73c4447fce1968fa96bb9c84d19d869603454d6ced7143  ./bin/execution-observe.py
 8749fe984b0997e7b3a7875e871f306bc2b442d3d3a01860f970403518e01739  ./bin/execution-plan.py
@@ -11,11 +11,11 @@ d1355467c2932773a5b6212463fe6d23b543e16e393897d72620e84393783c26  ./bin/foregrou
 e87cdd198e8a9f55c962b914191534cb0f36053946c4067459247de5c3f1cef6  ./bin/foreground-delivery.py
 55df01c80de182298ab9d6e7026f50755058396bb21bb3c5e39940439970fab8  ./bin/foreground-repair.py
 8a57114282fb1afe9e6135bbae31f46c70e0fdaa32b084da2c71ec5cf3194fcc  ./bin/foreground-review.py
-5516de7a432339a62949729ba5baddb7de0b78805ec5a2a53e707b4c047fd225  ./bin/monitor-journal.py
+41c002bf262427330072e75c2bc0e8e1c8aac6c28e9cf9d840f3f78a542ff3b7  ./bin/monitor-journal.py
 0203da0c18160c8565f75b183ccbc500396cc331abcdc95ab1b1ffa072450fb8  ./bin/native-process-observation.py
 da6efdd36dd0f16f9a4de3a88ade80add80d94c50ec16863e2210869c557129a  ./bin/orchestrator-monitor.py
 c881d0c279b340a3a55ba73a5214edaab701af64bfca78f5f9ba78de81996d3a  ./bin/orchestrator-monitor.sh
-d838cc46cce55f2d3a4c2db4c35d9b1209ae560501bd10693e1ef7a8ebf79441  ./bin/orchestrator-state.py
+d0fcfd4a7df049499d97563593187916f50e9370d800f9b73dd700cec91dd4ad  ./bin/orchestrator-state.py
 ffa3c66ebcfa1e556f3f7e7e157f0748cbf70169a27c06772afbfe822b3f18c7  ./bin/orchestrator-state.sh
 758f61822f30af9c1d0b8013fcd8e98c2c8d1d48bb4500dd722580cb9d8942fe  ./bin/repair-apply.py
 66c78fbc691bf58a8d0f78aa83eb3b968c3eb4b0e08e90e2c7dfcd27fc1afeed  ./bin/repair-proposal.py
@@ -57,6 +57,7 @@ d7d452edc6a4072bca8ffffcbaaefcaa9cc89150312c1bea6f84f9df9c4f79dd  ./profiles/ope
 12bad142b7fcd20b4a4f3563bff8b2181697335802918b86224a1c7716421db5  ./profiles/opencode-v1/security-reviewer.md
 d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 10c4282def67c1f8fe05af3b5d5e1e27b10548f7531d44c667ce70cab16ab607  ./tests/candidate-binding-test.py
+0e4387669104cc4bd345c9b2097ff0fcb70028bc934ab64079d7bd0ce92b376d  ./tests/dual-format-core-test.py
 507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py
 166713c268aacfdb70ad273d890b29359824ba2b2f42f5ade268b3d5d8e99e0f  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
@@ -68,7 +69,7 @@ d7e69fd7eeda74ca046094c8183eb7f2ca48c21941fdc08e54c41b3237de9952  ./run.sh
 5bd40070bbbdeaab4c9b33487da23f9cba11e99599ce0a8920e7405ff47bf5d9  ./tests/foreground-handoff-test.py
 1a68af3feaf26d8d90e7b409b3b807f5144d2669730b03b5ce1f2145e70ed2fc  ./tests/foreground-review-cases.py
 4d73ffc913dfbe4f6c9a07ba5be0298d02ab16e9fd3d5f3b05527a438fb664a5  ./tests/monitor-capture-replay.py
-8ce5076dba28c115920af104121fe93cf7cdc1d2fe74b73009de55f9ebd8c98d  ./tests/monitor-journal-test.py
+8bb26fc939b9430c6f6dbcc151045d69bb3ee285665009b5b38e54f6ff9d61eb  ./tests/monitor-journal-test.py
 73ea89c1b9a4d979b7e54ccf1e0f54fcbc9b6d957d209b2b88ecb286a3c9bd42  ./tests/native-process-namespace-qualification.py
 368e3e436c1ce82fd4cb92a83f74aff9cdd0becfd618504b35d0ba675da09219  ./tests/native-process-observation-test.py
 35632928dfa0faa9ca7f5e993b3f3021ee72b61db306eccabfb1c4e6a2d1cb34  ./tests/orchestrator-demo.sh

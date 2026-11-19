@@ -40,6 +40,23 @@ dispatch = load("grant_executor", SOURCE / "scripts/standing-grant-dispatch.py")
 controller = load("grant_controller", SOURCE / "scripts/control-standing-grant.py")
 
 
+class StandingFamilyFenceTests(unittest.TestCase):
+    def test_native_admission_fence_precedes_shared_ownership(self):
+        typed = fixtures.adapter.modules()[3]
+        ownership = mock.Mock(side_effect=AssertionError("shared ownership reached"))
+        store = SimpleNamespace(typed=typed, ownership=ownership)
+        definition = {"repository": "example/project", "objective": "fixture", "work_item": "item"}
+        task = {"schema_version": 5, "kind": "intake", "state": "Claimed",
+                "repo": "example/project", "scope": "example/project:intake:fixture:item"}
+        for version in (4, 5, True, "3", 6):
+            with self.subTest(version=version), self.assertRaises(typed.Invalid):
+                dispatch.admitted(store, dict(task, schema_version=version), definition)
+        ownership.assert_not_called()
+        store.ownership = mock.Mock()
+        dispatch.admitted(store, dict(task, schema_version=3), definition)
+        store.ownership.assert_called_once()
+
+
 class ExecutorTests(unittest.TestCase):
     def setUp(self):
         self.real_environment = dict(os.environ)

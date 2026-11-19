@@ -73,7 +73,7 @@ def snapshot(args, claim, prepare, journal, observation_id=None):
         if identity is None:
             raise Refusal("CONFLICT", "ROOT_MISMATCH")
         preflight.validate_task(task)
-        preflight.require(task["schema_version"] == 3, "UNSUPPORTED_SCHEMA")
+        preflight.require(task["schema_version"] in {3, 5}, "UNSUPPORTED_SCHEMA")
         public = prepare.prepare(args, claim)
         if public["status"] != "PREPARED_RETAINED_MATCH":
             raise Refusal(public["status"], public["reason"])
@@ -116,7 +116,7 @@ def snapshot(args, claim, prepare, journal, observation_id=None):
             db.execute("BEGIN")
             journal.validate_store(db)
             version, store_id = db.execute("SELECT version,store_id FROM meta").fetchone()
-            # Journal schema is independent of the task's schema-3 fence above.
+            # Journal schema is independent of the task's cooperative family.
             # Intent-bearing versions are read-only; this path never migrates.
             preflight.require(version in {3, 4, 5, 6, 7}, "UNSUPPORTED_JOURNAL_SCHEMA")
             if observation_id is not None:
@@ -132,7 +132,9 @@ def snapshot(args, claim, prepare, journal, observation_id=None):
             raw, request_sha256 = rows[0]
             request = journal.decode_intent(raw)
             journal.validate_claim_intent(request)
-            if request["schema_version"] == 2:
+            if request["schema_version"] not in ({3, 4} if task["schema_version"] == 5 else {1, 2}):
+                raise Refusal("CONFLICT", "OPERATION_CONFLICT")
+            if request["schema_version"] in {2, 4}:
                 observed = request["identity_observation"]
                 for key, argument in (("actor_id", "expected_actor_id"),
                                       ("repository_id", "expected_repo_id"),
@@ -220,7 +222,7 @@ def collect(args, claim, prepare, journal, observer, *, initial=None, observatio
     # No private snapshot is accepted from a file or exported. Only this in-memory
     # body from the just-validated selected request reaches the internal matcher.
     request = journal.decode_intent(before[0])
-    factory = identity_transport(observer, request["identity_observation"]) if request["schema_version"] == 2 else observer.Transport
+    factory = identity_transport(observer, request["identity_observation"]) if request["schema_version"] in {2, 4} else observer.Transport
     transport = factory(claim["repo"], claim["issue"], time.monotonic() + observer.DEADLINE_SECONDS)
     try:
         remote = observer.observe(claim["repo"], claim["issue"], transport, expected_body=body)
