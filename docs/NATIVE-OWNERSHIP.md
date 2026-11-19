@@ -26,6 +26,25 @@ compare the complete worker and reverse-scan reservations. Process absence must
 come from the recorded boot/namespace context; wrong-context absence is not
 release authority. Cooperative session labels remain unauthenticated.
 
+Native physical lease selection opens every ancestor and lease directory with
+no-follow directory descriptors and reads a bounded private regular owner file
+through the held lease descriptor. Forward/reverse checks precede lifecycle
+intent writes; release repeats physical selection and uses descriptor-relative
+unlink/rmdir rather than following a replacement directory symlink. A concurrent
+same-account rename can still interrupt release after intent: it is not an atomic
+multi-file transaction or authenticated protection from that account. Such failure
+retains unresolved state, never permission to clear a different reservation.
+
+Native task/worker/lease JSON rejects duplicate decoded keys, including escaped
+spellings, before schema dispatch. Any native discriminator or `process_identity`
+key in the original pairs selects strict parsing even if a later duplicate would
+hide it. Repeated `schema_version`/`task_schema_version` keys are always ambiguous
+and refused, including repeated legacy values; unambiguously legacy non-discriminator
+duplicates otherwise retain the core's historical last-value behavior. Native
+scope metadata is selected strictly using its owning task's family. The independent
+reader remains strict for all families. Mixed scans do not downgrade ambiguous
+native bytes to legacy. These are parsing/selection fences, not migration.
+
 This is a bounded lifecycle/manual-assignment slice, **not full backend
 qualification** (`full_backend_qualified` remains false). Native monitor/intake,
 foreground, review protocol, repair, execution, candidate/reservation, standing

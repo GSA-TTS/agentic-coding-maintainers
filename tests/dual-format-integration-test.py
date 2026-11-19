@@ -12,6 +12,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -43,6 +45,110 @@ def load(name, path):
 dispatch = load("integration_dispatch_fixtures", ROOT / "tests/assignment-dispatch-test.py")
 local_fixtures = dispatch.fixture_module.fixtures.local
 adapter, publisher = dispatch.adapter, dispatch.publisher
+core_fixtures = load("integration_core_fixtures", ROOT / BIN / "../tests/dual-format-core-test.py")
+
+
+class PackagedCoreTests(unittest.TestCase):
+    def test_actual_copied_skill_only_suite_without_repository_scripts(self):
+        with tempfile.TemporaryDirectory(prefix="installed-dual-core-") as directory:
+            root = Path(directory).resolve()
+            skill = root / "installed-skill"
+            shutil.copytree(ROOT / ".agents/skills/workspace-orchestrator", skill,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            self.assertFalse((root / "scripts").exists())
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(("ORCHESTRATOR_", "WORKSPACE_ORCHESTRATOR_", "PYTHON", "GIT_"))}
+            result = subprocess.run([sys.executable, "-I", "-B", str(skill / "tests/dual-format-core-test.py")],
+                                    cwd=root, env=environment, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("OK", result.stderr)
+            self.assertFalse((root / "scripts").exists())
+
+
+class IndependentCoreReaderTests(core_fixtures.DualFormatCoreTest):
+    """Reapply independent comparisons to every packaged lifecycle validation.
+
+    This intentionally reruns the core matrix in the maintainer suite, while
+    the distributed suite has no dependency on this reader or repository layout.
+    """
+
+    def setUp(self):
+        core_fixtures.DualFormatCoreTest.setUp(self)
+        self.reader = load("independent_dual_reader", ROOT / "scripts/check-native-ownership.py")
+
+    def validate(self, record):
+        self.core.validate_record(record, allow_bound=True, allow_native=True)
+        self.reader.validate_task(record)
+
+    def reader_args(self, record):
+        return SimpleNamespace(authority_root=str(self.root), invoking_root=str(self.root),
+            task_id=record["task_id"], expected_revision=record["revision"],
+            expected_worker_id=record["worker"]["worker_id"], expected_repo=None, expected_branch=None,
+            expected_session_id=record["worker"].get("session_id"),
+            expected_generation=record["worker"].get("generation"))
+
+    def test_both_readers_refuse_raw_native_duplicates_without_effects(self):
+        # The packaged fixture's custom state location has no reader authority
+        # semantics. Move its empty state into the actual .orchestrator layout.
+        self.state.rename(self.root / ".orchestrator")
+        self.state = self.root / ".orchestrator"
+        for bound in (False, True):
+            name = f"reader-{bound}"
+            self.create(name)
+            record = self.transition(self.claim(name, bound=bound), "Implementing")
+            args = self.reader_args(record)
+            self.assertEqual(self.reader.inspect(args)["status"], "STATIC_MATCH")
+            cases = [(self.core.task_path(self.state, name), list(core_fixtures.duplicate_json_cases(record)))]
+            for group, field in (("slots", "global_slot"), ("implementation", "implementation_lane")):
+                cases.append((self.state / group / f"{record['leases'][field]}.lock" / "owner.json",
+                              list(core_fixtures.duplicate_worker_cases(record["worker"]))))
+            scope = self.state / "scopes" / f"{record['scope_key']}.lock" / "owner.json"
+            raw = scope.read_text().replace('"token":', '"token":"wrong", "t\\u006fken":', 1)
+            cases.append((scope, [("scope-token", raw)]))
+            for path, variants in cases:
+                original = path.read_bytes()
+                try:
+                    for case, raw in variants:
+                        path.write_text(raw)
+                        with self.subTest(schema=record["schema_version"], path=path.name, case=case):
+                            self.assert_no_effect(lambda: self.transition(record, "Reviewing"))
+                            self.assert_no_effect(lambda: self.reader.inspect(args), self.reader.Unverified)
+                finally:
+                    path.write_bytes(original)
+            # Semantic cross-family failures are independent of raw parsing.
+            for mutate in (lambda r: r["worker"].update(process_start="legacy"),
+                           lambda r: r["worker"]["process_identity"].update(start_ticks=True),
+                           lambda r: r.update(schema_version=3 if bound else 2)):
+                invalid = copy.deepcopy(record)
+                mutate(invalid)
+                with self.assertRaises(self.core.UnknownError):
+                    self.core.validate_record(invalid, allow_bound=True, allow_native=True)
+                with self.assertRaises(self.reader.Unverified):
+                    self.reader.validate_task(invalid)
+            self.transition(record, "Cancelled")
+
+    def test_both_readers_refuse_symlinked_slot_and_lane(self):
+        self.state.rename(self.root / ".orchestrator")
+        self.state = self.root / ".orchestrator"
+        for bound in (False, True):
+            name = f"links-{bound}"
+            self.create(name)
+            record = self.transition(self.claim(name, bound=bound), "Implementing")
+            for group, field in (("slots", "global_slot"), ("implementation", "implementation_lane")):
+                path = self.state / group / f"{record['leases'][field]}.lock"
+                external = self.root / f"external-{group}-{bound}"
+                path.rename(external)
+                path.symlink_to(external, target_is_directory=True)
+                before = (external / "owner.json").read_bytes()
+                try:
+                    self.assert_no_effect(lambda: self.reader.inspect(self.reader_args(record)), OSError)
+                    for target in ("Reviewing", "Cancelled"):
+                        self.assert_no_effect(lambda: self.transition(record, target))
+                    self.assertEqual((external / "owner.json").read_bytes(), before)
+                finally:
+                    path.unlink()
+                    external.rename(path)
+            self.transition(record, "Cancelled")
 
 
 class ConnectedPreparation(unittest.TestCase):

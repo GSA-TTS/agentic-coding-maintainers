@@ -24,6 +24,14 @@ other content in the source repository.
 
 ### Bounded dual-format integration candidate (2026-11-19)
 
+Fixed-head review follow-up adds descriptor-relative, no-follow native lease
+selection/release and raw duplicate-key detection before JSON projection.
+Ambiguous repeated schema discriminators refuse; unambiguously legacy ordinary
+duplicates retain their existing handling. The packaged native core suite is
+self-contained; repository-level integration owns independent-reader comparisons
+and exercises a copied skill without maintainer-root scripts. These repairs need
+fresh isolated validation and review; the earlier candidate's pass is not reused.
+
 Repository-owned integration based at
 `638763a521d2c86f8d453b603d3bdcb983eba116`, following ADR 0002 / issue #182.
 This supersedes only the earlier foundation note that core/manual callers remain

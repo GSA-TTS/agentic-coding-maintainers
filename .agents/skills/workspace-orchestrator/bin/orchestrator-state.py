@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import hashlib
 import importlib.util
@@ -11,6 +12,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -285,23 +287,166 @@ def atomic_json(path: Path, data: dict[str, Any]) -> None:
             os.unlink(tmp)
 
 
-def read_json(path: Path, label: str, *, strict: bool = False) -> dict[str, Any]:
-    def unique_object(pairs):
+def decode_record_json(text: str, *, strict: bool = False) -> tuple[dict[str, Any], bool]:
+    """Preserve legacy duplicate semantics only for unambiguously legacy bytes.
+
+    Inspect decoded key/value pairs BEFORE last-value projection. Any native
+    schema value or process_identity key at any depth selects strict parsing;
+    repeated schema discriminators are always ambiguous, even if the last is 2.
+    Escaped spellings are decoded by JSON before these comparisons.
+    """
+    duplicate = False
+    native = False
+
+    def object_pairs(pairs):
+        nonlocal duplicate, native
         result = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError("duplicate JSON key")
+                duplicate = True
+                if key in {"schema_version", "task_schema_version"}:
+                    raise ValueError("ambiguous JSON schema discriminator")
+            if key == "process_identity" or (key in {"schema_version", "task_schema_version"}
+                                             and type(value) is int and value in {4, 5}):
+                native = True
             result[key] = value
         return result
 
+    raw = json.loads(text, object_pairs_hook=object_pairs)
+    if duplicate and (strict or native):
+        raise ValueError("duplicate JSON key")
+    if not isinstance(raw, dict):
+        raise ValueError("record is not an object")
+    return raw, native
+
+
+@contextlib.contextmanager
+def physical_directory(path: Path):
+    """Hold no-follow descriptors for EVERY ancestor; never resolve a symlink."""
+    with contextlib.ExitStack() as stack:
+        try:
+            absolute = path.absolute()
+            if ".." in absolute.parts:
+                raise UnknownError("physical directory traversal refused")
+            fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, fd)
+            links = []
+            for name in absolute.parts[1:]:
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                stack.callback(os.close, child)
+                links.append((fd, name, child))
+                fd = child
+
+            def unchanged():
+                for parent, name, child in links:
+                    selected = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    opened = os.fstat(child)
+                    if (not stat.S_ISDIR(selected.st_mode)
+                            or (selected.st_dev, selected.st_ino) != (opened.st_dev, opened.st_ino)):
+                        raise UnknownError("physical directory changed")
+
+            unchanged()
+            yield fd, unchanged
+            unchanged()
+        except OSError as exc:
+            raise UnknownError("physical directory unavailable") from exc
+
+
+def read_physical_json(parent: int, name: str) -> tuple[dict[str, Any], tuple[int, int]]:
+    """Bounded, unique-key read through a held directory; no FIFO/device opens."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_size > 1_000_000
+                or before.st_nlink != 1 or before.st_uid != os.getuid() or before.st_mode & 0o077):
+            raise UnknownError("native JSON file is not private bounded regular storage")
+        chunks = []
+        remaining = 1_000_001
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if not remaining:
+            raise UnknownError("native JSON exceeds byte bound")
+        raw, _ = decode_record_json(b"".join(chunks).decode("utf-8"), strict=True)
+        after = os.fstat(fd)
+        selected = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (not stat.S_ISREG(selected.st_mode)
+                or (selected.st_dev, selected.st_ino) != (before.st_dev, before.st_ino)
+                or (after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+                   (before.st_size, before.st_mtime_ns, before.st_ctime_ns)):
+            raise UnknownError("native JSON changed during read")
+        return raw, (before.st_dev, before.st_ino)
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def native_lease(path: Path):
+    """Select a lease and its owner using held ancestor/directory descriptors."""
+    try:
+        with physical_directory(path.parent) as (parent, ancestors_unchanged):
+            group_info = os.fstat(parent)
+            if group_info.st_uid != os.getuid() or group_info.st_mode & 0o077:
+                raise UnknownError("native reservation group is not private")
+            fd = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != os.getuid() or info.st_mode & 0o077 or set(os.listdir(fd)) != {"owner.json"}:
+                    raise UnknownError("native lease directory is not private exact storage")
+                owner, identity = read_physical_json(fd, "owner.json")
+
+                def unchanged():
+                    ancestors_unchanged()
+                    selected = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                    if (not stat.S_ISDIR(selected.st_mode)
+                            or (selected.st_dev, selected.st_ino) != (info.st_dev, info.st_ino)
+                            or set(os.listdir(fd)) != {"owner.json"}
+                            or read_physical_json(fd, "owner.json") != (owner, identity)):
+                        raise UnknownError("native lease selection changed")
+
+                unchanged()
+                yield parent, fd, owner, unchanged
+            finally:
+                os.close(fd)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise UnknownError("native lease unreadable or malformed") from exc
+
+
+def native_reservation_owner(path: Path) -> dict[str, Any]:
+    with native_lease(path) as (_, _, owner, unchanged):
+        unchanged()
+        return owner
+
+
+def native_reservation_paths(root: Path, group: str) -> list[Path]:
+    with physical_directory(root / group) as (fd, unchanged):
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise UnknownError("native reservation group is not private")
+        names = os.listdir(fd)
+        if any(re.fullmatch(r"[0-9a-f]+\.lock", name) is None for name in names):
+            raise UnknownError("native reservation inventory is ambiguous")
+        unchanged()
+        return [root / group / name for name in sorted(names)]
+
+
+def read_json(path: Path, label: str, *, strict: bool = False) -> dict[str, Any]:
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
             raise ValueError("not a bounded regular file")
-        raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object if strict else None)
+        raw, native = decode_record_json(path.read_text(encoding="utf-8"), strict=strict)
+        if native:
+            with physical_directory(path.parent) as (parent, unchanged):
+                selected, _ = read_physical_json(parent, path.name)
+                unchanged()
+                if selected != raw:
+                    raise UnknownError("native record changed during selection")
+                raw = selected
     except Exception as exc:
         raise UnknownError(f"{label} unreadable or malformed: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise UnknownError(f"{label} is not an object")
     return raw
 
 
@@ -858,15 +1003,31 @@ def acquire_dir(path: Path, metadata: dict[str, Any]) -> None:
 
 
 def release_dir(path: Path, token: str) -> None:
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return
     owner = read_json(path / "owner.json", f"reservation {path.name}")
     if path.parent.name in {"slots", "implementation", "scopes"}:
         root = path.parent.parent
         retained = read_task(root, owner["task_id"], allow_bound=True, allow_native=True)
         require_assignment_settled(retained)
-        if is_native_task(retained) and (path.parent.name == "scopes" or retained["worker"] is not None):
-            verify_native_reservation_owner(retained, path.parent.name, owner)
+        if is_native_task(retained):
+            with native_lease(path) as (parent, directory, selected, unchanged):
+                if selected != owner or selected.get("token") != token:
+                    raise UnknownError("native release owner changed")
+                if path.parent.name == "scopes" or retained["worker"] is not None:
+                    verify_native_reservation_owner(retained, path.parent.name, selected)
+                unchanged()
+                # No pathname traversal after selection: replacement symlinks
+                # cannot redirect unlink into an external directory.
+                os.unlink("owner.json", dir_fd=directory)
+                selected_directory = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                opened_directory = os.fstat(directory)
+                if (not stat.S_ISDIR(selected_directory.st_mode)
+                        or (selected_directory.st_dev, selected_directory.st_ino) !=
+                           (opened_directory.st_dev, opened_directory.st_ino)):
+                    raise UnknownError("native release directory replaced after unlink")
+                os.rmdir(path.name, dir_fd=parent)
+            return
     if owner.get("token") != token:
         raise UnknownError(f"reservation fencing token changed: {path.name}")
     os.unlink(path / "owner.json")
@@ -1702,9 +1863,9 @@ def verify_native_capacity_release(root: Path, record: dict[str, Any]) -> None:
         if index is not None:
             path = root / group / f"{index}.lock"
             if path.exists() or path.is_symlink():
-                verify_native_reservation_owner(record, group, reservation_owner(root, group, index))
-        for lock in (root / group).glob("*.lock"):
-            owner = read_json(lock / "owner.json", "native release reservation")
+                verify_native_reservation_owner(record, group, native_reservation_owner(path))
+        for lock in native_reservation_paths(root, group):
+            owner = native_reservation_owner(lock)
             if owner.get("task_id") == record["task_id"]:
                 if index is None or lock.name != f"{index}.lock":
                     raise UnknownError("native reverse capacity lease disagrees")
@@ -1734,7 +1895,8 @@ def verify_reservations(root: Path, record: dict[str, Any]) -> None:
         elif lane is not None:
             raise UnknownError(f"task {record['task_id']} holds an unexpected implementation lane")
     for group, index, token in expected:
-        owner = reservation_owner(root, group, index)
+        owner = (native_reservation_owner(root / group / f"{index}.lock") if is_native_task(record)
+                 else reservation_owner(root, group, index))
         if owner.get("task_id") != record["task_id"] or owner.get("token") != token:
             raise UnknownError(f"task {record['task_id']} does not own its {group} reservation")
         if is_cooperative_task(record) or is_native_task(record):
@@ -1749,6 +1911,12 @@ def verify_reservations(root: Path, record: dict[str, Any]) -> None:
                 raise UnknownError("cooperative reservation metadata disagrees with task")
     if is_native_task(record):
         verify_native_capacity_release(root, record)
+        for lock in native_reservation_paths(root, "scopes"):
+            owner = native_reservation_owner(lock)
+            if owner.get("task_id") == record["task_id"]:
+                if record["state"] in TERMINAL or lock.name != f"{record['scope_key']}.lock":
+                    raise UnknownError("native reverse scope reservation disagrees")
+                verify_native_reservation_owner(record, "scopes", owner)
 
 
 def validate_admission_reservations(root: Path, *, allow_bound: bool = False, allow_native: bool = False) -> None:
@@ -1789,6 +1957,7 @@ def validate_admission_reservations(root: Path, *, allow_bound: bool = False, al
             if not valid_state or lock.name != f"{expected_slot}.lock" or owner.get("token") != expected_token:
                 raise UnknownError(f"{group} reservation {lock.name} disagrees with task {task_id}")
             if is_native_task(record):
+                owner = native_reservation_owner(lock)
                 verify_native_reservation_owner(record, group, owner)
 
 
@@ -1838,6 +2007,7 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
             owner = read_json(lock / "owner.json", f"implementation reservation {lock.name}")
             if owner.get("task_id") == record["task_id"] and owner.get("token") == record["worker"]["token"]:
                 if is_native_task(record):
+                    owner = native_reservation_owner(lock)
                     verify_native_reservation_owner(record, "implementation", owner)
                 matches.append(int(lock.stem))
         if len(matches) > 1:
@@ -1909,15 +2079,20 @@ def recovery_reservations(root: Path, selected: dict[str, Any], pending: bool) -
                 "implementation": selected["leases"]["implementation_lane"]}
     seen = set()
     for group in expected:
-        for lock in sorted((root / group).iterdir()):
+        locks = (native_reservation_paths(root, group) if is_native_task(selected)
+                 else sorted((root / group).iterdir()))
+        for lock in locks:
             if (lock.is_symlink() or not lock.is_dir() or lock.stat().st_uid != os.getuid()
                     or lock.stat().st_mode & 0o022 or {path.name for path in lock.iterdir()} != {"owner.json"}):
                 raise UnknownError("recovery reservation directory is ambiguous")
-            owner = read_json(lock / "owner.json", "recovery reservation", strict=True)
+            owner = (native_reservation_owner(lock) if is_native_task(selected)
+                     else read_json(lock / "owner.json", "recovery reservation", strict=True))
             task_id = owner.get("task_id")
             record = records.get(task_id) if isinstance(task_id, str) else None
             if record is None:
                 raise UnknownError("recovery reservation has no task")
+            if is_native_task(record):
+                owner = native_reservation_owner(lock)
             index = record["scope_key"] if group == "scopes" else record["leases"]["global_slot" if group == "slots" else "implementation_lane"]
             if index is None or lock.name != f"{index}.lock":
                 raise UnknownError("reverse recovery reservation association disagrees")
@@ -2064,6 +2239,7 @@ def command_reconcile(args: argparse.Namespace, root: Path) -> list[dict[str, An
                 if owner.get("token") != expected_token or lock.name != expected_name:
                     raise UnknownError(f"{group} reservation {lock.name} disagrees with task {task_id}")
                 if is_native_task(record):
+                    owner = native_reservation_owner(lock)
                     verify_native_reservation_owner(record, group, owner)
     return changed
 

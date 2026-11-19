@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Actual core/independent-reader fixtures. Run only in an isolated validation guest."""
+"""Self-contained packaged core fixtures. Run only in an isolated validation guest."""
 
 import copy
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -11,7 +12,6 @@ from unittest import mock
 
 
 SKILL = Path(__file__).resolve().parents[1]
-REPO = SKILL.parents[2]
 IDENTITY = {"schema_version": 1, "backend": "linux-procfs",
             "boot_id": "01234567-89ab-cdef-0123-456789abcdef",
             "pid_namespace_inode": "4026531836", "start_ticks": "123456"}
@@ -24,13 +24,40 @@ def load(name, path):
     return module
 
 
+def duplicate_json_cases(record):
+    """Raw wire counterexamples; escaped keys must compare after JSON decoding."""
+    raw = json.dumps(record, sort_keys=True)
+    key = '"schema_version": ' + str(record["schema_version"])
+    yield "same-schema", raw.replace(key, key + ', ' + key, 1)
+    yield "schema", raw.replace(key, key + ', "schema_version": 2', 1)
+    yield "escaped-schema", raw.replace(key, key + ', "schema_vers\\u0069on": 2', 1)
+    key = '"pid": ' + str(record["worker"]["pid"])
+    yield "pid", raw.replace(key, '"pid": 999, ' + key, 1)
+    key = '"start_ticks": ' + json.dumps(record["worker"]["process_identity"]["start_ticks"])
+    yield "ticks", raw.replace(key, '"start_ticks": "999", ' + key, 1)
+    yield "escaped-ticks", raw.replace(key, '"start_\\u0074icks": "999", ' + key, 1)
+    # Last-value projection would erase the entire native worker and relabel
+    # this as a legacy task. Presence in the original pairs still forces refusal.
+    yield "erased-native-family", raw[:-1] + ', "schema_version": 2, "worker": null}'
+    legacy_label = raw.replace('"schema_version": ' + str(record["schema_version"]), '"schema_version": 2', 1)
+    yield "erased-native-worker", legacy_label[:-1] + ', "worker": null}'
+
+
+def duplicate_worker_cases(worker):
+    raw = json.dumps(worker, sort_keys=True)
+    key = '"pid": ' + str(worker["pid"])
+    yield "pid", raw.replace(key, '"p\\u0069d": 999, ' + key, 1)
+    key = '"start_ticks": ' + json.dumps(worker["process_identity"]["start_ticks"])
+    yield "ticks", raw.replace(key, '"start_\\u0074icks": "999", ' + key, 1)
+    yield "identity-schema", raw.replace('"schema_version": 1', '"schema_version": 4, "schema_version": 1', 1)
+
+
 class DualFormatCoreTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="dual-format-core-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.core = load("dual_core", SKILL / "bin/orchestrator-state.py")
-        self.reader = load("dual_reader", REPO / "scripts/check-native-ownership.py")
         env = mock.patch.dict(os.environ, {"ORCHESTRATOR_TEST_MODE": "1",
                                           "ORCHESTRATOR_STATE_DIR": str(self.root / "state")})
         env.start()
@@ -91,7 +118,6 @@ class DualFormatCoreTest(unittest.TestCase):
 
     def validate(self, record):
         self.core.validate_record(record, allow_bound=True, allow_native=True)
-        self.reader.validate_task(record)
 
     def test_finite_formats_default_fences_and_creation_stays_legacy(self):
         for native in (False, True):
@@ -134,8 +160,6 @@ class DualFormatCoreTest(unittest.TestCase):
         for invalid in variants:
             with self.assertRaises(self.core.UnknownError):
                 self.core.validate_record(invalid, allow_bound=True, allow_native=True)
-            with self.assertRaises(self.reader.Unverified):
-                self.reader.validate_task(invalid)
 
     def test_unsupported_profiles_refuse_before_probe_and_effects(self):
         original = self.create()
@@ -197,6 +221,126 @@ class DualFormatCoreTest(unittest.TestCase):
         record = self.claim()
         self.assertEqual(record["schema_version"], 4)
         self.validate(self.transition(record, "Cancelled"))
+
+    def test_native_symlinked_capacity_refuses_before_intent_or_external_effect(self):
+        for bound in (False, True):
+            name = f"physical-{bound}"
+            self.create(name)
+            record = self.transition(self.claim(name, bound=bound), "Implementing")
+            for group, field in (("slots", "global_slot"), ("implementation", "implementation_lane")):
+                path = self.state / group / f"{record['leases'][field]}.lock"
+                external = self.root / f"outside-{group}-{bound}"
+                path.rename(external)
+                path.symlink_to(external, target_is_directory=True)
+                external_before = (external / "owner.json").read_bytes()
+                try:
+                    for target in ("Reviewing", "Cancelled"):
+                        with self.subTest(schema=record["schema_version"], group=group, target=target):
+                            self.assert_no_effect(lambda: self.transition(record, target))
+                            self.assertEqual((external / "owner.json").read_bytes(), external_before)
+                            self.assertTrue(path.is_symlink())
+                finally:
+                    path.unlink()
+                    external.rename(path)
+            self.transition(record, "Cancelled")
+
+    def test_native_symlinked_group_and_reverse_lease_refuse_before_effect(self):
+        self.create()
+        record = self.transition(self.claim(bound=True), "Implementing")
+        for group in ("slots", "implementation", "scopes"):
+            path = self.state / group
+            external = self.root / ("external-" + group)
+            path.rename(external)
+            path.symlink_to(external, target_is_directory=True)
+            before = {p.name: p.read_bytes() for p in external.rglob("owner.json")}
+            try:
+                self.assert_no_effect(lambda: self.transition(record, "Cancelled"))
+                self.assertEqual({p.name: p.read_bytes() for p in external.rglob("owner.json")}, before)
+            finally:
+                path.unlink()
+                external.rename(path)
+        extra = self.state / "slots/99.lock"
+        extra.symlink_to(self.state / "slots" / f"{record['leases']['global_slot']}.lock", target_is_directory=True)
+        try:
+            self.assert_no_effect(lambda: self.transition(record, "Reviewing"))
+        finally:
+            extra.unlink()
+
+    def test_native_release_rechecks_physical_selection_after_intent(self):
+        self.create()
+        record = self.transition(self.claim(), "Implementing")
+        path = self.state / "implementation" / f"{record['leases']['implementation_lane']}.lock"
+        external = self.root / "replacement-external"
+        external.mkdir(mode=0o700)
+        self.core.atomic_json(external / "owner.json", record["worker"])
+        before = (external / "owner.json").read_bytes()
+        real_unlink = self.core.os.unlink
+
+        def unlink(name, *, dir_fd=None):
+            if name == "owner.json" and dir_fd is not None:
+                path.rename(self.root / "selected-retained")
+                path.symlink_to(external, target_is_directory=True)
+            return real_unlink(name, dir_fd=dir_fd)
+
+        # A same-account race after validation cannot be made atomic with POSIX
+        # rmdir. Descriptor-relative unlink must NEVER follow its replacement.
+        with mock.patch.object(self.core.os, "unlink", side_effect=unlink), self.assertRaises(self.core.UnknownError):
+            self.transition(record, "Reviewing")
+        self.assertEqual((external / "owner.json").read_bytes(), before)
+        retained = self.core.read_task(self.state, "native", allow_native=True)
+        self.assertEqual(retained["transition_intent"], "Reviewing")
+        self.assertEqual(retained["worker"], record["worker"])
+
+    def test_native_raw_duplicates_refuse_in_tasks_leases_and_mixed_scans(self):
+        self.create("legacy", native=False)
+        for bound in (False, True):
+            name = f"duplicates-{bound}"
+            self.create(name)
+            record = self.transition(self.claim(name, bound=bound), "Implementing")
+            path = self.core.task_path(self.state, name)
+            original = path.read_bytes()
+            try:
+                for case, raw in duplicate_json_cases(record):
+                    path.write_text(raw)
+                    with self.subTest(schema=record["schema_version"], case=case):
+                        self.assert_no_effect(lambda: self.transition(record, "Reviewing"))
+                        self.assert_no_effect(lambda: self.core.command_list(self.state, allow_bound=True, allow_native=True))
+                        self.assert_no_effect(lambda: self.claim("legacy"))
+            finally:
+                path.write_bytes(original)
+            for group, field in (("slots", "global_slot"), ("implementation", "implementation_lane")):
+                path = self.state / group / f"{record['leases'][field]}.lock" / "owner.json"
+                original = path.read_bytes()
+                try:
+                    for case, raw in duplicate_worker_cases(record["worker"]):
+                        path.write_text(raw)
+                        with self.subTest(schema=record["schema_version"], group=group, case=case):
+                            self.assert_no_effect(lambda: self.transition(record, "Cancelled"))
+                            self.assert_no_effect(lambda: self.claim("legacy"))
+                finally:
+                    path.write_bytes(original)
+            scope = self.state / "scopes" / f"{record['scope_key']}.lock" / "owner.json"
+            original = scope.read_bytes()
+            try:
+                owner = json.loads(original)
+                raw = json.dumps(owner)
+                raw = raw.replace('"token":', '"token":"wrong", "t\\u006fken":', 1)
+                scope.write_text(raw)
+                self.assert_no_effect(lambda: self.transition(record, "Cancelled"))
+                self.assert_no_effect(lambda: self.claim("legacy"))
+            finally:
+                scope.write_bytes(original)
+            self.transition(record, "Cancelled")
+
+    def test_legacy_duplicate_compatibility_excludes_ambiguous_discriminators(self):
+        path = self.root / "legacy.json"
+        path.write_text('{"schema_version":2,"owner":"old","owner":"new"}')
+        self.assertEqual(self.core.read_json(path, "legacy")["owner"], "new")
+        for raw in ('{"schema_version":4,"schema_version":2,"worker":null}',
+                    '{"schema_version":2,"schema_vers\\u0069on":2}'):
+            path.write_text(raw)
+            with self.assertRaises(self.core.UnknownError):
+                self.core.read_json(path, "ambiguous")
 
     def test_native_implementation_requalifies_before_any_lane_or_task_effect(self):
         for bound in (False, True):
