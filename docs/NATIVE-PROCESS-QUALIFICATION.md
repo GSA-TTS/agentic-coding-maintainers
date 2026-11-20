@@ -1,13 +1,20 @@
 # Native process primitive qualification (first slice)
 
-## Additive observer foundation candidate
+## Observer candidate and bounded lifecycle integration
 
 The sibling `native-process-observation.py` now implements a candidate backend;
 `runtime-observation.py` adds `native_process_identity(pid)` and the record-directed
-`observe_worker_process(worker, *, environment=None)`. No task claim or production
-consumer selects these entry points yet. The primitive experiment below retains
-its original meaning. **Neither its result nor ordinary unit tests establish full
-backend qualification.**
+`observe_worker_process(worker, *, environment=None)`. The bounded native
+lifecycle/manual integration now selects these entry points for explicit native
+task inputs, including fresh identity observation before native claim and
+implementation-lane acquisition. See [bounded dual-format integration](NATIVE-OWNERSHIP.md#bounded-dual-format-integration-issue-182)
+for the supported formats, caller defaults, consumer fences and recovery limits.
+
+Native creation remains default off: `create` still emits schema 2, and no
+supported converter or new native-creation CLI exists. This integration does not
+qualify or activate a deployed native backend. The primitive experiment below
+retains its original meaning. **Neither its result nor ordinary unit tests
+establish full backend qualification.**
 
 The candidate admits two complete kernel/interpreter/loaded-libc tuples, both
 Linux / aarch64 / little-endian LP64 / CPython:
