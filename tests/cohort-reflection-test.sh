@@ -193,6 +193,93 @@ refuses([fresh_unknown, fresh_fix, dict(fresh_fix, event_id="e42", replacement="
 # A recorded correction must not claim to have been made before the intake was
 # actually recorded, even if the intake's backdated occurred_at came first.
 refuses([fresh_unknown, dict(fresh_fix, occurred_at="2026-10-10T00:30:00Z")])
+# All-retained disposition ages are separate from every pre-existing cohort
+# field. Older eligible/excluded corrections remain visible alongside pending
+# older unknowns, without retroactive delivery credit or denominator changes.
+age_field = "all_retained_intake_disposition_ages"
+older_excluded = dict(older, case_id="older-excluded", event_id="e50")
+older_pending = dict(older, case_id="older-pending", event_id="e51")
+excluded_fix = dict(corrected, case_id="older-excluded", event_id="e52",
+                    intake_event_id="e50", replacement="excluded",
+                    occurred_at="2026-08-02T00:00:00Z")
+retained_rows = [older, older_excluded, older_pending] + rows + [corrected, excluded_fix]
+retained_events = read(retained_rows)
+before_reflection = json.dumps(retained_events, sort_keys=True)
+retained_report = module.reflect(retained_events, as_of, key)
+assert json.dumps(retained_events, sort_keys=True) == before_reflection
+assert module.reflect(retained_events, as_of, key) == retained_report
+ages = retained_report[age_field]
+assert ages["coverage"] == "recorded_events_only"
+assert ages["retained_intake_count"] == 10
+assert "separate from the 28-day intake cohort" in ages["scope"]
+assert "not verified source-to-decision time" in ages["time_basis"]
+assert ages["corrected_cases"] == sorted([
+    {"case_label": module.pseudonym("older-unknown", key),
+     "original_eligibility": "unknown", "effective_eligibility": "eligible",
+     "recorded_delay_hours": 1872.0},
+    {"case_label": module.pseudonym("older-excluded", key),
+     "original_eligibility": "unknown", "effective_eligibility": "excluded",
+     "recorded_delay_hours": 1872.0},
+], key=lambda entry: entry["case_label"])
+assert ages["pending_unknown_cases"] == sorted([
+    {"case_label": module.pseudonym("older-pending", key),
+     "original_eligibility": "unknown", "effective_eligibility": "unknown",
+     "recorded_age_hours": 1967.0},
+    {"case_label": module.pseudonym("unknown", key),
+     "original_eligibility": "unknown", "effective_eligibility": "unknown",
+     "recorded_age_hours": 264.0},
+], key=lambda entry: entry["case_label"])
+changed_projection_fields = {age_field, "needs_maintainer_disposition", "out_of_window_recorded_case_count"}
+assert {name: value for name, value in retained_report.items() if name not in changed_projection_fields} == {
+    name: value for name, value in report.items() if name not in changed_projection_fields}
+assert retained_report["out_of_window_recorded_case_count"] == 3
+assert {entry["case_label"] for entry in retained_report["needs_maintainer_disposition"]} == {
+    entry["case_label"] for entry in ages["pending_unknown_cases"]}
+for case in ("older-unknown", "older-excluded", "older-pending"):
+    assert json.dumps(case) not in json.dumps(ages)
+assert all(set(entry) == {"case_label", "original_eligibility", "effective_eligibility", "recorded_delay_hours"}
+           for entry in ages["corrected_cases"])
+assert all(set(entry) == {"case_label", "original_eligibility", "effective_eligibility", "recorded_age_hours"}
+           for entry in ages["pending_unknown_cases"])
+# A correction also older than the cohort window is retained, not just a recent
+# decision about an old intake.
+older_fix = dict(corrected, occurred_at="2026-08-02T00:00:00Z", recorded_at="2026-08-03T01:00:00Z")
+assert module.reflect(read([older, older_fix]), as_of, key)[age_field]["corrected_cases"][0]["recorded_delay_hours"] == 48.0
+# Claimed occurrence can precede the cutoff while writer recording follows it.
+# Neither such a correction nor a later-recorded intake changes the old report.
+post_cutoff_fix = dict(corrected, case_id="older-pending", event_id="e53",
+                       intake_event_id="e51", occurred_at="2026-08-02T00:00:00Z",
+                       recorded_at="2026-10-23T00:00:00Z")
+post_cutoff_intake = dict(older, case_id="later-intake", event_id="e54",
+                          recorded_at="2026-10-23T00:00:00Z")
+assert module.reflect(read(retained_rows + [post_cutoff_fix, post_cutoff_intake]), as_of, key) == retained_report
+# At the exact recording cutoff the decision appears; it cannot use backdated
+# occurrence to shorten its delay. Pending age uses that same fixed cutoff.
+at_cutoff_fix = dict(post_cutoff_fix, recorded_at="2026-10-22T00:00:00Z")
+at_cutoff_ages = module.reflect(read(retained_rows + [at_cutoff_fix]), as_of, key)[age_field]
+assert next(entry for entry in at_cutoff_ages["corrected_cases"]
+            if entry["case_label"] == module.pseudonym("older-pending", key))["recorded_delay_hours"] == 1967.0
+assert len(at_cutoff_ages["pending_unknown_cases"]) == 1
+# A backdated intake recorded recently must not acquire a historical pending age.
+assert module.reflect(read([backdated]), as_of, key)[age_field]["pending_unknown_cases"][0]["recorded_age_hours"] == 48.0
+assert module.reflect(read([fresh_unknown, different_gap]), as_of, key)[age_field]["corrected_cases"][0]["recorded_delay_hours"] == 26.0
+# Corrections from non-unknown classifications are included, and correcting TO
+# unknown leaves a pending case whose age does not restart at correction time.
+to_unknown = dict(fresh_fix, replacement="unknown")
+reclassified = module.reflect(read([dict(fresh_unknown, eligibility="eligible"), to_unknown]), as_of, key)[age_field]
+assert reclassified["corrected_cases"][0]["recorded_delay_hours"] == 24.0
+assert reclassified["corrected_cases"][0]["original_eligibility"] == "eligible"
+assert reclassified["pending_unknown_cases"][0]["effective_eligibility"] == "unknown"
+assert reclassified["pending_unknown_cases"][0]["recorded_age_hours"] == 287.0
+empty_snapshot = module.reflect(read([post_cutoff_intake]), as_of, key)
+assert empty_snapshot[age_field]["coverage"] == "no_evidence"
+assert empty_snapshot[age_field]["retained_intake_count"] == 0
+assert empty_snapshot[age_field]["corrected_cases"] == empty_snapshot[age_field]["pending_unknown_cases"] == []
+assert empty_snapshot["correction_quality"]["coverage"] == "no_evidence"
+assert empty_snapshot["correction_quality"]["denominator_first_intakes"] == 0
+assert empty_snapshot["verified_completion_ids"] == []
+assert only_excluded[age_field]["coverage"] == "recorded_events_only"
+assert only_excluded[age_field]["corrected_cases"] == only_excluded[age_field]["pending_unknown_cases"] == []
 try:
     module.events_from(b'{"truncated":true}', as_of)
 except module.Unverified:
@@ -251,6 +338,14 @@ assert good.returncode == 0 and not good.stderr, (good.returncode, good.stderr)
 output = json.loads(good.stdout)
 assert output["coverage"] == "recorded_eligible_cohort"
 assert output["ledger_identity_hmac"] == hmac.new(key, b"ledger-identity-v1\0" + ledger.read_bytes(), hashlib.sha256).hexdigest()
+assert ledger.read_bytes() == "".join(json.dumps(r) + "\n" for r in rows[:13]).encode()
+assert json.loads(cli(rows[:13]).stdout) == output  # fixed bytes/key/cutoff reproduce the report
+later_output = cli(rows[:13] + [after])
+assert later_output.returncode == 0 and not later_output.stderr
+later_report = json.loads(later_output.stdout)
+assert later_report["ledger_identity_hmac"] != output["ledger_identity_hmac"]
+assert {name: value for name, value in later_report.items() if name != "ledger_identity_hmac"} == {
+    name: value for name, value in output.items() if name != "ledger_identity_hmac"}
 assert all(raw not in output["eligible_ids"] + output["excluded_ids"] + output["unknown_eligibility_ids"]
            for raw in ("complete", "open", "blocked", "cancelled", "rework", "excluded", "unknown"))
 no_eligible = cli([rows[13], rows[14]])

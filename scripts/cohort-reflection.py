@@ -312,6 +312,30 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     ), key=lambda entry: entry["case_label"])
     pending_unknown = sorted(label[cid] for cid, rows in cohort.items()
                              if rows[0]["eligibility"] == "unknown" and effective[cid] == "unknown")
+    # Separate operational projection: retain corrections and pending unknowns
+    # even after first intake ages out of the performance cohort. These are
+    # writer-recorded durations, not independently verified source/decision ages.
+    retained_corrected = []
+    retained_pending = []
+    for cid, rows in case_events.items():
+        correction = next((row for row in rows if row["event_type"] == "eligibility_correction"), None)
+        identity = {
+            "case_label": label[cid],
+            "original_eligibility": rows[0]["eligibility"],
+            "effective_eligibility": effective[cid],
+        }
+        recorded_intake = timestamp(rows[0]["recorded_at"])
+        if correction is not None:
+            retained_corrected.append({
+                **identity,
+                "recorded_delay_hours": round(
+                    (timestamp(correction["recorded_at"]) - recorded_intake).total_seconds() / 3600, 2),
+            })
+        if effective[cid] == "unknown":
+            retained_pending.append({
+                **identity,
+                "recorded_age_hours": round((as_of - recorded_intake).total_seconds() / 3600, 2),
+            })
     return {
         "as_of": as_of.isoformat(), "window_days": 28,
         "coverage": "recorded_eligible_cohort" if eligible else "no_eligible_evidence",
@@ -340,6 +364,14 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
             for status in ("eligible", "excluded", "unknown")
         },
         "needs_maintainer_disposition": disposition_queue,
+        "all_retained_intake_disposition_ages": {
+            "coverage": "recorded_events_only" if case_events else "no_evidence",
+            "scope": "all retained intakes recorded by as_of; separate from the 28-day intake cohort",
+            "time_basis": "writer-recorded intake to correction or as_of; not verified source-to-decision time",
+            "retained_intake_count": len(case_events),
+            "corrected_cases": sorted(retained_corrected, key=lambda entry: entry["case_label"]),
+            "pending_unknown_cases": sorted(retained_pending, key=lambda entry: entry["case_label"]),
+        },
         "disposition_policy": "manual review; review_due after 7 days since recording; no automatic exclusion or remote alert",
         "documented_outcome_ids_unverified": sorted(label[cid] for cid in documented_outcomes),
         "verified_completion_ids": [], "verified_completion_coverage": "UNVERIFIED: category-specific delivery attestation not implemented; compliance separately unmeasured",
