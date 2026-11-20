@@ -10,7 +10,7 @@
       {"id": "input:background", "revision": {"kind": "exact", "value": "background:2"}}
     ],
     "constraints": ["Synthetic metadata only. Content, citations and reviewer independence are not verified by this validator."],
-    "acceptance": [{"id": "accept:citation", "description": "The brief's primary claim cites its staged source."}],
+    "acceptance": [{"id": "accept:citation", "revision": {"kind": "exact", "value": "criterion:1"}, "description": "The brief's primary claim cites its staged source."}],
     "profile": {"kind": "documents"}
   },
   "workflow": {
@@ -25,6 +25,7 @@
       {"id": "input:background", "revision": {"kind": "exact", "value": "background:1"}}
     ],
     "configurations": [{"id": "config:citation", "revision": {"kind": "exact", "value": "config:1"}}],
+    "acceptance": [{"id": "accept:citation", "revision": {"kind": "exact", "value": "criterion:1"}, "description": "The brief's primary claim cites its staged source."}],
     "budget": {"duration_seconds": 1800, "model_calls": 2, "currency_micros": 1000000}
   }],
   "attempts": [
@@ -39,12 +40,13 @@
     "id": "evidence:citation", "producer_attempt_id": "attempt:verify",
     "artifact": {"id": "artifact:verification", "revision": {"kind": "exact", "value": "verification:1"}},
     "subject": {"id": "artifact:brief", "revision": {"kind": "exact", "value": "brief:1"}},
-    "acceptance_id": "accept:citation",
+    "acceptance": {"id": "accept:citation", "revision": {"kind": "exact", "value": "criterion:1"}},
     "inputs": [{"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}}],
     "configurations": [{"id": "config:citation", "revision": {"kind": "exact", "value": "config:1"}}],
     "workflow_revision": {"kind": "exact", "value": "workflow:1"}
   }],
   "target": {
+    "acceptance": [{"id": "accept:citation", "revision": {"kind": "exact", "value": "criterion:1"}}],
     "subject": {"id": "artifact:brief", "revision": {"kind": "exact", "value": "brief:1"}},
     "inputs": [
       {"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}},

@@ -8,7 +8,7 @@
     "authority": {"id": "source:synthetic-request", "revision": {"kind": "exact", "value": "request:1"}},
     "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
     "constraints": ["One documentation link only; isolated checks and independent review remain external gates."],
-    "acceptance": [{"id": "accept:link", "description": "The replacement link resolves in the exact-source check."}],
+    "acceptance": [{"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}, "description": "The replacement link resolves in the exact-source check."}],
     "profile": {
       "kind": "coding", "repository": "repository:synthetic",
       "source": {"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}
@@ -25,6 +25,7 @@
     "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
     "configurations": [{"id": "config:check", "revision": {"kind": "exact", "value": "config:1"}}],
     "budget": {"duration_seconds": 1800, "model_calls": 2, "currency_micros": 1000000},
+    "acceptance": [{"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}, "description": "The replacement link resolves in the exact-source check."}],
     "coordinator": {"schema": 2, "task_id": "task:synthetic", "task_revision": {"kind": "exact", "value": "task:1"}, "task_digest": "digest:synthetic-1"}
   }],
   "attempts": [
@@ -52,11 +53,12 @@
     "id": "evidence:link", "producer_attempt_id": "attempt:check",
     "artifact": {"id": "artifact:check", "revision": {"kind": "exact", "value": "check:1"}},
     "subject": {"id": "artifact:patch", "revision": {"kind": "exact", "value": "patch:1"}},
-    "acceptance_id": "accept:link", "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
+    "acceptance": {"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}}, "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
     "configurations": [{"id": "config:check", "revision": {"kind": "exact", "value": "config:1"}}],
     "workflow_revision": {"kind": "exact", "value": "workflow:1"}
   }],
   "target": {
+    "acceptance": [{"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}}],
     "subject": {"id": "artifact:patch", "revision": {"kind": "exact", "value": "patch:1"}},
     "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
     "configurations": [{"id": "config:check", "revision": {"kind": "exact", "value": "config:1"}}],

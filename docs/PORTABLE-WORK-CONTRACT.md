@@ -24,7 +24,7 @@ a mutable label. No external reference is resolved or trusted by this validator.
   fixed code, not untrusted document text. Codes are `TYPE`, `JSON`, `LIMIT`,
   `INTEGER`, `SHAPE`, `IDENTITY`, `VERSION`, `DUPLICATE_KEY`, `DUPLICATE_ID`,
   `REFERENCE`, `REVISION`, `DEPENDENCY`, `APPLICABILITY`, `CROSS_RUN`, `BINDING`,
-  `UNIT`, and `OPERATION_CONFLICT`. They are not coordinator exit codes or a
+   `UNIT`, `CRITERION_CONFLICT`, and `OPERATION_CONFLICT`. They are not coordinator exit codes or a
   classification of authority. The first refusal is reported, not an error list.
 
 The module has no CLI, filesystem/state/network/environment discovery, subprocess,
@@ -70,13 +70,13 @@ addressable. A multi-revision artifact registry is not introduced here.
 
 | Object | Meaning and checks |
 | --- | --- |
-| `work` | Stable ID, exact definition revision, outcome, source `authority` reference, exact input references, prose constraints, acceptance IDs/descriptions and profile. At least one input and acceptance criterion are required. |
+| `work` | Stable ID, exact definition revision, outcome, source `authority` reference, exact input references, prose constraints, current acceptance definitions (ID, exact revision, description) and profile. At least one input and acceptance criterion are required. |
 | `workflow` | Stable ID, exact definition revision and a bounded list of step IDs/descriptions. This is not a graph, interpreter, dispatch plan or general workflow language. |
-| `runs` | Work ID and historical work/workflow revisions, exact input/configuration references and numeric duration/model-call/currency-micros budget. At least one run. Historical inputs need not still be in the current work's input set. |
+| `runs` | Work ID and historical work/workflow revisions, exact input/configuration references, retained `acceptance` definitions and numeric duration/model-call/currency-micros budget. At least one run. Historical inputs and criteria need not still be in the current work's sets. |
 | `attempts` | Run, logical operation and step IDs, optional parent attempt, optional coordinator lineage and capacity request. At least one attempt; parents must exist, share the operation and be acyclic. |
 | `artifacts` | Opaque ID/revision, `patch`, `report` or `verification` kind, producing attempt and nonempty input provenance. Provenance must match the producer run's exact inputs. Artifact bytes are not stored, opened or hashed. |
-| `evidence` | Producer attempt, exact verification artifact and subject artifact references, acceptance ID, depended-on inputs/configurations and workflow revision. Its producer must produce the verification artifact; both artifacts must belong to the same run. Inputs/configurations/workflow must match that run. Dependencies must include the declared provenance of both artifacts. Empty evidence is allowed. |
-| `target` | Explicit subject revision, current declared input/configuration dependencies, workflow revision and a list of evidence IDs claiming support. Inputs equal the work's current input references; workflow equals the declared definition revision. Empty support is valid and claims nothing. |
+| `evidence` | Producer attempt, exact verification artifact and subject artifact references, an exact `acceptance` criterion reference, depended-on inputs/configurations and workflow revision. Its producer must produce the verification artifact; both artifacts must belong to the same run. Criterion/input/configuration/workflow references must match that run. Dependencies must include the declared provenance of both artifacts. Empty evidence is allowed. |
+| `target` | Explicit subject revision, current declared input/configuration dependencies, exact `acceptance` criterion references, workflow revision and a list of evidence IDs claiming support. Inputs and acceptance references equal the work's current sets; workflow equals the declared definition revision. Empty support is valid and claims nothing. |
 | `effects` | Optional typed `export-artifact` or `publish-artifact` descriptions: operation ID, attempt, exact same-run artifact, target ID, authority reference, exact target precondition and `unobserved`, `unknown` or `reported` observation. No general payload, shell command, permission or success flag. |
 
 The `coding` profile alone requires an opaque repository identity and exact source
@@ -99,12 +99,46 @@ must additionally satisfy:
 2. Its workflow revision equals the target workflow revision.
 3. Every input and configuration dependency it names exists at the same exact
    revision in the corresponding target dependency set.
+4. Its exact acceptance criterion reference exists in `target.acceptance`, which
+   must equal the current `work.acceptance` ID/revision set.
 
-Changing a depended-on input, configuration, workflow or target subject therefore
+Changing a depended-on criterion, input, configuration, workflow or target subject therefore
 refuses the **support claim**. Removing that claim from `target.support` preserves
 the historical evidence unchanged and allows internal validation. Changing an
-unrelated input/configuration does not invalidate support. There is no implicit
-"latest", wall-clock freshness, source lookup or blanket invalidation by run ID.
+unrelated criterion/input/configuration does not invalidate support. There is no
+implicit "latest", wall-clock freshness, source lookup or blanket invalidation by
+run ID or whole-work revision.
+
+Each `work.acceptance` and `runs[].acceptance` entry is a closed definition:
+`{ "id": ID, "revision": REVISION, "description": TEXT }`. Each set is nonempty
+and has at most one definition per criterion ID. The run retains the definition
+used by its evidence, even if the criterion later changes or is removed from the
+work. Evidence uses `acceptance: { "id": ID, "revision": REVISION }`, not the
+former ID-only `acceptance_id`. Target acceptance is a nonempty list of the same
+reference shape. Missing definitions, ID-only references and target/work drift
+refuse; no migration or revision inference occurs.
+
+All current and retained definitions in a bundle share one consistency rule:
+the same criterion ID and exact revision cannot describe different content.
+Such a conflict refuses with `CRITERION_CONFLICT`, even with no support claims.
+Identical repeated definitions across runs/current work are allowed; different
+revisions may have different descriptions. Description comparison is exact, not
+semantic equivalence. There is no separate history registry or runtime store.
+
+For example, changing `accept:citation` from `criterion:1` (primary claim cites
+its source) to `criterion:2` (every claim is cited and contradictions checked)
+requires a new current definition and target reference. Old evidence remains
+bound to the run's retained `criterion:1` definition. It cannot support the new
+criterion, but remains valid history once removed from `target.support`.
+Changing only the description while retaining `criterion:1` conflicts with that
+run's definition; a new work revision cannot conceal that conflict. Relabeling
+only the evidence as `criterion:2` also refuses because its run retained version 1.
+
+These are caller-declared immutable references, not content hashes or a trusted
+audit log. Consistently rewriting every copy of a definition/evidence in a bundle
+cannot be detected without external retained authority. Consumers must preserve
+authentic history and revision semantics; this validator neither queries external
+truth nor claims to detect omitted or falsified historical definitions.
 
 This checks declared dependency coverage, not whether the author omitted a real
 dependency or lied about provenance. It does not require every acceptance ID to
@@ -112,7 +146,7 @@ have support, decide acceptance, or certify the referenced verification's conten
 An input removed from the target still survives in a historical run; a support
 claim depending on it refuses. Historical workflow **definitions** are not a
 second registry here: attempt step IDs must remain in the one declared workflow.
-Arbitrary removed-step/acceptance histories need a future explicit versioned
+Arbitrary removed-step histories need a future explicit versioned
 consumer design, not relaxed references or silent legacy downgrade.
 
 ## Logical operations and optional coordinator mapping
@@ -121,7 +155,8 @@ Logical operation IDs are bundle-wide, across runs, attempts and typed effects.
 Repeating the same operation with the same declared content is inert retained
 description, not a retry authorization. Changing a run/attempt ID does not reset
 the operation. Attempt identity includes work/workflow revisions, input and config
-maps (reference order is immaterial), budget, step, request and coordinator mapping;
+maps, retained acceptance definitions (set order is immaterial), budget, step,
+request and coordinator mapping;
 capacity's run/attempt labels are excluded. Changed content under an existing
 operation ID refuses, including collision between an attempt and effect operation.
 Effects exclude observation and attempt labels from logical content, so historical
@@ -180,6 +215,7 @@ actual content hashes, citation quality, isolated execution or independent revie
 
 `tests/portable-work-contract-test.py` covers positive fixtures, bounded decoding,
 closed nested fields, missing/cross-run references, stale/selective support,
+criterion revision drift, conflicting definitions and retained criterion history,
 operation conflicts across runs, mapping disagreement, capacity injection, typed
 effects and instrumented import/validation side effects. The recipe appears once
 in `make test-rest`, with exact CI-partition coverage. Execute checks only inside

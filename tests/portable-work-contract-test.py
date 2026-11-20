@@ -139,14 +139,14 @@ class PortableWorkTests(unittest.TestCase):
             lambda b: b["attempts"][0].update(step_id="step:missing"),
             lambda b: b["artifacts"][0].update(producer_attempt_id="attempt:missing"),
             lambda b: b["evidence"][0].update(producer_attempt_id="attempt:missing"),
-            lambda b: b["evidence"][0].update(acceptance_id="accept:missing"),
+            lambda b: b["evidence"][0]["acceptance"].update(id="accept:missing"),
             lambda b: b["evidence"][0]["artifact"].update(id="artifact:missing"),
             lambda b: b["evidence"][0]["subject"].update(revision=revision("brief:wrong")),
             lambda b: b["target"].update(support=["evidence:missing"]),
             lambda b: b["runs"][0].update(work_id="work:missing"),
             lambda b: b["artifacts"][0]["provenance"][0].update(revision=revision("wrong:1")),
             lambda b: b["work"]["acceptance"].clear(),
-            lambda b: b["evidence"][0].pop("acceptance_id"),
+            lambda b: b["evidence"][0].pop("acceptance"),
             lambda b: b["evidence"][0].pop("producer_attempt_id"),
             lambda b: b["work"].update(revision={"kind": "branch", "value": "main"}),
         ]
@@ -211,6 +211,7 @@ class PortableWorkTests(unittest.TestCase):
 
     def test_selective_support_and_declared_provenance(self):
         value = fixture()
+        value["work"]["revision"] = revision("work:99")
         value["work"]["inputs"][1]["revision"] = revision("background:99")
         value["target"]["inputs"][1]["revision"] = revision("background:99")
         value["target"]["configurations"].append({"id": "config:unrelated", "revision": revision("other:2")})
@@ -222,6 +223,100 @@ class PortableWorkTests(unittest.TestCase):
         value = fixture()
         value["work"]["inputs"][0]["revision"] = revision("document:2")
         self.reject(value, "DEPENDENCY")
+
+    def test_changed_criterion_refuses_support_but_retains_definition_history(self):
+        value = fixture()
+        history = copy.deepcopy((value["runs"], value["evidence"]))
+        value["work"]["revision"] = revision("work:3")
+        value["work"]["acceptance"][0].update(
+            revision=revision("criterion:2"),
+            description="Every claim cites a source and checks contradictions.",
+        )
+        value["target"]["acceptance"][0]["revision"] = revision("criterion:2")
+        self.reject(value, "APPLICABILITY")
+        self.assertEqual((value["runs"], value["evidence"]), history)
+        value["target"]["support"] = []
+        before = copy.deepcopy(value)
+        self.assertIsNone(CONTRACT.validate_bundle(value))
+        self.assertEqual(CONTRACT.decode_bundle(json.dumps(value).encode()), before)
+        self.assertEqual(value, before)
+        self.assertEqual((value["runs"], value["evidence"]), history)
+        # Relabeling old evidence to the new criterion cannot bypass its run.
+        value["evidence"][0]["acceptance"]["revision"] = revision("criterion:2")
+        self.reject(value, "REVISION")
+
+    def test_criterion_conflicting_definition_under_same_revision_refuses(self):
+        for location in ("work", "run", "other_run"):
+            with self.subTest(location=location):
+                value = fixture()
+                value["target"]["support"] = []
+                if location == "work":
+                    value["work"]["revision"] = revision("work:3")
+                    criterion = value["work"]["acceptance"][0]
+                elif location == "run":
+                    criterion = value["runs"][0]["acceptance"][0]
+                else:
+                    other = copy.deepcopy(value["runs"][0])
+                    other["id"] = "run:other"
+                    value["runs"].append(other)
+                    criterion = other["acceptance"][0]
+                    # Conflict must also be found between two historical runs.
+                    value["work"]["acceptance"][0]["revision"] = revision("criterion:2")
+                    value["target"]["acceptance"][0]["revision"] = revision("criterion:2")
+                criterion["description"] = "Changed semantics without a new criterion revision."
+                self.reject(value, "CRITERION_CONFLICT")
+
+    def test_criterion_target_and_historical_reference_integrity(self):
+        value = fixture()
+        value["work"]["acceptance"][0]["revision"] = revision("criterion:2")
+        self.reject(value, "DEPENDENCY")
+        value = fixture()
+        value["evidence"][0]["acceptance"]["revision"] = revision("criterion:missing")
+        self.reject(value, "REVISION")
+        value = fixture()
+        value["runs"][0]["acceptance"][0]["id"] = "accept:other"
+        self.reject(value, "REFERENCE")
+        for location in ("work", "run", "target"):
+            value = fixture()
+            owner = value["runs"][0] if location == "run" else value[location]
+            owner["acceptance"].append(copy.deepcopy(owner["acceptance"][0]))
+            self.reject(value, "DUPLICATE_ID")
+        value = fixture()
+        value["evidence"][0]["acceptance_id"] = "accept:citation"
+        self.reject(value, "SHAPE")
+        value = fixture()
+        del value["runs"][0]["acceptance"]
+        self.reject(value, "SHAPE")
+
+    def test_removed_and_unrelated_criteria_are_selective(self):
+        value = fixture()
+        other = {"id": "accept:other", "revision": revision("other:1"),
+                 "description": "An unrelated acceptance criterion."}
+        value["work"]["acceptance"].append(copy.deepcopy(other))
+        value["runs"][0]["acceptance"].append(copy.deepcopy(other))
+        value["target"]["acceptance"].append({"id": other["id"], "revision": revision("other:2")})
+        value["work"]["acceptance"][1].update(revision=revision("other:2"),
+                                             description="A changed unrelated criterion.")
+        value["work"]["revision"] = revision("work:3")
+        self.assertIsNone(CONTRACT.validate_bundle(value))
+        # Removing the supported criterion leaves its run/evidence as history.
+        value["work"]["acceptance"].pop(0)
+        value["target"]["acceptance"].pop(0)
+        self.reject(value, "APPLICABILITY")
+        value["target"]["support"] = []
+        self.assertIsNone(CONTRACT.validate_bundle(value))
+
+    def test_operation_identity_includes_retained_criteria(self):
+        value = fixture()
+        other = copy.deepcopy(value["runs"][0])
+        other["id"] = "run:retry"
+        other["acceptance"][0].update(revision=revision("criterion:2"),
+                                      description="Changed criterion for a retry.")
+        value["runs"].append(other)
+        attempt = copy.deepcopy(value["attempts"][0])
+        attempt.update(id="attempt:retry", run_id=other["id"])
+        value["attempts"].append(attempt)
+        self.reject(value, "OPERATION_CONFLICT")
 
     def test_removed_input_remains_history(self):
         value = fixture()

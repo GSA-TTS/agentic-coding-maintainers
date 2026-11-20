@@ -38,6 +38,15 @@
       "required": ["id", "description"],
       "properties": {"id": {"$ref": "#/$defs/id"}, "description": {"$ref": "#/$defs/text"}}
     },
+    "criterion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "revision", "description"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/revision"},
+        "description": {"$ref": "#/$defs/text"}
+      }
+    },
+    "criteria": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/criterion"}},
     "work": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "revision", "outcome", "authority", "inputs", "constraints", "acceptance", "profile"],
@@ -46,7 +55,7 @@
         "outcome": {"$ref": "#/$defs/text"}, "authority": {"$ref": "#/$defs/ref"},
         "inputs": {"$ref": "#/$defs/inputs"},
         "constraints": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/text"}},
-        "acceptance": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/described"}},
+        "acceptance": {"$ref": "#/$defs/criteria"},
         "profile": {
           "oneOf": [
             {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "documents"}}},
@@ -94,11 +103,12 @@
     },
     "run": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "work_id", "work_revision", "workflow_revision", "inputs", "configurations", "budget"],
+      "required": ["id", "work_id", "work_revision", "workflow_revision", "inputs", "configurations", "acceptance", "budget"],
       "properties": {
         "id": {"$ref": "#/$defs/id"}, "work_id": {"$ref": "#/$defs/id"},
         "work_revision": {"$ref": "#/$defs/revision"}, "workflow_revision": {"$ref": "#/$defs/revision"},
         "inputs": {"$ref": "#/$defs/inputs"}, "configurations": {"$ref": "#/$defs/refs"},
+        "acceptance": {"$ref": "#/$defs/criteria"},
         "budget": {"$ref": "#/$defs/budget"}, "coordinator": {"$ref": "#/$defs/coordinator"}
       }
     },
@@ -156,19 +166,20 @@
     },
     "evidence": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "producer_attempt_id", "artifact", "subject", "acceptance_id", "inputs", "configurations", "workflow_revision"],
+      "required": ["id", "producer_attempt_id", "artifact", "subject", "acceptance", "inputs", "configurations", "workflow_revision"],
       "properties": {
         "id": {"$ref": "#/$defs/id"}, "producer_attempt_id": {"$ref": "#/$defs/id"},
         "artifact": {"$ref": "#/$defs/ref"}, "subject": {"$ref": "#/$defs/ref"},
-        "acceptance_id": {"$ref": "#/$defs/id"}, "inputs": {"$ref": "#/$defs/inputs"},
+        "acceptance": {"$ref": "#/$defs/ref"}, "inputs": {"$ref": "#/$defs/inputs"},
         "configurations": {"$ref": "#/$defs/refs"}, "workflow_revision": {"$ref": "#/$defs/revision"}
       }
     },
     "target": {
       "type": "object", "additionalProperties": false,
-      "required": ["subject", "inputs", "configurations", "workflow_revision", "support"],
+      "required": ["subject", "inputs", "configurations", "acceptance", "workflow_revision", "support"],
       "properties": {
         "subject": {"$ref": "#/$defs/ref"}, "inputs": {"$ref": "#/$defs/inputs"},
+        "acceptance": {"$ref": "#/$defs/inputs"},
         "configurations": {"$ref": "#/$defs/refs"}, "workflow_revision": {"$ref": "#/$defs/revision"},
         "support": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
       }

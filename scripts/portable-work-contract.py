@@ -126,6 +126,24 @@ def _subset(actual, expected, code="DEPENDENCY"):
         _require(key in expected and value == expected[key], code)
 
 
+def _criteria(values, definitions):
+    """Retain run/current definitions; one meaning per declared ID/revision."""
+    criteria = _index(values, 1)
+    for item in criteria.values():
+        _object(item, ("id", "revision", "description"))
+        _revision(item["revision"])
+        _text(item["description"])
+        key = (item["id"], item["revision"]["value"])
+        _require(key not in definitions or definitions[key] == item, "CRITERION_CONFLICT")
+        definitions[key] = item
+    return criteria
+
+
+def _criterion_refs(criteria):
+    return {key: {"id": key, "revision": item["revision"]}
+            for key, item in criteria.items()}
+
+
 def _binding(value):
     _require(type(value) is dict and "schema" in value)
     _require(type(value["schema"]) is int and value["schema"] in (2, 3), "BINDING")
@@ -172,7 +190,7 @@ def _operation(operations, operation_id, content):
     operations[operation_id] = content
 
 
-def _work_and_workflow(bundle):
+def _work_and_workflow(bundle, definitions):
     work, workflow = bundle["work"], bundle["workflow"]
     _object(work, ("id", "revision", "outcome", "authority", "inputs",
                    "constraints", "acceptance", "profile"))
@@ -184,10 +202,7 @@ def _work_and_workflow(bundle):
     _list(work["constraints"])
     for constraint in work["constraints"]:
         _text(constraint)
-    acceptance = _index(work["acceptance"], 1)
-    for item in acceptance.values():
-        _object(item, ("id", "description"))
-        _text(item["description"])
+    acceptance = _criteria(work["acceptance"], definitions)
     profile = work["profile"]
     _require(type(profile) is dict and "kind" in profile)
     if profile["kind"] == "coding":
@@ -211,16 +226,17 @@ def _work_and_workflow(bundle):
     return work, workflow, inputs, acceptance, steps
 
 
-def _runs_and_attempts(bundle, work, steps):
+def _runs_and_attempts(bundle, work, steps, definitions):
     runs = _index(bundle["runs"], 1)
     for run in runs.values():
         _object(run, ("id", "work_id", "work_revision", "workflow_revision",
-                      "inputs", "configurations", "budget"), ("coordinator",))
+                      "inputs", "configurations", "acceptance", "budget"), ("coordinator",))
         _require(run["work_id"] == work["id"], "REFERENCE")
         _revision(run["work_revision"])
         _revision(run["workflow_revision"])
         _refs(run["inputs"], 1)
         _refs(run["configurations"])
+        _criteria(run["acceptance"], definitions)
         _object(run["budget"], ("duration_seconds", "model_calls", "currency_micros"))
         for quantity in run["budget"].values():
             _integer(quantity)
@@ -245,6 +261,7 @@ def _runs_and_attempts(bundle, work, steps):
         content = ("attempt", work["id"], run["work_revision"],
                    bundle["workflow"]["id"], run["workflow_revision"],
                    _refs(run["inputs"]), _refs(run["configurations"]),
+                   _index(run["acceptance"]),
                    run["budget"], attempt["step_id"], capacity,
                    run.get("coordinator"))
         _operation(operations, attempt["operation_id"], content)
@@ -260,7 +277,7 @@ def _runs_and_attempts(bundle, work, steps):
     return runs, attempts, operations
 
 
-def _artifacts_and_evidence(bundle, runs, attempts, acceptance):
+def _artifacts_and_evidence(bundle, runs, attempts):
     artifacts = _index(bundle["artifacts"], 1)
     for artifact in artifacts.values():
         _object(artifact, ("id", "revision", "kind", "producer_attempt_id", "provenance"))
@@ -272,10 +289,12 @@ def _artifacts_and_evidence(bundle, runs, attempts, acceptance):
     evidence = _index(bundle["evidence"])
     for record in evidence.values():
         _object(record, ("id", "producer_attempt_id", "artifact", "subject",
-                         "acceptance_id", "inputs", "configurations", "workflow_revision"))
+                         "acceptance", "inputs", "configurations", "workflow_revision"))
         producer = _lookup(attempts, record["producer_attempt_id"])
         run = runs[producer["run_id"]]
-        _lookup(acceptance, record["acceptance_id"])
+        _ref(record["acceptance"])
+        criterion = _lookup(_index(run["acceptance"]), record["acceptance"]["id"])
+        _require(record["acceptance"]["revision"] == criterion["revision"], "REVISION")
         for field in ("artifact", "subject"):
             _ref(record[field])
             artifact = _lookup(artifacts, record[field]["id"])
@@ -295,19 +314,24 @@ def _artifacts_and_evidence(bundle, runs, attempts, acceptance):
     return artifacts, evidence
 
 
-def _target(bundle, inputs, workflow, artifacts, evidence):
+def _target(bundle, inputs, workflow, acceptance, artifacts, evidence):
     target = bundle["target"]
-    _object(target, ("subject", "inputs", "configurations", "workflow_revision", "support"))
+    _object(target, ("subject", "inputs", "configurations", "acceptance",
+                     "workflow_revision", "support"))
     _ref(target["subject"])
     subject = _lookup(artifacts, target["subject"]["id"])
     _require(subject["revision"] == target["subject"]["revision"], "REVISION")
     _require(_refs(target["inputs"], 1) == inputs, "DEPENDENCY")
     configurations = _refs(target["configurations"])
+    criteria = _refs(target["acceptance"], 1)
+    _require(criteria == _criterion_refs(acceptance), "DEPENDENCY")
     _revision(target["workflow_revision"])
     _require(target["workflow_revision"] == workflow["revision"], "REVISION")
     _ids(target["support"])
     for evidence_id in target["support"]:
         record = _lookup(evidence, evidence_id)
+        _subset({record["acceptance"]["id"]: record["acceptance"]},
+                criteria, "APPLICABILITY")
         _require(record["subject"] == target["subject"], "APPLICABILITY")
         _require(record["workflow_revision"] == target["workflow_revision"], "APPLICABILITY")
         _subset(_refs(record["inputs"]), inputs, "APPLICABILITY")
@@ -351,10 +375,11 @@ def validate_bundle(value):
                     "artifacts", "evidence", "target"), ("effects",))
     _require(value["kind"] == "portable-work-bundle" and
              type(value["version"]) is int and value["version"] == 1, "VERSION")
-    work, workflow, inputs, acceptance, steps = _work_and_workflow(value)
-    runs, attempts, operations = _runs_and_attempts(value, work, steps)
-    artifacts, evidence = _artifacts_and_evidence(value, runs, attempts, acceptance)
-    _target(value, inputs, workflow, artifacts, evidence)
+    definitions = {}
+    work, workflow, inputs, acceptance, steps = _work_and_workflow(value, definitions)
+    runs, attempts, operations = _runs_and_attempts(value, work, steps, definitions)
+    artifacts, evidence = _artifacts_and_evidence(value, runs, attempts)
+    _target(value, inputs, workflow, acceptance, artifacts, evidence)
     _effects(value, attempts, runs, artifacts, operations)
 
 
