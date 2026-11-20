@@ -206,13 +206,17 @@ except isolated_module.Unverified:
 else:
     raise AssertionError("symlinked validator accepted")
 validator.unlink()
-validator.write_text("raise ImportError('synthetic broken validator')\n", encoding="utf-8")
+import_sentinel = fixture / "tampered-validator-executed"
+validator.write_text(
+    f"from pathlib import Path\nPath({str(import_sentinel)!r}).write_text('executed')\n",
+    encoding="utf-8")
 try:
     isolated_module.bind_ledger(ledger, mapping, test_key)
-except isolated_module.Unverified:
-    pass
+except isolated_module.Unverified as exc:
+    assert str(exc) == "trusted ledger validator digest mismatch"
 else:
     raise AssertionError("changed validator accepted without a reviewed digest")
+assert not import_sentinel.exists(), "tampered validator executed before digest rejection"
 private.write_text(json.dumps(mapping), encoding="utf-8")
 private.chmod(0o600)
 assert module.private_mapping(private) == mapping

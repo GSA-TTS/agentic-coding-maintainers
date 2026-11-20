@@ -18,8 +18,11 @@ is delivered but noncompliant; missing check evidence is UNVERIFIED compliance.
 An eligibility
 correction now preserves the original intake decision as an append-only event;
 source, duplicate-map and rework corrections remain follow-up work under issue
-#30. The reader now reports recorded unknown-disposition delay for cases in the
-fixed intake cohort; cross-cohort delays remain unmeasured. Corrections are a
+#30. The reader reports recorded unknown-disposition delay for the fixed intake
+cohort and a separate `all_retained_intake_disposition_ages` projection for
+corrected and effectively unknown retained cases across cohorts. These are
+writer-recorded intake-to-correction or intake-to-cutoff durations, not verified
+source-to-decision timing. Existing cohort denominators are unchanged. Corrections are a
 process-quality signal, not a productivity target.
 
 ## V1: what is measurable now

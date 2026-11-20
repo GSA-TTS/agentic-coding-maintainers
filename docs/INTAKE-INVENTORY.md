@@ -38,10 +38,14 @@ corrected, by intake cohort and by original decision. Preserve the first
 classification and correction time so a high correction rate prompts a
 workflow review, not blame or pressure to suppress corrections. Report cases
 awaiting disposition beside corrected cases; otherwise avoiding a decision
-would falsely improve the rate. This slice counts corrected cases in the
-current intake cohort and preserves initial eligibility; correction delay,
-source/duplicate/rework corrections and full classification-quality measures
-are not yet implemented.
+would falsely improve the rate. The reader preserves initial eligibility and
+reports fixed-cohort recorded unknown-disposition delays. Its separate
+`all_retained_intake_disposition_ages` projection includes cross-cohort corrected
+and effectively unknown cases. Corrected and pending lists may overlap when an
+eligible or excluded intake is corrected to unknown; they are not a partition
+of all retained intakes. Durations use writer-recorded timestamps, not verified
+source-to-decision timing. Source/duplicate/rework corrections and full
+classification-quality measures remain outstanding.
 
 The case ledger cannot reveal requests never recorded as cases. To measure a
 bounded intake denominator, capture a **separate**, private request inventory
