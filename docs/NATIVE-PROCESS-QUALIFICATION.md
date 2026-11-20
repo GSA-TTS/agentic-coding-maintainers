@@ -4,10 +4,16 @@
 
 The sibling `native-process-observation.py` now implements a candidate backend;
 `runtime-observation.py` adds `native_process_identity(pid)` and the record-directed
-`observe_worker_process(worker, *, environment=None)`. No task claim or production
-consumer selects these entry points yet. The primitive experiment below retains
-its original meaning. **Neither its result nor ordinary unit tests establish full
-backend qualification.**
+`observe_worker_process(worker, *, environment=None)`. At source checkpoint
+`c731688d2439e051ea08692901c613bf2a3f195a`, bounded opt-in native core lifecycle
+and manual assignment consumers are implemented for retained schema-4/5 records.
+Core native claims and record-directed manual ownership checks can select these
+entry points; this is not general native enablement. Native task creation remains
+off (`create` emits schema 2), unsupported native profiles refuse, and the backend
+and production native claims remain unqualified. See the
+[bounded task-store delta](TASK-STORE-NATIVE-DELTA.md) for scope and source evidence.
+The primitive experiment below retains its original meaning. **Neither its result
+nor ordinary unit tests establish full backend qualification.**
 
 The candidate admits two complete kernel/interpreter/loaded-libc tuples, both
 Linux / aarch64 / little-endian LP64 / CPython:

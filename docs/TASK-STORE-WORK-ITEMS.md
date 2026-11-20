@@ -12,6 +12,17 @@ delta_head: 55c1721250f0c8c1b20c057e1791f21f99bc4244
 
 ## 1. Purpose and status
 
+### Native/manual source checkpoint — 2026-11-19 UTC
+
+The [native/manual delta](TASK-STORE-NATIVE-DELTA.md) records bounded static
+findings from `5b137bade94121e63ba6a80284e6ee03d11ced4f` through
+`c731688d2439e051ea08692901c613bf2a3f195a`: dual native gates, unequal reader
+guards, reverse leases, manual envelope versions, transitive loads and manifest
+effects. Its D1–D10 entries are recommendations, not adopted decisions. It is
+partial W0/A3 evidence, not their completion; exhaustive consumer/citation and
+refusal-test coverage and live reconciliation remain outstanding. Preserve all
+historical checkpoints, pins and W0–W7/A1–A3 rows below without status changes.
+
 ### Alignment checkpoint — 2026-11-19 UTC
 
 The [portable-work roadmap](PORTABLE-WORK-ROADMAP.md) reconciles this tracker
