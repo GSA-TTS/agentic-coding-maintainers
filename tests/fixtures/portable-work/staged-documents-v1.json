@@ -1,0 +1,56 @@
+{
+  "kind": "portable-work-bundle",
+  "version": 1,
+  "work": {
+    "id": "work:brief", "revision": {"kind": "exact", "value": "work:2"},
+    "outcome": "Describe a cited brief over staged synthetic documents without a repository or forge.",
+    "authority": {"id": "source:document-request", "revision": {"kind": "exact", "value": "request:1"}},
+    "inputs": [
+      {"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}},
+      {"id": "input:background", "revision": {"kind": "exact", "value": "background:2"}}
+    ],
+    "constraints": ["Synthetic metadata only. Content, citations and reviewer independence are not verified by this validator."],
+    "acceptance": [{"id": "accept:citation", "description": "The brief's primary claim cites its staged source."}],
+    "profile": {"kind": "documents"}
+  },
+  "workflow": {
+    "id": "workflow:brief", "revision": {"kind": "exact", "value": "workflow:1"},
+    "steps": [{"id": "step:synthesize", "description": "Describe a brief."}, {"id": "step:verify", "description": "Describe citation verification."}]
+  },
+  "runs": [{
+    "id": "run:brief", "work_id": "work:brief", "work_revision": {"kind": "exact", "value": "work:1"},
+    "workflow_revision": {"kind": "exact", "value": "workflow:1"},
+    "inputs": [
+      {"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}},
+      {"id": "input:background", "revision": {"kind": "exact", "value": "background:1"}}
+    ],
+    "configurations": [{"id": "config:citation", "revision": {"kind": "exact", "value": "config:1"}}],
+    "budget": {"duration_seconds": 1800, "model_calls": 2, "currency_micros": 1000000}
+  }],
+  "attempts": [
+    {"id": "attempt:brief", "run_id": "run:brief", "operation_id": "operation:brief", "step_id": "step:synthesize"},
+    {"id": "attempt:verify", "run_id": "run:brief", "operation_id": "operation:verify", "step_id": "step:verify"}
+  ],
+  "artifacts": [
+    {"id": "artifact:brief", "revision": {"kind": "exact", "value": "brief:1"}, "kind": "report", "producer_attempt_id": "attempt:brief", "provenance": [{"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}}]},
+    {"id": "artifact:verification", "revision": {"kind": "exact", "value": "verification:1"}, "kind": "verification", "producer_attempt_id": "attempt:verify", "provenance": [{"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}}]}
+  ],
+  "evidence": [{
+    "id": "evidence:citation", "producer_attempt_id": "attempt:verify",
+    "artifact": {"id": "artifact:verification", "revision": {"kind": "exact", "value": "verification:1"}},
+    "subject": {"id": "artifact:brief", "revision": {"kind": "exact", "value": "brief:1"}},
+    "acceptance_id": "accept:citation",
+    "inputs": [{"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}}],
+    "configurations": [{"id": "config:citation", "revision": {"kind": "exact", "value": "config:1"}}],
+    "workflow_revision": {"kind": "exact", "value": "workflow:1"}
+  }],
+  "target": {
+    "subject": {"id": "artifact:brief", "revision": {"kind": "exact", "value": "brief:1"}},
+    "inputs": [
+      {"id": "input:primary", "revision": {"kind": "exact", "value": "document:1"}},
+      {"id": "input:background", "revision": {"kind": "exact", "value": "background:2"}}
+    ],
+    "configurations": [{"id": "config:citation", "revision": {"kind": "exact", "value": "config:1"}}],
+    "workflow_revision": {"kind": "exact", "value": "workflow:1"}, "support": ["evidence:citation"]
+  }
+}

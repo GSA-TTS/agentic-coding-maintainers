@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Inert portable work bundle v1",
+  "description": "Shape only. Python additionally enforces bounded encoding, exact JSON integers, references and declared applicability. No authority, admission or accepted completion is established.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "version", "work", "workflow", "runs", "attempts", "artifacts", "evidence", "target"],
+  "properties": {
+    "kind": {"const": "portable-work-bundle"},
+    "version": {"const": 1, "type": "integer"},
+    "work": {"$ref": "#/$defs/work"},
+    "workflow": {"$ref": "#/$defs/workflow"},
+    "runs": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/run"}},
+    "attempts": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/attempt"}},
+    "artifacts": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/artifact"}},
+    "evidence": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/evidence"}},
+    "target": {"$ref": "#/$defs/target"},
+    "effects": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/effect"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]*(?![\\s\\S])"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "integer": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "revision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {"kind": {"const": "exact"}, "value": {"$ref": "#/$defs/id"}}
+    },
+    "ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "revision"],
+      "properties": {"id": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/revision"}}
+    },
+    "refs": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/ref"}},
+    "inputs": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/ref"}},
+    "described": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {"id": {"$ref": "#/$defs/id"}, "description": {"$ref": "#/$defs/text"}}
+    },
+    "work": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "revision", "outcome", "authority", "inputs", "constraints", "acceptance", "profile"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/revision"},
+        "outcome": {"$ref": "#/$defs/text"}, "authority": {"$ref": "#/$defs/ref"},
+        "inputs": {"$ref": "#/$defs/inputs"},
+        "constraints": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/text"}},
+        "acceptance": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/described"}},
+        "profile": {
+          "oneOf": [
+            {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "documents"}}},
+            {
+              "type": "object", "additionalProperties": false, "required": ["kind", "repository", "source"],
+              "properties": {"kind": {"const": "coding"}, "repository": {"$ref": "#/$defs/id"}, "source": {"$ref": "#/$defs/ref"}}
+            }
+          ]
+        }
+      }
+    },
+    "workflow": {
+      "type": "object", "additionalProperties": false, "required": ["id", "revision", "steps"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/revision"},
+        "steps": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/described"}}
+      }
+    },
+    "ordinary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "task_id", "task_revision", "task_digest"],
+      "properties": {
+        "schema": {"const": 2, "type": "integer"}, "task_id": {"$ref": "#/$defs/id"},
+        "task_revision": {"$ref": "#/$defs/revision"}, "task_digest": {"$ref": "#/$defs/id"}
+      }
+    },
+    "cooperative": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "task_id", "task_revision", "task_digest", "session_id", "generation"],
+      "properties": {
+        "schema": {"const": 3, "type": "integer"}, "task_id": {"$ref": "#/$defs/id"},
+        "task_revision": {"$ref": "#/$defs/revision"}, "task_digest": {"$ref": "#/$defs/id"},
+        "session_id": {"$ref": "#/$defs/id"},
+        "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "coordinator": {"oneOf": [{"$ref": "#/$defs/ordinary"}, {"$ref": "#/$defs/cooperative"}]},
+    "budget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["duration_seconds", "model_calls", "currency_micros"],
+      "properties": {
+        "duration_seconds": {"$ref": "#/$defs/integer"}, "model_calls": {"$ref": "#/$defs/integer"},
+        "currency_micros": {"$ref": "#/$defs/integer"}
+      }
+    },
+    "run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "work_id", "work_revision", "workflow_revision", "inputs", "configurations", "budget"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "work_id": {"$ref": "#/$defs/id"},
+        "work_revision": {"$ref": "#/$defs/revision"}, "workflow_revision": {"$ref": "#/$defs/revision"},
+        "inputs": {"$ref": "#/$defs/inputs"}, "configurations": {"$ref": "#/$defs/refs"},
+        "budget": {"$ref": "#/$defs/budget"}, "coordinator": {"$ref": "#/$defs/coordinator"}
+      }
+    },
+    "attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "run_id", "operation_id", "step_id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "run_id": {"$ref": "#/$defs/id"},
+        "operation_id": {"$ref": "#/$defs/id"}, "step_id": {"$ref": "#/$defs/id"},
+        "parent_attempt_id": {"$ref": "#/$defs/id"}, "coordinator": {"$ref": "#/$defs/coordinator"},
+        "capacity": {"$ref": "#/$defs/capacity"}
+      }
+    },
+    "count": {
+      "type": "object", "additionalProperties": false, "required": ["quantity", "unit"],
+      "properties": {"quantity": {"$ref": "#/$defs/integer"}, "unit": {"const": "count"}}
+    },
+    "bytes": {
+      "type": "object", "additionalProperties": false, "required": ["quantity", "unit"],
+      "properties": {"quantity": {"$ref": "#/$defs/integer"}, "unit": {"const": "bytes"}}
+    },
+    "cpu": {
+      "type": "object", "additionalProperties": false, "required": ["quantity", "unit"],
+      "properties": {"quantity": {"$ref": "#/$defs/integer"}, "unit": {"const": "millicores"}}
+    },
+    "capacity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "work_id", "run_id", "operation_id", "attempt_id", "domain_id", "class", "policy_revision", "config_revision", "resources", "max_fanout", "duration_seconds", "max_retries"],
+      "properties": {
+        "kind": {"const": "request"}, "work_id": {"$ref": "#/$defs/id"}, "run_id": {"$ref": "#/$defs/id"},
+        "operation_id": {"$ref": "#/$defs/id"}, "attempt_id": {"$ref": "#/$defs/id"},
+        "domain_id": {"$ref": "#/$defs/id"},
+        "class": {"enum": ["remote_static", "implementation", "heavy_validation", "vm_start_provision"]},
+        "policy_revision": {"$ref": "#/$defs/revision"}, "config_revision": {"$ref": "#/$defs/revision"},
+        "max_fanout": {"$ref": "#/$defs/integer"}, "duration_seconds": {"$ref": "#/$defs/integer"},
+        "max_retries": {"$ref": "#/$defs/integer"},
+        "resources": {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "cpu": {"$ref": "#/$defs/cpu"}, "memory": {"$ref": "#/$defs/bytes"},
+            "storage": {"$ref": "#/$defs/bytes"}, "workers": {"$ref": "#/$defs/count"},
+            "provider_concurrent": {"$ref": "#/$defs/count"}
+          }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "revision", "kind", "producer_attempt_id", "provenance"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/revision"},
+        "kind": {"enum": ["patch", "report", "verification"]},
+        "producer_attempt_id": {"$ref": "#/$defs/id"}, "provenance": {"$ref": "#/$defs/inputs"}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "producer_attempt_id", "artifact", "subject", "acceptance_id", "inputs", "configurations", "workflow_revision"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "producer_attempt_id": {"$ref": "#/$defs/id"},
+        "artifact": {"$ref": "#/$defs/ref"}, "subject": {"$ref": "#/$defs/ref"},
+        "acceptance_id": {"$ref": "#/$defs/id"}, "inputs": {"$ref": "#/$defs/inputs"},
+        "configurations": {"$ref": "#/$defs/refs"}, "workflow_revision": {"$ref": "#/$defs/revision"}
+      }
+    },
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["subject", "inputs", "configurations", "workflow_revision", "support"],
+      "properties": {
+        "subject": {"$ref": "#/$defs/ref"}, "inputs": {"$ref": "#/$defs/inputs"},
+        "configurations": {"$ref": "#/$defs/refs"}, "workflow_revision": {"$ref": "#/$defs/revision"},
+        "support": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    },
+    "effect": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "operation_id", "attempt_id", "artifact", "target", "authority", "precondition", "observation"],
+      "properties": {
+        "kind": {"enum": ["export-artifact", "publish-artifact"]}, "operation_id": {"$ref": "#/$defs/id"},
+        "attempt_id": {"$ref": "#/$defs/id"}, "artifact": {"$ref": "#/$defs/ref"},
+        "target": {"$ref": "#/$defs/id"}, "authority": {"$ref": "#/$defs/ref"},
+        "precondition": {"$ref": "#/$defs/revision"},
+        "observation": {"enum": ["unobserved", "unknown", "reported"]}
+      }
+    }
+  }
+}
