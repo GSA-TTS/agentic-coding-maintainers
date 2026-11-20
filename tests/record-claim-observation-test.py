@@ -106,6 +106,18 @@ class ReceiptTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_native_weak_observation_record_replay_show(self):
+        case = ReceiptTests()
+        case.native = True
+        try:
+            case.setUp()
+            self.assertEqual(case.request["schema_version"], 3)
+            case.test_visible_receipt_exact_summary_hash_and_historical_replay_no_get()
+            self.assertEqual(case.invoke(show=True)[0], 3)
+            self.assertFalse(case.calls.exists())
+        finally:
+            case.doCleanups()
+
     def test_visible_receipt_exact_summary_hash_and_historical_replay_no_get(self):
         task_bytes = self.task_path.read_bytes()
         code, output = self.invoke([self.comment()])

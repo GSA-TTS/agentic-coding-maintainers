@@ -91,6 +91,7 @@ def decode(raw):
 
 def task_binding(task):
     return {"task_id": task["task_id"], "created_at": task["created_at"],
+            **({"task_schema_version": 5} if task["schema_version"] == 5 else {}),
             "task_sha256": digest(task), "revision": task["revision"],
             "generation": task["cooperative_binding"]["generation"],
             "session_id": task["cooperative_binding"]["session_id"], "worker": task["worker"]}
@@ -116,10 +117,11 @@ def validate_request(db, request):
     if type(request) is dict and type(request.get("version")) is int and request["version"] == 2:
         return module("standing-grant").validate_request(db, request)
     fields(request, "version binding original_task reserved_task approval evidence_id settlement_id")
-    require(type(request["version"]) is int and request["version"] == 1)
+    require(type(request["version"]) is int and request["version"] in {1, 3})
+    native = request["version"] == 3
     binding = request["binding"]
     fields(binding, "schema_version action intent_operation_id operation_id attempt_id intent_sha256 store_id target publisher payload payload_sha256 prior_assignee_ids task_binding implementation_head")
-    require(type(binding["schema_version"]) is int and binding["schema_version"] == 1
+    require(type(binding["schema_version"]) is int and binding["schema_version"] == request["version"]
             and binding["action"] == "add-assignee")
     for key in ("intent_operation_id", "operation_id", "attempt_id", "store_id"):
         token(binding[key])
@@ -135,17 +137,17 @@ def validate_request(db, request):
     journal = module("monitor-journal")
     intent = journal.decode_intent(row[0])
     journal.validate_claim_intent(intent)
-    require(intent["schema_version"] == 2 and row[1] == binding["intent_sha256"] == digest(intent)
+    require(intent["schema_version"] == (4 if native else 2) and row[1] == binding["intent_sha256"] == digest(intent)
             and binding["store_id"] == intent["store_id"] == db.execute("SELECT store_id FROM meta").fetchone()[0])
     original, reserved = request["original_task"], request["reserved_task"]
     core = module("orchestrator-state")
     for task in (original, reserved):
-        core.validate_record(task, allow_bound=True)
-        require(task["schema_version"] == 3 and task["state"] in core.ACTIVE
+        core.validate_record(task, allow_bound=True, allow_native=True)
+        require(task["schema_version"] == (5 if native else 3) and task["state"] in core.ACTIVE
                 and task["worker"] is not None and task["transition_intent"] is None
                 and task.get("transition_recovery", {}).get("phase") != "pending")
     core.require_assignment_settled(original)
-    # Exact v2 intent equality is preserved, including the original full digest.
+    # Exact family and intent equality include the original full digest.
     require(intent["binding"] == task_binding(original) and binding["task_binding"] == task_binding(reserved))
     marker = reserved["assignment_dispatch"]
     require(marker == {"version": 1, "phase": "pending", "operation_id": binding["operation_id"],
@@ -183,7 +185,7 @@ def validate_ids(ids):
 
 
 def validate_evidence(request, evidence):
-    require(type(request.get("version")) is int and request["version"] in {1, 2})
+    require(type(request.get("version")) is int and request["version"] in {1, 2, 3})
     if request["version"] == 2:
         return module("standing-grant").validate_evidence(request, evidence)
     require(type(evidence) is dict and type(evidence.get("version")) is int and evidence["version"] in {1, 2})
@@ -213,7 +215,7 @@ def validate_evidence(request, evidence):
 
 
 def validate_settlement(request, evidence, settlement):
-    require(type(request.get("version")) is int and request["version"] in {1, 2})
+    require(type(request.get("version")) is int and request["version"] in {1, 2, 3})
     if request["version"] == 2:
         return module("standing-grant").validate_settlement(request, evidence, settlement)
     fields(settlement, "version attempt_id evidence_sha256 outcome completion satisfaction result_ids")
@@ -326,7 +328,7 @@ def reservation_rows(db, request):
     else:
         for row in db.execute("SELECT document FROM assignment_requests"):
             old = decode(row[0])
-            if old["version"] == 1 and old["binding"]["intent_operation_id"] == binding["intent_operation_id"]:
+            if old["version"] in {1, 3} and old["binding"]["intent_operation_id"] == binding["intent_operation_id"]:
                 raise Invalid("POST_REPLAY_REFUSED")
             other = old["binding"]
             if (other["target"]["repository_id"] == binding["target"]["repository_id"]

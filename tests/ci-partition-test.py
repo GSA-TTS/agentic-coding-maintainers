@@ -102,6 +102,10 @@ PARTITION_TEST = "python3 -I -B tests/ci-partition-test.py"
 SYNTAX_TEST = "python3 -I -B tests/syntax-first-test.py"
 CORE_QUALITY_TEST = "python3 -I -B tests/core-quality-check-test.py"
 INVENTORY_TEST = "python3 -I -B tests/task-store-inventory-test.py"
+DUAL_FORMAT_TESTS = [
+    "python3 -I -B .agents/skills/workspace-orchestrator/tests/dual-format-core-test.py",
+    "python3 -I -B tests/dual-format-integration-test.py",
+]
 PREFLIGHT_SYNTAX = "sh -n scripts/review-workspace-preflight.sh"
 
 
@@ -136,9 +140,12 @@ class CIPartitionTests(unittest.TestCase):
         expected_rest.insert(3, CORE_QUALITY_TEST)
         expected_rest.insert(expected_rest.index("python3 -I -B tests/scoped-autonomy-contract-test.py") + 1,
                              INVENTORY_TEST)
+        dual_index = expected_rest.index("python3 -I -B tests/cooperative-session-binding-test.py") + 1
+        expected_rest[dual_index:dual_index] = DUAL_FORMAT_TESTS
         self.assertEqual(rest, syntax + expected_rest)
         self.assertEqual(Counter(FOREGROUND + expected_rest + [PREFLIGHT_SYNTAX]),
-                         Counter(ORIGINAL_TESTS + [PARTITION_TEST, SYNTAX_TEST, CORE_QUALITY_TEST, INVENTORY_TEST]))
+                         Counter(ORIGINAL_TESTS + [PARTITION_TEST, SYNTAX_TEST, CORE_QUALITY_TEST, INVENTORY_TEST]
+                                 + DUAL_FORMAT_TESTS))
         self.assertEqual(self.dry_run("test"), syntax + FOREGROUND + expected_rest)
 
     def test_syntax_inventory_and_partition_prerequisites(self):

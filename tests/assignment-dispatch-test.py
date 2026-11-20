@@ -158,6 +158,8 @@ class AdapterLoaderTests(unittest.TestCase):
 
 
 class DispatchTest(unittest.TestCase):
+    native = False
+
     def setUp(self):
         self.real_environment = dict(os.environ)
         self.fixture = fixture_module.ApprovedIntentTests()
@@ -175,8 +177,10 @@ class DispatchTest(unittest.TestCase):
         self.local.original_worker = copy.deepcopy(self.local.task["worker"])
         self.local.write(self.local.task_path, self.local.task)
         for group, index in (("slots", self.local.task["leases"]["global_slot"]),
-                             ("implementation", self.local.task["leases"]["implementation_lane"])):
+                              ("implementation", self.local.task["leases"]["implementation_lane"])):
             self.local.write(self.local.state / group / (str(index) + ".lock") / "owner.json", self.local.task["worker"])
+        if self.native:
+            fixture_module.fixtures.local.native_fixture(self.local, self.worker.pid)
         self.fixture.assert_recorded()
         self.local = self.fixture.fixture.local
         self.intent = self.fixture.request()
@@ -186,6 +190,17 @@ class DispatchTest(unittest.TestCase):
             expected_session_id=task["worker"]["session_id"], expected_generation=task["worker"]["generation"],
             intent_operation_id=self.intent["operation_id"], implementation_head="6" * 40, assignment_operation_id=None)
         self.parts = adapter.modules()
+        if self.native:
+            # Only the kernel observation is synthetic. Keep real schema, lease,
+            # journal, reservation, parser, PTY, and transport-result validation.
+            def observe(worker, *, environment=None):
+                self.assertEqual(worker, self.local.task["worker"])
+                status, _ = self.fixture.core.process_identity(worker["pid"], environment=environment)
+                return status, worker["process_identity"] if status == "alive" else None
+
+            patcher = mock.patch.object(self.parts[1], "observe_worker_process", side_effect=observe)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.trace = self.local.root / "transport-trace"
 
     def stop_worker(self):
@@ -381,7 +396,9 @@ class DispatchTest(unittest.TestCase):
                           mock.patch.object(parts[1], "assignment_release", side_effect=release),
                           mock.patch.object(parts[3], "CAPACITY", 0 if scenario == "full" else parts[3].CAPACITY),
                           mock.patch.object(publisher, "load_adapter", return_value=adapter),
-                          mock.patch.object(adapter, "arguments", return_value=self.args)):
+                          mock.patch.object(sys, "argv", ["publish-github-assignment.py", self.args.action,
+                              *[part for key, value in vars(self.args).items() if key != "action" and value is not None
+                                for part in ("--" + key.replace("_", "-"), str(value))]])):
                         code = publisher.main()
                 os._exit(code)  # Bypass shutdown buffering: main must flush JSON itself.
             except BaseException:
@@ -438,7 +455,7 @@ class DispatchTest(unittest.TestCase):
     def test_settlement_fault_boundaries_retain_exact_progress(self):
         for stage in SETTLEMENT_STAGES:
             with self.subTest(stage=stage):
-                with settlement_fixture(DispatchTest(), self.real_environment) as fixture:
+                with settlement_fixture(type(self)(), self.real_environment) as fixture:
                     self.assertEqual(fixture.run_vertical(settlement_stage=stage), "REFUSED:DISPATCH_OR_DURABILITY_UNVERIFIED")
                     _, request, receipt, terminal = fixture.rows()
                     assert_settlement_fault(self, stage, json.loads((fixture.local.root / "settlement-events").read_text()),
@@ -953,6 +970,145 @@ class DispatchTest(unittest.TestCase):
         with self.assertRaises(Exception):
             core.assignment_release(self.local.state, task)
         self.assertEqual(self.local.task_path.read_bytes(), before)
+
+
+class NativeDispatchTest(DispatchTest):
+    """Run the existing failure/recovery matrix against genuine native documents."""
+    native = True
+
+    def test_native_versions_full_binding_and_single_post(self):
+        self.assertEqual(self.run_vertical(), "ASSIGNMENT_CONFIRMED_OBSERVED")
+        _, request, receipt, terminal = self.rows()
+        self.assertEqual((self.intent["schema_version"], request["version"],
+                          request["binding"]["schema_version"]), (4, 3, 3))
+        self.assertEqual(request["binding"]["task_binding"]["task_schema_version"], 5)
+        self.assertEqual(request["original_task"]["schema_version"], 5)
+        self.assertEqual(request["reserved_task"]["schema_version"], 5)
+        self.assertEqual((receipt["version"], terminal["version"]), (2, 1))
+        self.assertEqual(self.trace.read_text(), "POST")
+
+    def test_native_weak_intent_and_cross_family_refuse_before_interaction(self):
+        store = adapter.Store(self.args, *self.parts[:-1])
+        for version in (1, 2, 3, True, 5):
+            changed = dict(self.intent, schema_version=version)
+            with self.subTest(version=version), self.assertRaises(adapter.Refusal):
+                adapter.build(store, changed, self.local.task, [], self.args.implementation_head)
+        with (mock.patch.object(self.parts[1], "observe_worker_process", return_value=("unknown", None)),
+              mock.patch.object(publisher, "collect_approval", side_effect=AssertionError("interaction")),
+              mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("transport")),
+              mock.patch.object(adapter, "modules", return_value=self.parts),
+              mock.patch.object(adapter, "implementation_head", side_effect=lambda value: value),
+              mock.patch.dict(os.environ, {"GH_TOKEN": "fixture-token"}, clear=True),
+              self.assertRaisesRegex(adapter.Refusal, "WORKER_NOT_ACTIVE")):
+            adapter.dispatch(self.args, publisher)
+        self.assertEqual(self.rows()[0], 5)
+        self.assertEqual(self.task(), self.local.task)
+
+    def test_native_request_relabeling_and_origin_refused(self):
+        self.assertEqual(self.run_vertical(), "ASSIGNMENT_CONFIRMED_OBSERVED")
+        _, request, _, _ = self.rows()
+        journal, typed = self.parts[2:4]
+        db = journal.open_store(self.fixture.monitor, writable=True)
+        try:
+            mutations = [lambda r: r.update(version=1), lambda r: r.update(version=4),
+                         lambda r: r.update(version=True),
+                         lambda r: r["binding"].update(schema_version=1),
+                         lambda r: r["binding"].update(schema_version=4),
+                         lambda r: r["binding"]["task_binding"].update(task_schema_version=3),
+                         lambda r: r["original_task"].update(schema_version=3),
+                         lambda r: r["reserved_task"]["worker"].update(process_start="legacy")]
+            for mutate in mutations:
+                changed = copy.deepcopy(request)
+                mutate(changed)
+                with self.assertRaises(Exception):
+                    typed.validate_request(db, changed)
+            # Every completed native request consumes its intent even with new IDs.
+            store = adapter.Store(self.args, *self.parts[:-1])
+            replay = adapter.build(store, self.intent, self.local.task, [], self.args.implementation_head)
+            replay["approval"] = dict(request["approval"], binding_sha256=typed.digest(replay["binding"]))
+            with self.assertRaisesRegex(typed.Invalid, "POST_REPLAY_REFUSED"):
+                typed.preflight(db, replay)
+        finally:
+            db.close()
+
+    def test_native_pending_blocks_legacy_target_and_counts_all_requests(self):
+        self.assertEqual(self.run_vertical("lost"), "UNKNOWN")
+        journal, typed = self.parts[2:4]
+        # Construct a separate legacy document family, retaining native history
+        # unchanged. Request validation uses exact snapshots, not live ownership.
+        task = copy.deepcopy(self.local.task)
+        task["schema_version"] = 3
+        del task["worker"]["process_identity"]
+        task["worker"]["process_start"] = "fixture legacy start"
+        intent = copy.deepcopy(self.intent)
+        intent["schema_version"] = 2
+        intent["operation_id"] = intent["claim"]["operation_id"] = "8" * 32
+        intent["comment"] = self.fixture.prepare.codec.render(intent["claim"])
+        intent["comment_sha256"] = self.fixture.prepare.codec.digest(intent["comment"])
+        intent["public_text_declaration"]["approved_body_sha256"] = intent["comment_sha256"]
+        intent["binding"] = typed.task_binding(task)
+        store = adapter.Store(self.args, *self.parts[:-1])
+        db = journal.open_store(self.fixture.monitor, writable=True)
+        try:
+            before = tuple(db.execute("SELECT document,sha256 FROM assignment_requests").fetchone())
+            journal.record_claim_intent(db, intent)
+            request = adapter.build(store, intent, task, [], self.args.implementation_head)
+            request["approval"] = {"binding_sha256": typed.digest(request["binding"]),
+                "interaction": "CONTROLLING_TTY_EXACT_CHALLENGE", "age_milliseconds": 0, "maximum_age_seconds": 120}
+            typed.validate_request(db, request)
+            with self.assertRaisesRegex(typed.Invalid, "TARGET_PENDING"):
+                typed.preflight(db, request)
+            with mock.patch.object(typed, "CAPACITY", 1), self.assertRaisesRegex(typed.Invalid, "CAPACITY"):
+                typed.preflight(db, request)
+            self.assertEqual(tuple(db.execute("SELECT document,sha256 FROM assignment_requests").fetchone()), before)
+            self.assertEqual(db.execute("SELECT version FROM meta").fetchone()[0], 6)
+            journal.validate_store(db)
+        finally:
+            db.close()
+
+    def test_native_not_sent_terminal_recovery_never_opens_transport(self):
+        self.assertIn("REFUSED", self.run_vertical("expired", settlement_stage="release"))
+        _, request, receipt, terminal = self.rows()
+        self.assertEqual((receipt["completion"], terminal["outcome"]), ("NOT_SENT", "NOT_SENT"))
+        with (mock.patch.dict(os.environ, {}, clear=True),
+              mock.patch.object(adapter, "modules", return_value=self.parts),
+              mock.patch.object(adapter, "implementation_head", side_effect=lambda value: value),
+              mock.patch.object(self.parts[-1], "Transport", side_effect=AssertionError("recovery network"))):
+            result = adapter.recover(self.recovery_args(), publisher)
+        self.assertEqual(result["status"], "NOT_SENT")
+        self.assertFalse(self.trace.exists())
+        self.assertEqual(self.rows()[1:], (request, receipt, terminal))
+
+    def test_mixed_manual_history_reopens_at_metadata_seven(self):
+        self.assertEqual(self.run_vertical(), "ASSIGNMENT_CONFIRMED_OBSERVED")
+        journal, typed = self.parts[2:4]
+        db = journal.open_store(self.fixture.monitor, writable=True)
+        try:
+            legacy = copy.deepcopy(self.intent)
+            legacy["schema_version"] = 2
+            legacy["operation_id"] = legacy["claim"]["operation_id"] = "9" * 32
+            legacy["binding"].pop("task_schema_version")
+            legacy["binding"]["worker"].pop("process_identity")
+            legacy["binding"]["worker"]["process_start"] = "fixture legacy start"
+            legacy["comment"] = self.fixture.prepare.codec.render(legacy["claim"])
+            legacy["comment_sha256"] = self.fixture.prepare.codec.digest(legacy["comment"])
+            legacy["public_text_declaration"]["approved_body_sha256"] = legacy["comment_sha256"]
+            journal.record_claim_intent(db, legacy)
+            tables = ("claim_intents", *typed.TABLES)
+            before = {table: [tuple(row) for row in db.execute("SELECT * FROM " + table)] for table in tables}
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                typed.module("standing-grant").migrate(db)
+                journal.validate_store(db)
+        finally:
+            db.close()
+        db = journal.open_store(self.fixture.monitor)
+        try:
+            self.assertEqual(db.execute("SELECT version FROM meta").fetchone()[0], 7)
+            self.assertEqual({table: [tuple(row) for row in db.execute("SELECT * FROM " + table)]
+                              for table in tables}, before)
+        finally:
+            db.close()
 
 
 class ImplementationProbeTest(unittest.TestCase):

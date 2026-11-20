@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import hashlib
 import importlib.util
@@ -11,6 +12,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +26,17 @@ EXIT_UNKNOWN = 3
 EXIT_BUSY = 4
 SCHEMA = 2
 BOUND_SCHEMA = 3
+NATIVE_SCHEMA = 4
+NATIVE_BOUND_SCHEMA = 5
+TASK_FIELDS = {
+    "schema_version", "task_id", "state", "scope", "scope_key", "kind",
+    "owner", "repo", "branch", "worktree", "base_sha", "owned_paths",
+    "tracker_type", "tracker_number", "head_sha", "reviewed_sha",
+    "restricted_paths", "acceptance_criteria", "dependencies", "reviewers",
+    "findings", "validation", "next_action", "worker", "leases",
+    "transition_intent", "rework_count", "revision", "created_at", "updated_at",
+}
+WORKER_FIELDS = {"task_id", "owner", "pid", "process_start", "worker_id", "token", "hostname", "created_at"}
 MAX_GENERATION = (1 << 63) - 1
 SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", re.ASCII)
 MAX_WORKERS = 6
@@ -274,34 +287,290 @@ def atomic_json(path: Path, data: dict[str, Any]) -> None:
             os.unlink(tmp)
 
 
-def read_json(path: Path, label: str, *, strict: bool = False) -> dict[str, Any]:
-    def unique_object(pairs):
+def decode_record_json(text: str, *, strict: bool = False) -> tuple[dict[str, Any], bool]:
+    """Preserve legacy duplicate semantics only for unambiguously legacy bytes.
+
+    Inspect decoded key/value pairs BEFORE last-value projection. Any native
+    schema value or process_identity key at any depth selects strict parsing;
+    repeated schema discriminators are always ambiguous, even if the last is 2.
+    Escaped spellings are decoded by JSON before these comparisons.
+    """
+    duplicate = False
+    native = False
+
+    def object_pairs(pairs):
+        nonlocal duplicate, native
         result = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError("duplicate JSON key")
+                duplicate = True
+                if key in {"schema_version", "task_schema_version"}:
+                    raise ValueError("ambiguous JSON schema discriminator")
+            if key == "process_identity" or (key in {"schema_version", "task_schema_version"}
+                                             and type(value) is int and value in {4, 5}):
+                native = True
             result[key] = value
         return result
 
+    raw = json.loads(text, object_pairs_hook=object_pairs)
+    if duplicate and (strict or native):
+        raise ValueError("duplicate JSON key")
+    if not isinstance(raw, dict):
+        raise ValueError("record is not an object")
+    return raw, native
+
+
+@contextlib.contextmanager
+def physical_directory(path: Path):
+    """Hold no-follow descriptors for EVERY ancestor; never resolve a symlink."""
+    with contextlib.ExitStack() as stack:
+        try:
+            absolute = path.absolute()
+            if ".." in absolute.parts:
+                raise UnknownError("physical directory traversal refused")
+            fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, fd)
+            links = []
+            for name in absolute.parts[1:]:
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                stack.callback(os.close, child)
+                links.append((fd, name, child))
+                fd = child
+
+            def unchanged():
+                for parent, name, child in links:
+                    selected = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    opened = os.fstat(child)
+                    if (not stat.S_ISDIR(selected.st_mode)
+                            or (selected.st_dev, selected.st_ino) != (opened.st_dev, opened.st_ino)):
+                        raise UnknownError("physical directory changed")
+
+            unchanged()
+            yield fd, unchanged
+            unchanged()
+        except OSError as exc:
+            raise UnknownError("physical directory unavailable") from exc
+
+
+def read_physical_json(parent: int, name: str, *, strict: bool = True) -> tuple[dict[str, Any], tuple[int, int]]:
+    """Bounded physical read; strict by default, ambiguous schemas always refuse."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_size > 1_000_000
+                or before.st_nlink != 1 or before.st_uid != os.getuid() or before.st_mode & 0o077):
+            raise UnknownError("native JSON file is not private bounded regular storage")
+        chunks = []
+        remaining = 1_000_001
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if not remaining:
+            raise UnknownError("native JSON exceeds byte bound")
+        raw, _ = decode_record_json(b"".join(chunks).decode("utf-8"), strict=strict)
+        after = os.fstat(fd)
+        selected = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (not stat.S_ISREG(selected.st_mode)
+                or (selected.st_dev, selected.st_ino) != (before.st_dev, before.st_ino)
+                or (after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+                   (before.st_size, before.st_mtime_ns, before.st_ctime_ns)):
+            raise UnknownError("native JSON changed during read")
+        return raw, (before.st_dev, before.st_ino)
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def native_lease(path: Path, *, owning_family: bool = False):
+    """Select a lease and its owner using held ancestor/directory descriptors."""
+    try:
+        with physical_directory(path.parent) as (parent, ancestors_unchanged):
+            group_info = os.fstat(parent)
+            if group_info.st_uid != os.getuid() or group_info.st_mode & 0o077:
+                raise UnknownError("native reservation group is not private")
+            fd = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != os.getuid() or info.st_mode & 0o077 or set(os.listdir(fd)) != {"owner.json"}:
+                    raise UnknownError("native lease directory is not private exact storage")
+
+                def read_owner():
+                    if not owning_family:
+                        return read_physical_json(fd, "owner.json")
+                    # A tentative projection is only a lookup, never authority
+                    # to choose legacy semantics from a worker's field shape.
+                    # Native hints and repeated discriminators already refuse
+                    # duplicates in this read. Scope schema 2 alone says nothing
+                    # about its owning task's family.
+                    candidate, file_identity = read_physical_json(fd, "owner.json", strict=False)
+                    task_id = candidate.get("task_id")
+                    if not isinstance(task_id, str) or not TASK_RE.fullmatch(task_id):
+                        raise UnknownError("reservation owning task is invalid")
+                    task = read_task(path.parent.parent, task_id, allow_bound=True, allow_native=True)
+                    group = path.parent.name
+                    if group == "scopes":
+                        index, token = task["scope_key"], task["leases"]["scope_token"]
+                    elif group in {"slots", "implementation"}:
+                        index = task["leases"]["global_slot" if group == "slots" else "implementation_lane"]
+                        token = (task["worker"] or {}).get("token")
+                    else:
+                        raise UnknownError("reservation group is invalid")
+                    if index is None or path.name != f"{index}.lock" or candidate.get("token") != token:
+                        raise UnknownError("reservation owning task association changed")
+                    if is_native_task(task):
+                        strict_owner = read_physical_json(fd, "owner.json")
+                        if strict_owner != (candidate, file_identity):
+                            raise UnknownError("reservation changed during family selection")
+                        verify_native_reservation_owner(task, group, candidate)
+                    return candidate, file_identity
+
+                owner, identity = read_owner()
+
+                def unchanged():
+                    ancestors_unchanged()
+                    selected = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                    if (not stat.S_ISDIR(selected.st_mode)
+                            or (selected.st_dev, selected.st_ino) != (info.st_dev, info.st_ino)
+                            or set(os.listdir(fd)) != {"owner.json"}
+                            or read_owner() != (owner, identity)):
+                        raise UnknownError("native lease selection changed")
+
+                unchanged()
+                yield parent, fd, owner, unchanged
+            finally:
+                os.close(fd)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise UnknownError("native lease unreadable or malformed") from exc
+
+
+def native_reservation_owner(path: Path) -> dict[str, Any]:
+    with native_lease(path) as (_, _, owner, unchanged):
+        unchanged()
+        return owner
+
+
+def mixed_reservation_owner(path: Path) -> dict[str, Any]:
+    """Physical reverse scan, with duplicate policy bound to the owning task.
+
+    read_task validates only the record, not its reservations: no reverse-scan
+    recursion or cache of family/authority. Native release remains strict.
+    """
+    with native_lease(path, owning_family=True) as (_, _, owner, unchanged):
+        unchanged()
+        return owner
+
+
+def native_reservation_paths(root: Path, group: str) -> list[Path]:
+    with physical_directory(root / group) as (fd, unchanged):
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise UnknownError("native reservation group is not private")
+        names = os.listdir(fd)
+        if any(re.fullmatch(r"[0-9a-f]+\.lock", name) is None for name in names):
+            raise UnknownError("native reservation inventory is ambiguous")
+        unchanged()
+        return [root / group / name for name in sorted(names)]
+
+
+def read_json(path: Path, label: str, *, strict: bool = False) -> dict[str, Any]:
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
             raise ValueError("not a bounded regular file")
-        raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object if strict else None)
+        raw, native = decode_record_json(path.read_text(encoding="utf-8"), strict=strict)
+        if native:
+            with physical_directory(path.parent) as (parent, unchanged):
+                selected, _ = read_physical_json(parent, path.name)
+                unchanged()
+                if selected != raw:
+                    raise UnknownError("native record changed during selection")
+                raw = selected
     except Exception as exc:
         raise UnknownError(f"{label} unreadable or malformed: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise UnknownError(f"{label} is not an object")
     return raw
 
 
-def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_bound: bool = False) -> dict[str, Any]:
+def task_schema(record: dict[str, Any]) -> int:
+    schema = record.get("schema_version")
+    if type(schema) is not int or schema not in {SCHEMA, BOUND_SCHEMA, NATIVE_SCHEMA, NATIVE_BOUND_SCHEMA}:
+        raise UnknownError("task schema is invalid")
+    return schema
+
+
+def is_cooperative_task(record: dict[str, Any]) -> bool:
+    return task_schema(record) in {BOUND_SCHEMA, NATIVE_BOUND_SCHEMA}
+
+
+def is_native_task(record: dict[str, Any]) -> bool:
+    return task_schema(record) in {NATIVE_SCHEMA, NATIVE_BOUND_SCHEMA}
+
+
+def require_supported_native_profile(record: dict[str, Any]) -> None:
+    """Admission fence only; runtime observation still must qualify the backend."""
+    if not is_native_task(record):
+        return
+    allowed = TASK_FIELDS | {"legacy_finding_dispositions"}
+    if is_cooperative_task(record):
+        allowed |= {"cooperative_binding", "transition_recovery", "assignment_dispatch"}
+    if set(record) - allowed or record.get("kind") not in {"implementation", "review"}:
+        raise UnknownError("native task profile has unsupported kind or extensions")
+    if "assignment_dispatch" in record:
+        marker = record["assignment_dispatch"]
+        if type(marker) is not dict or type(marker.get("version")) is not int or marker["version"] != 1:
+            raise UnknownError("native assignment supports only manual dispatch")
+
+
+def validate_worker_for_schema(worker: dict[str, Any], schema: int) -> None:
+    """Core worker validation; legacy ordinary metadata retains its historical limits."""
+    task_schema({"schema_version": schema})
+    native = schema in {NATIVE_SCHEMA, NATIVE_BOUND_SCHEMA}
+    bound = schema in {BOUND_SCHEMA, NATIVE_BOUND_SCHEMA}
+    if type(worker) is not dict:
+        raise UnknownError("task worker shape is invalid")
+    fields = WORKER_FIELDS - {"process_start"} | {"process_identity"} if native else set(WORKER_FIELDS)
+    if bound:
+        fields |= {"session_id", "generation"}
+    if (native or bound) and set(worker) != fields:
+        raise UnknownError("task worker shape is invalid")
+    if not native and "process_identity" in worker:
+        raise UnknownError("legacy worker contains native identity")
+    if type(worker.get("pid")) is not int or worker["pid"] <= 0:
+        raise UnknownError("task worker pid is invalid")
+    for field in ("worker_id", "token"):
+        if not isinstance(worker.get(field), str) or not re.fullmatch(r"[0-9a-f]{32}", worker[field]):
+            raise UnknownError(f"task worker {field} is invalid")
+    for field in ("task_id", "owner", "hostname") + (() if native else ("process_start",)):
+        if not isinstance(worker.get(field), str) or not worker[field]:
+            raise UnknownError(f"task worker {field} is invalid")
+    if native and not _observation.valid_native_identity(worker["process_identity"]):
+        raise UnknownError("task worker native identity is invalid")
+    if native or bound:
+        for field in ("owner", "hostname", "created_at") + (() if native else ("process_start",)):
+            if not isinstance(worker.get(field), str) or not worker[field] or len(worker[field]) > 2000:
+                raise UnknownError("task worker metadata is invalid")
+    if native and not TASK_RE.fullmatch(worker["task_id"]):
+        raise UnknownError("task worker id is invalid")
+    if bound and (not isinstance(worker.get("session_id"), str) or not SESSION_RE.fullmatch(worker["session_id"])
+                  or type(worker.get("generation")) is not int or not 1 <= worker["generation"] <= MAX_GENERATION):
+        raise UnknownError("cooperative worker binding is invalid")
+
+
+def recorded_worker_identity(worker: dict[str, Any]) -> str | dict[str, Any]:
+    legacy, native = "process_start" in worker, "process_identity" in worker
+    if legacy == native:
+        raise UnknownError("worker requires exactly one process identity")
+    return worker["process_start"] if legacy else worker["process_identity"]
+
+
+def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_bound: bool = False,
+                    allow_native: bool = False) -> dict[str, Any]:
     # Schema 1 was emitted by the first in-session prototype before tracker/head
     # binding and transition intents were added. It is persisted host state, so
     # make the upgrade explicit and lossless instead of requiring a reset.
     if type(raw.get("schema_version")) is not int:
         raise UnknownError("task schema is invalid")
-    if raw.get("schema_version") == BOUND_SCHEMA and not allow_bound:
-        raise UnknownError("cooperative schema 3 is unsupported by this controller")
     if raw.get("schema_version") == 1:
         raw = dict(raw)
         raw.update({
@@ -313,20 +582,19 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
             "transition_intent": None,
             "rework_count": 0,
         })
-    required = {
-        "schema_version", "task_id", "state", "scope", "scope_key", "kind",
-        "owner", "repo", "branch", "worktree", "base_sha", "owned_paths",
-        "tracker_type", "tracker_number", "head_sha", "reviewed_sha",
-        "restricted_paths", "acceptance_criteria", "dependencies", "reviewers",
-        "findings", "validation", "next_action", "worker", "leases",
-        "transition_intent", "rework_count", "revision", "created_at", "updated_at",
-    }
+    schema = task_schema(raw)
+    if is_cooperative_task(raw) and not allow_bound:
+        raise UnknownError("cooperative task is unsupported by this controller")
+    if is_native_task(raw) and not allow_native:
+        raise UnknownError("native task is unsupported by this controller")
+    require_supported_native_profile(raw)
+    required = TASK_FIELDS
     missing = required - raw.keys()
     if missing:
         raise UnknownError(f"task record missing fields: {', '.join(sorted(missing))}")
     if raw["schema_version"] == BOUND_SCHEMA and raw.keys() - required - {"cooperative_binding", "legacy_finding_dispositions", "transition_recovery", "assignment_dispatch", "intake_completion"}:
         raise UnknownError("cooperative core-only task has unsupported retained extensions")
-    if raw["schema_version"] not in {SCHEMA, BOUND_SCHEMA} or type(raw["revision"]) is not int or raw["revision"] < 0:
+    if type(raw["revision"]) is not int or raw["revision"] < 0:
         raise UnknownError("task schema or revision is invalid")
     validate_task_id(str(raw["task_id"]))
     if expected and raw["task_id"] != expected:
@@ -364,16 +632,13 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
         raise UnknownError("task scope token is invalid")
     if raw["worker"] is not None:
         worker = raw["worker"]
-        if type(worker.get("pid")) is not int or worker["pid"] <= 0:
-            raise UnknownError("task worker pid is invalid")
-        for field in ("worker_id", "token"):
-            if not isinstance(worker.get(field), str) or not re.fullmatch(r"[0-9a-f]{32}", worker[field]):
-                raise UnknownError(f"task worker {field} is invalid")
-        for field in ("task_id", "owner", "process_start", "hostname"):
-            if not isinstance(worker.get(field), str) or not worker[field]:
-                raise UnknownError(f"task worker {field} is invalid")
+        validate_worker_for_schema(worker, schema)
         if worker["task_id"] != raw["task_id"]:
             raise UnknownError("task worker id does not match task")
+        if is_native_task(raw) and worker["owner"] != raw["owner"]:
+            raise UnknownError("native worker owner does not match task")
+    if is_native_task(raw) and set(raw["leases"]) != {"global_slot", "implementation_lane", "scope_token"}:
+        raise UnknownError("native leases shape is invalid")
     validate_cooperative_binding(raw)
     validate_assignment_dispatch(raw)
     validate_intake_completion(raw)
@@ -397,9 +662,9 @@ def validate_record(raw: dict[str, Any], expected: str | None = None, *, allow_b
 
 def validate_cooperative_binding(record: dict[str, Any]) -> None:
     worker = record["worker"]
-    if record["schema_version"] != BOUND_SCHEMA:
+    if not is_cooperative_task(record):
         if "cooperative_binding" in record or (worker is not None and {"session_id", "generation"} & worker.keys()):
-            raise UnknownError("cooperative binding requires schema 3")
+            raise UnknownError("cooperative binding requires schema 3 or 5")
         return
     binding = record.get("cooperative_binding")
     if not isinstance(binding, dict) or set(binding) != {"session_id", "generation"}:
@@ -414,14 +679,10 @@ def validate_cooperative_binding(record: dict[str, Any]) -> None:
     if set(record["leases"]) != {"global_slot", "implementation_lane", "scope_token"}:
         raise UnknownError("cooperative leases shape is invalid")
     if worker is not None:
-        if set(worker) != {"task_id", "owner", "pid", "process_start", "worker_id", "token", "hostname", "created_at", "session_id", "generation"}:
-            raise UnknownError("cooperative worker shape is invalid")
+        validate_worker_for_schema(worker, task_schema(record))
         if (worker["owner"] != record["owner"] or worker["session_id"] != binding["session_id"]
                 or type(worker["generation"]) is not int or worker["generation"] != generation):
             raise UnknownError("cooperative worker binding disagrees with task")
-        for field in ("owner", "process_start", "hostname", "created_at"):
-            if not isinstance(worker[field], str) or not worker[field] or len(worker[field]) > 2000:
-                raise UnknownError("cooperative worker metadata is invalid")
     if record["state"] in ACTIVE:
         if worker is None or record["leases"]["global_slot"] is None:
             raise UnknownError("cooperative active task lacks ownership")
@@ -473,7 +734,12 @@ def validate_transition_recovery(record: dict[str, Any]) -> None:
         return
     fields = {"phase", "source", "intent", "generation", "base_revision", "pending_revision",
               "worker", "leases", "capacity_observed", "operator_reason", "task_sha256", "correlation_sha256"}
-    if (record["schema_version"] != BOUND_SCHEMA or not isinstance(receipt, dict)
+    if is_native_task(record):
+        fields |= {"version", "task_schema_version"}
+        if (type(receipt) is not dict or type(receipt.get("version")) is not int or receipt["version"] != 1
+                or type(receipt.get("task_schema_version")) is not int or receipt["task_schema_version"] != NATIVE_BOUND_SCHEMA):
+            raise UnknownError("native recovery origin is invalid")
+    if (not is_cooperative_task(record) or not isinstance(receipt, dict)
             or set(receipt) != fields or not isinstance(receipt["phase"], str)
             or receipt["phase"] not in {"pending", "settled"}
             or not isinstance(receipt["source"], str) or receipt["source"] not in STATES
@@ -508,7 +774,7 @@ def validate_transition_recovery(record: dict[str, Any]) -> None:
                                        "generation": receipt["generation"]}
     if isinstance(worker, dict):
         snapshot["owner"] = worker.get("owner")
-    validate_record(snapshot, record["task_id"], allow_bound=True)
+    validate_record(snapshot, record["task_id"], allow_bound=True, allow_native=True)
     interrupted_shape(snapshot)
     original_capacity_observation(snapshot, receipt["capacity_observed"])
     if receipt["phase"] == "pending":
@@ -618,11 +884,11 @@ class CoordinatorLock:
         os.rmdir(self.path)
 
 
-def read_task(root: Path, task_id: str, *, allow_bound: bool = False) -> dict[str, Any]:
+def read_task(root: Path, task_id: str, *, allow_bound: bool = False, allow_native: bool = False) -> dict[str, Any]:
     path = task_path(root, task_id)
     if not path.exists():
         raise UnknownError(f"task {task_id!r} record is missing")
-    return validate_record(read_json(path, f"task {task_id}"), task_id, allow_bound=allow_bound)
+    return validate_record(read_json(path, f"task {task_id}"), task_id, allow_bound=allow_bound, allow_native=allow_native)
 
 
 def validate_assignment_dispatch(record):
@@ -631,7 +897,8 @@ def validate_assignment_dispatch(record):
     if "assignment_dispatch" not in record:
         return
     extra = {"action", "grant_id", "target", "logical_key"} if type(marker) is dict and marker.get("version") == 2 else set()
-    if (record["schema_version"] != BOUND_SCHEMA or type(marker) is not dict
+    require_supported_native_profile(record)
+    if (not is_cooperative_task(record) or type(marker) is not dict
             or set(marker) != {"version", "phase", "operation_id", "attempt_id", "store_id",
                                "intent_sha256", "original_sha256", "original_revision", "implementation_head"} | extra
             or type(marker["version"]) is not int or marker["version"] not in {1, 2}
@@ -677,9 +944,9 @@ def require_assignment_settled(record):
 
 def assignment_reserve(root, original, reserved):
     """Qualified adapter, coordinator held. Marker FIRST; failure never rolls it back."""
-    current = read_task(root, original["task_id"], allow_bound=True)
+    current = read_task(root, original["task_id"], allow_bound=True, allow_native=True)
     require_assignment_settled(current)
-    if current != original or original["schema_version"] != BOUND_SCHEMA:
+    if current != original or not is_cooperative_task(original):
         raise UnknownError("assignment original task changed")
     if original["transition_intent"] or original.get("transition_recovery", {}).get("phase") == "pending":
         raise UnknownError("assignment recovery pending")
@@ -689,13 +956,13 @@ def assignment_reserve(root, original, reserved):
                     assignment_dispatch=reserved["assignment_dispatch"])
     if reserved != expected or reserved["assignment_dispatch"]["phase"] != "pending":
         raise UnknownError("assignment prospective task changed")
-    validate_record(reserved, original["task_id"], allow_bound=True)
+    validate_record(reserved, original["task_id"], allow_bound=True, allow_native=True)
     atomic_json(task_path(root, original["task_id"]), reserved)
 
 
 def assignment_release(root, reserved):
     """Only the dispatch adapter calls this AFTER settlement commit and fsync."""
-    current = read_task(root, reserved["task_id"], allow_bound=True)
+    current = read_task(root, reserved["task_id"], allow_bound=True, allow_native=True)
     if current != reserved or current.get("assignment_dispatch", {}).get("phase") != "pending":
         raise UnknownError("assignment settlement task changed")
     verify_reservations(root, current)
@@ -742,22 +1009,25 @@ def assignment_release(root, reserved):
     final["assignment_dispatch"]["phase"] = "settled"
     final["revision"] += 1
     final["updated_at"] = now()
-    validate_record(final, final["task_id"], allow_bound=True)
+    validate_record(final, final["task_id"], allow_bound=True, allow_native=True)
     atomic_json(task_path(root, final["task_id"]), final)
     return final
 
 
-def write_task(root: Path, record: dict[str, Any], *, allow_bound: bool = False) -> None:
+def write_task(root: Path, record: dict[str, Any], *, allow_bound: bool = False, allow_native: bool = False) -> None:
     require_assignment_settled(record)
     path = task_path(root, record["task_id"])
     if path.exists():
-        retained = read_task(root, record["task_id"], allow_bound=allow_bound)
+        retained = read_task(root, record["task_id"], allow_bound=allow_bound, allow_native=allow_native)
         require_assignment_settled(retained)
+        if (is_native_task(retained) or is_native_task(record)) and task_schema(retained) != task_schema(record):
+            if (task_schema(retained), task_schema(record)) != (NATIVE_SCHEMA, NATIVE_BOUND_SCHEMA):
+                raise UnknownError("native identity conversion is unsupported")
         if "assignment_dispatch" in retained and record.get("assignment_dispatch") != retained["assignment_dispatch"]:
             raise UnknownError("permanent assignment anchor changed")
     record["revision"] += 1
     record["updated_at"] = now()
-    validate_record(record, record["task_id"], allow_bound=allow_bound)
+    validate_record(record, record["task_id"], allow_bound=allow_bound, allow_native=allow_native)
     atomic_json(task_path(root, record["task_id"]), record)
 
 
@@ -775,12 +1045,31 @@ def acquire_dir(path: Path, metadata: dict[str, Any]) -> None:
 
 
 def release_dir(path: Path, token: str) -> None:
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return
     owner = read_json(path / "owner.json", f"reservation {path.name}")
     if path.parent.name in {"slots", "implementation", "scopes"}:
         root = path.parent.parent
-        require_assignment_settled(read_task(root, owner["task_id"], allow_bound=True))
+        retained = read_task(root, owner["task_id"], allow_bound=True, allow_native=True)
+        require_assignment_settled(retained)
+        if is_native_task(retained):
+            with native_lease(path) as (parent, directory, selected, unchanged):
+                if selected != owner or selected.get("token") != token:
+                    raise UnknownError("native release owner changed")
+                if path.parent.name == "scopes" or retained["worker"] is not None:
+                    verify_native_reservation_owner(retained, path.parent.name, selected)
+                unchanged()
+                # No pathname traversal after selection: replacement symlinks
+                # cannot redirect unlink into an external directory.
+                os.unlink("owner.json", dir_fd=directory)
+                selected_directory = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                opened_directory = os.fstat(directory)
+                if (not stat.S_ISDIR(selected_directory.st_mode)
+                        or (selected_directory.st_dev, selected_directory.st_ino) !=
+                           (opened_directory.st_dev, opened_directory.st_ino)):
+                    raise UnknownError("native release directory replaced after unlink")
+                os.rmdir(path.name, dir_fd=parent)
+            return
     if owner.get("token") != token:
         raise UnknownError(f"reservation fencing token changed: {path.name}")
     os.unlink(path / "owner.json")
@@ -815,13 +1104,26 @@ def process_identity(pid: int, *, environment: dict[str, str] | None = None) -> 
     return _observation.process_identity(pid, environment=environment)
 
 
-def worker_metadata(task_id: str, owner: str, pid: int) -> dict[str, Any]:
-    status, start = process_identity(pid)
+def observe_worker_process(worker: dict[str, Any], *, environment: dict[str, str] | None = None) -> tuple[str, str | dict | None]:
+    """Keep the legacy core patching seam; native absence is context-directed."""
+    identity = recorded_worker_identity(worker)
+    if "process_start" in worker:
+        return process_identity(worker["pid"], environment=environment) if environment is not None else process_identity(worker["pid"])
+    if not _observation.valid_native_identity(identity):
+        return "unknown", None
+    return _observation.observe_worker_process(worker, environment=environment)
+
+
+def worker_metadata(task_id: str, owner: str, pid: int, *, task_schema: int = SCHEMA) -> dict[str, Any]:
+    native = is_native_task({"schema_version": task_schema})
+    status, start = _observation.native_process_identity(pid) if native else process_identity(pid)
     if status != "alive" or not start:
         raise UnknownError(f"cannot establish process identity for pid {pid}")
+    if native and not _observation.valid_native_identity(start):
+        raise UnknownError("native worker identity is unqualified")
     return {
         "task_id": task_id, "owner": owner, "pid": pid,
-        "process_start": start, "worker_id": uuid.uuid4().hex,
+        ("process_identity" if native else "process_start"): start, "worker_id": uuid.uuid4().hex,
         "token": uuid.uuid4().hex, "hostname": socket.gethostname(),
         "created_at": now(),
     }
@@ -882,11 +1184,11 @@ def command_create(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         raise InputError("issue/pr tracker number must be positive")
     scope_dir = root / "scopes" / f"{scope_key(scope)}.lock"
     with CoordinatorLock(root):
-        validate_admission_reservations(root, allow_bound=True)
+        validate_admission_reservations(root, allow_bound=True, allow_native=True)
         if task_path(root, task_id).exists():
             raise BusyError(f"task {task_id!r} already exists")
         incoming_paths = owned_paths + restricted_paths
-        for existing in command_list(root, allow_bound=True):
+        for existing in command_list(root, allow_bound=True, allow_native=True):
             if existing["state"] in TERMINAL:
                 continue
             if worktree and existing["worktree"] == worktree:
@@ -995,10 +1297,10 @@ def require_repair_settled(record: dict[str, Any], new_review: bool = False, roo
 
 def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     with CoordinatorLock(root):
-        validate_admission_reservations(root, allow_bound=True)
-        record = read_task(root, args.task_id, allow_bound=True)
+        validate_admission_reservations(root, allow_bound=True, allow_native=True)
+        record = read_task(root, args.task_id, allow_bound=True, allow_native=True)
         require_assignment_settled(record)
-        bound = record["schema_version"] == BOUND_SCHEMA
+        bound = is_cooperative_task(record)
         session = getattr(args, "session_id", None)
         if bound or session is not None:
             if record["state"] != "Ready" or record["worker"] is not None:
@@ -1009,13 +1311,13 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             require_expected_counters(args, record, generation)
             if generation == MAX_GENERATION or record["revision"] >= MAX_GENERATION:
                 raise BusyError("cooperative generation/revision limit reached")
-            record["schema_version"] = BOUND_SCHEMA
+            record["schema_version"] = NATIVE_BOUND_SCHEMA if is_native_task(record) else BOUND_SCHEMA
             record["cooperative_binding"] = {"session_id": session, "generation": generation + 1}
             # Legacy admission compares only scope task/token. Validate the full
             # prospective bound record and exact scope metadata before reserving
             # capacity; otherwise opt-in could persist an unusable bound claim.
             prospective = dict(record, revision=record["revision"] + 1)
-            validate_record(prospective, record["task_id"], allow_bound=True)
+            validate_record(prospective, record["task_id"], allow_bound=True, allow_native=True)
             verify_reservations(root, prospective)
         elif any(getattr(args, key, None) is not None for key in ("expected_generation", "expected_revision")):
             raise InputError("claim expectations require an explicit session token")
@@ -1028,9 +1330,12 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         if prepared and args.owner != prepared[0]["owner"]:
             raise BusyError("prepared repair belongs to original owner")
         owner = safe_scope(args.owner)
-        worker = worker_metadata(record["task_id"], owner, args.pid)
-        if record["schema_version"] == BOUND_SCHEMA:
+        worker = (worker_metadata(record["task_id"], owner, args.pid, task_schema=task_schema(record))
+                  if is_native_task(record) else worker_metadata(record["task_id"], owner, args.pid))
+        if is_cooperative_task(record):
             worker.update(record["cooperative_binding"])
+        if is_native_task(record):
+            validate_worker_for_schema(worker, task_schema(record))
         slot = reserve_first(root, "slots", MAX_WORKERS, worker)
         try:
             if os.environ.get("ORCHESTRATOR_TEST_MODE") == "1" and os.environ.get("ORCHESTRATOR_TEST_FAIL_CLAIM_WRITE") == "1":
@@ -1042,7 +1347,7 @@ def command_claim(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             record["worker"] = worker
             record["leases"]["global_slot"] = slot
             record["leases"]["implementation_lane"] = None
-            write_task(root, record, allow_bound=True)
+            write_task(root, record, allow_bound=True, allow_native=True)
         except AmbiguousWriteError:
             raise
         except Exception:
@@ -1063,7 +1368,7 @@ def require_expected_counters(args: argparse.Namespace, record: dict[str, Any], 
 def require_cooperative_mutation(args: argparse.Namespace, root: Path, record: dict[str, Any]) -> None:
     """Invocation comparison under the caller's coordinator lock; not authentication."""
     require_assignment_settled(record)
-    if record["schema_version"] != BOUND_SCHEMA:
+    if not is_cooperative_task(record):
         if (getattr(args, "operator_action", False) or any(getattr(args, key, None) is not None
                 for key in ("expected_session_id", "expected_worker_id", "expected_generation"))):
             raise InputError("cooperative mutation flags require schema 3")
@@ -1087,7 +1392,7 @@ def require_cooperative_mutation(args: argparse.Namespace, root: Path, record: d
         if worker is not None:
             if args.command != "transition" or args.state != "Cancelled":
                 raise BusyError("active cooperative operator action is limited to absent-worker cancellation")
-            if worker["hostname"] != socket.gethostname() or process_identity(worker["pid"])[0] != "absent":
+            if worker["hostname"] != socket.gethostname() or observe_worker_process(worker)[0] != "absent":
                 raise UnknownError("cooperative worker absence is not verified")
         record["next_action"] = rationale
         return
@@ -1104,6 +1409,8 @@ def require_cooperative_mutation(args: argparse.Namespace, root: Path, record: d
 
 def release_capacity(root: Path, record: dict[str, Any]) -> None:
     require_assignment_settled(record)
+    if is_native_task(record):
+        verify_native_capacity_release(root, record)
     worker = record.get("worker") or {}
     token = worker.get("token")
     if not token:
@@ -1324,6 +1631,8 @@ def complete_intake(root: Path, current: dict[str, Any], journal, db) -> dict[st
 
 def release_implementation_lane(root: Path, record: dict[str, Any]) -> None:
     require_assignment_settled(record)
+    if is_native_task(record):
+        verify_native_capacity_release(root, record)
     worker = record.get("worker") or {}
     token = worker.get("token")
     lane = record["leases"].get("implementation_lane")
@@ -1336,7 +1645,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if args.state == "Unknown" or args.state not in STATES:
         raise InputError("target state is invalid; Unknown is derived only")
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id, allow_bound=True)
+        record = read_task(root, args.task_id, allow_bound=True, allow_native=True)
         require_cooperative_mutation(args, root, record)
         verify_reservations(root, record)
         if args.state not in TRANSITIONS[record["state"]]:
@@ -1376,10 +1685,18 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             record["validation"] = []
             record["reviewed_sha"] = ""
         if args.state == "Implementing":
+            if is_native_task(record):
+                validate_admission_reservations(root, allow_bound=True, allow_native=True)
+                worker = record["worker"]
+                if worker["hostname"] != socket.gethostname():
+                    raise UnknownError("native implementation worker belongs to another host")
+                status, identity = observe_worker_process(worker)
+                if status != "alive" or identity != recorded_worker_identity(worker):
+                    raise UnknownError("native implementation worker identity is unverified")
             lane = reserve_first(root, "implementation", MAX_IMPLEMENTATION, record["worker"])
             record["leases"]["implementation_lane"] = lane
         record["transition_intent"] = args.state
-        write_task(root, record, allow_bound=True)
+        write_task(root, record, allow_bound=True, allow_native=True)
         if args.reason:
             record["next_action"] = args.reason
         if args.state == "Reviewing":
@@ -1393,7 +1710,7 @@ def command_transition(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             )
         record["state"] = args.state
         record["transition_intent"] = None
-        write_task(root, record, allow_bound=True)
+        write_task(root, record, allow_bound=True, allow_native=True)
     return record
 
 
@@ -1447,7 +1764,7 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     }[args.category]
     value = safe_scope(args.value)
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id, allow_bound=True)
+        record = read_task(root, args.task_id, allow_bound=True, allow_native=True)
         require_cooperative_mutation(args, root, record)
         require_review_reservation_settled(record, root)
         if record["state"] in TERMINAL:
@@ -1466,7 +1783,7 @@ def command_record(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if not re.fullmatch(r"[0-9a-f]{40}", args.reviewed_sha):
                 raise InputError("reviewed SHA must be full lowercase 40-hex")
             record["reviewed_sha"] = args.reviewed_sha
-        write_task(root, record, allow_bound=True)
+        write_task(root, record, allow_bound=True, allow_native=True)
     return record
 
 
@@ -1477,7 +1794,7 @@ def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, A
             or not re.fullmatch(r"[0-9a-f]{40}", args.head_sha)):
         raise InputError("resolution requires a nonnegative index/revision and full lowercase digests")
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id, allow_bound=True)
+        record = read_task(root, args.task_id, allow_bound=True, allow_native=True)
         require_cooperative_mutation(args, root, record)
         verify_reservations(root, record)
         if record["transition_intent"]:
@@ -1519,7 +1836,7 @@ def command_resolve_finding(args: argparse.Namespace, root: Path) -> dict[str, A
         })
         if args.disposition == "persists":
             revoke_legacy_readiness(record)
-        write_task(root, record, allow_bound=True)
+        write_task(root, record, allow_bound=True, allow_native=True)
     return record
 
 
@@ -1527,7 +1844,7 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{40}", args.head_sha):
         raise InputError("head SHA must be full lowercase 40-hex")
     with CoordinatorLock(root):
-        record = read_task(root, args.task_id, allow_bound=True)
+        record = read_task(root, args.task_id, allow_bound=True, allow_native=True)
         require_cooperative_mutation(args, root, record)
         require_repair_settled(record, root=root)
         if record["kind"] != "implementation" or record["state"] not in {"Implementing", "Rework", "Claimed"}:
@@ -1560,12 +1877,41 @@ def command_update_head(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         record["validation"] = []
         record["next_action"] = args.next_action or (
             record["next_action"] if getattr(args, "operator_action", False) else "independent review at updated head")
-        write_task(root, record, allow_bound=True)
+        write_task(root, record, allow_bound=True, allow_native=True)
     return record
 
 
 def reservation_owner(root: Path, group: str, index: int | str) -> dict[str, Any]:
     return read_json(root / group / f"{index}.lock" / "owner.json", f"{group} reservation {index}")
+
+
+def verify_native_reservation_owner(record: dict[str, Any], group: str, owner: dict[str, Any]) -> None:
+    if group == "scopes":
+        expected = {"schema_version": SCHEMA, "task_id": record["task_id"], "scope": record["scope"],
+                    "token": record["leases"]["scope_token"]}
+        if type(owner.get("schema_version")) is not int:
+            raise UnknownError("native scope schema is invalid")
+    else:
+        validate_worker_for_schema(owner, task_schema(record))
+        expected = record["worker"]
+    if owner != expected:
+        raise UnknownError("native reservation metadata disagrees with task")
+
+
+def verify_native_capacity_release(root: Path, record: dict[str, Any]) -> None:
+    """Check complete retained owners, including reverse leases, before any deletion."""
+    for group, field in (("slots", "global_slot"), ("implementation", "implementation_lane")):
+        index = record["leases"][field]
+        if index is not None:
+            path = root / group / f"{index}.lock"
+            if path.exists() or path.is_symlink():
+                verify_native_reservation_owner(record, group, native_reservation_owner(path))
+        for lock in native_reservation_paths(root, group):
+            owner = mixed_reservation_owner(lock)
+            if owner.get("task_id") == record["task_id"]:
+                if index is None or lock.name != f"{index}.lock":
+                    raise UnknownError("native reverse capacity lease disagrees")
+                verify_native_reservation_owner(record, group, owner)
 
 
 def verify_reservations(root: Path, record: dict[str, Any]) -> None:
@@ -1591,21 +1937,31 @@ def verify_reservations(root: Path, record: dict[str, Any]) -> None:
         elif lane is not None:
             raise UnknownError(f"task {record['task_id']} holds an unexpected implementation lane")
     for group, index, token in expected:
-        owner = reservation_owner(root, group, index)
+        owner = (native_reservation_owner(root / group / f"{index}.lock") if is_native_task(record)
+                 else reservation_owner(root, group, index))
         if owner.get("task_id") != record["task_id"] or owner.get("token") != token:
             raise UnknownError(f"task {record['task_id']} does not own its {group} reservation")
-        if record["schema_version"] == BOUND_SCHEMA:
+        if is_cooperative_task(record) or is_native_task(record):
             if group == "scopes":
                 expected_owner = {"schema_version": SCHEMA, "task_id": record["task_id"], "scope": record["scope"], "token": token}
             else:
                 expected_owner = worker
-            exact_types = (type(owner.get("schema_version")) is int if group == "scopes" else
-                           type(owner.get("generation")) is int and type(owner.get("pid")) is int)
+            exact_types = type(owner.get("schema_version")) is int if group == "scopes" else type(owner.get("pid")) is int
+            if group != "scopes":
+                validate_worker_for_schema(owner, task_schema(record))
             if owner != expected_owner or not exact_types:
                 raise UnknownError("cooperative reservation metadata disagrees with task")
+    if is_native_task(record):
+        verify_native_capacity_release(root, record)
+        for lock in native_reservation_paths(root, "scopes"):
+            owner = mixed_reservation_owner(lock)
+            if owner.get("task_id") == record["task_id"]:
+                if record["state"] in TERMINAL or lock.name != f"{record['scope_key']}.lock":
+                    raise UnknownError("native reverse scope reservation disagrees")
+                verify_native_reservation_owner(record, "scopes", owner)
 
 
-def validate_admission_reservations(root: Path, *, allow_bound: bool = False) -> None:
+def validate_admission_reservations(root: Path, *, allow_bound: bool = False, allow_native: bool = False) -> None:
     """Refuse new work if either side of any reservation is unmeasured.
 
     Run under CoordinatorLock before create/claim. Readable JSON alone does
@@ -1615,7 +1971,8 @@ def validate_admission_reservations(root: Path, *, allow_bound: bool = False) ->
     """
     records: dict[str, dict[str, Any]] = {}
     for path in (root / "tasks").glob("*/task.json"):
-        record = validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name, allow_bound=allow_bound)
+        record = validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name,
+                                 allow_bound=allow_bound, allow_native=allow_native)
         if record["transition_intent"]:
             raise UnknownError(f"task {record['task_id']} has an unfinished transition; reconcile first")
         records[record["task_id"]] = record
@@ -1641,15 +1998,28 @@ def validate_admission_reservations(root: Path, *, allow_bound: bool = False) ->
                 valid_state = record["state"] == "Implementing" and record["kind"] == "implementation"
             if not valid_state or lock.name != f"{expected_slot}.lock" or owner.get("token") != expected_token:
                 raise UnknownError(f"{group} reservation {lock.name} disagrees with task {task_id}")
+            if is_native_task(record):
+                owner = native_reservation_owner(lock)
+                verify_native_reservation_owner(record, group, owner)
 
 
 def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     require_assignment_settled(record)
-    if record["schema_version"] == BOUND_SCHEMA:
+    if is_cooperative_task(record):
         raise UnknownError("cooperative interrupted transition recovery is unsupported")
     target = record["transition_intent"]
     if not target:
         return record
+    if is_native_task(record):
+        interrupted_shape(record)
+        recovery_reservations(root, record, False)
+        worker = record["worker"]
+        if worker is not None:
+            if worker["hostname"] != socket.gethostname():
+                raise UnknownError("native recovery belongs to another host")
+            status, identity = observe_worker_process(worker)
+            if status not in {"alive", "absent"} or (status == "alive" and identity != recorded_worker_identity(worker)):
+                raise UnknownError("native recovery process observation is unverified")
     require_execution_stopped(record)
     require_repair_settled(record, root=root)
     if target == "Ready for human review":
@@ -1678,6 +2048,9 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
         for lock in (root / "implementation").glob("*.lock"):
             owner = read_json(lock / "owner.json", f"implementation reservation {lock.name}")
             if owner.get("task_id") == record["task_id"] and owner.get("token") == record["worker"]["token"]:
+                if is_native_task(record):
+                    owner = native_reservation_owner(lock)
+                    verify_native_reservation_owner(record, "implementation", owner)
                 matches.append(int(lock.stem))
         if len(matches) > 1:
             raise UnknownError(f"task {record['task_id']} owns multiple implementation lanes")
@@ -1692,13 +2065,13 @@ def finish_intent(root: Path, record: dict[str, Any]) -> dict[str, Any]:
         release_dir(root / "scopes" / f"{record['scope_key']}.lock", record["leases"]["scope_token"])
     record["state"] = target
     record["transition_intent"] = None
-    write_task(root, record)
+    write_task(root, record, allow_native=True)
     return record
 
 
 def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     require_assignment_settled(record)
-    if record["schema_version"] == BOUND_SCHEMA:
+    if is_cooperative_task(record):
         raise UnknownError("cooperative task requires guarded operator lifecycle; automatic reconciliation is unsupported")
     if has_review_reservations(record):
         review_reservation_module().validate_integrity(record, root)
@@ -1710,14 +2083,14 @@ def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], b
     if record["state"] not in ACTIVE:
         return record, False
     worker = record.get("worker")
-    if not worker or type(worker.get("pid")) is not int or not worker.get("process_start"):
+    if not worker or type(worker.get("pid")) is not int or not recorded_worker_identity(worker):
         raise UnknownError(f"task {record['task_id']} has ambiguous active ownership")
     if worker["hostname"] != socket.gethostname():
         raise UnknownError(f"task {record['task_id']} belongs to another host")
-    status, actual_start = process_identity(worker["pid"])
+    status, actual_start = observe_worker_process(worker)
     if status == "unknown":
         raise UnknownError(f"cannot establish process state for task {record['task_id']}")
-    if status == "alive" and actual_start != worker["process_start"]:
+    if status == "alive" and actual_start != recorded_worker_identity(worker):
         raise UnknownError(f"task {record['task_id']} pid was reused or ownership changed")
     worktree = record.get("worktree")
     interrupted = status == "absent"
@@ -1729,7 +2102,7 @@ def reconcile_one(root: Path, record: dict[str, Any]) -> tuple[dict[str, Any], b
     release_capacity(root, record)
     record["state"] = "Blocked"
     record["next_action"] = "interrupted worker" if interrupted else "worktree missing"
-    write_task(root, record)
+    write_task(root, record, allow_native=True)
     return record, True
 
 
@@ -1738,7 +2111,7 @@ def recovery_reservations(root: Path, selected: dict[str, Any], pending: bool) -
     require_assignment_settled(selected)
     records = {}
     for path in sorted((root / "tasks").glob("*/task.json")):
-        record = validate_record(read_json(path, "recovery task", strict=True), path.parent.name, allow_bound=True)
+        record = validate_record(read_json(path, "recovery task", strict=True), path.parent.name, allow_bound=True, allow_native=True)
         records[record["task_id"]] = record
         if record["task_id"] != selected["task_id"]:
             if record["transition_intent"] or record.get("transition_recovery", {}).get("phase") == "pending":
@@ -1748,15 +2121,20 @@ def recovery_reservations(root: Path, selected: dict[str, Any], pending: bool) -
                 "implementation": selected["leases"]["implementation_lane"]}
     seen = set()
     for group in expected:
-        for lock in sorted((root / group).iterdir()):
+        locks = (native_reservation_paths(root, group) if is_native_task(selected)
+                 else sorted((root / group).iterdir()))
+        for lock in locks:
             if (lock.is_symlink() or not lock.is_dir() or lock.stat().st_uid != os.getuid()
                     or lock.stat().st_mode & 0o022 or {path.name for path in lock.iterdir()} != {"owner.json"}):
                 raise UnknownError("recovery reservation directory is ambiguous")
-            owner = read_json(lock / "owner.json", "recovery reservation", strict=True)
+            owner = (native_reservation_owner(lock) if is_native_task(selected)
+                     else read_json(lock / "owner.json", "recovery reservation", strict=True))
             task_id = owner.get("task_id")
             record = records.get(task_id) if isinstance(task_id, str) else None
             if record is None:
                 raise UnknownError("recovery reservation has no task")
+            if is_native_task(record):
+                owner = native_reservation_owner(lock)
             index = record["scope_key"] if group == "scopes" else record["leases"]["global_slot" if group == "slots" else "implementation_lane"]
             if index is None or lock.name != f"{index}.lock":
                 raise UnknownError("reverse recovery reservation association disagrees")
@@ -1767,14 +2145,21 @@ def recovery_reservations(root: Path, selected: dict[str, Any], pending: bool) -
             else:
                 metadata = record["worker"]
                 exact_types = type(owner.get("pid")) is int
-                if record["schema_version"] == BOUND_SCHEMA:
+                if is_cooperative_task(record):
                     exact_types = exact_types and type(owner.get("generation")) is int
+                if is_native_task(record):
+                    validate_worker_for_schema(owner, task_schema(record))
                 valid = record["state"] in ACTIVE and (group == "slots" or record["kind"] == "implementation")
             if not valid or not exact_types or owner != metadata:
                 raise UnknownError("complete recovery reservation ownership changed")
             if task_id == selected["task_id"]:
                 seen.add(group)
     if "scopes" not in seen:
+        # Also fail closed for ordinary native terminal intents after scope
+        # deletion but before the final task write. Schema 4 has no durable
+        # scope-release receipt: absence cannot distinguish that crash from a
+        # lost reservation. Do not infer release or recreate scope authority.
+        # Cooperative recovery likewise requires the exact retained scope.
         raise UnknownError("recovery requires the exact retained scope")
     observed = {group: group in seen for group in ("slots", "implementation")}
     if not pending:
@@ -1797,14 +2182,14 @@ def command_recover(args: argparse.Namespace, root: Path) -> list[dict[str, Any]
         raise UnknownError("recovery requires explicit single-line operator rationale")
     with CoordinatorLock(root):
         path = task_path(root, args.recover)
-        record = validate_record(read_json(path, "recovery task", strict=True), args.recover, allow_bound=True)
+        record = validate_record(read_json(path, "recovery task", strict=True), args.recover, allow_bound=True, allow_native=True)
         require_assignment_settled(record)
-        if record["schema_version"] != BOUND_SCHEMA:
-            raise UnknownError("explicit recovery requires schema 3")
+        if not is_cooperative_task(record):
+            raise UnknownError("explicit recovery requires schema 3 or 5")
         require_expected_counters(args, record, record["cooperative_binding"]["generation"])
         interrupted_shape(record)
         worker = record["worker"]
-        if worker is not None and (worker["hostname"] != socket.gethostname() or process_identity(worker["pid"])[0] != "absent"):
+        if worker is not None and (worker["hostname"] != socket.gethostname() or observe_worker_process(worker)[0] != "absent"):
             raise UnknownError("recovery worker absence is not verified")
         require_execution_stopped(record)
         require_repair_settled(record, root=root)
@@ -1824,6 +2209,8 @@ def command_recover(args: argparse.Namespace, root: Path) -> list[dict[str, Any]
                        "operator_reason": args.operator_reason,
                        "task_sha256": recovery_digest({key: value for key, value in record.items()
                                                         if key not in {"transition_recovery", "revision", "updated_at"}})}
+            if is_native_task(record):
+                receipt.update(version=1, task_schema_version=NATIVE_BOUND_SCHEMA)
             receipt["correlation_sha256"] = recovery_digest({key: value for key, value in receipt.items() if key != "phase"})
             prepared["transition_recovery"] = receipt
             prepared["revision"] += 1
@@ -1835,7 +2222,7 @@ def command_recover(args: argparse.Namespace, root: Path) -> list[dict[str, Any]
         final["transition_recovery"]["phase"] = "settled"
         # Both exact prospective writes must be readable and fit before effects.
         for prospective in (prepared, final):
-            validate_record(prospective, args.recover, allow_bound=True)
+            validate_record(prospective, args.recover, allow_bound=True, allow_native=True)
             serialized_json(prospective)
         if not pending:
             atomic_json(path, prepared)
@@ -1852,14 +2239,20 @@ def command_reconcile(args: argparse.Namespace, root: Path) -> list[dict[str, An
         paths = [task_path(root, args.task_id)] if args.task_id else sorted((root / "tasks").glob("*/task.json"))
         # Preflight the entire authority, even for selected-task recovery: never
         # mutate an earlier legacy task before discovering bound state later.
-        for record in command_list(root, allow_bound=True):
-            if record["schema_version"] == BOUND_SCHEMA:
+        for record in command_list(root, allow_bound=True, allow_native=True):
+            if is_cooperative_task(record):
                 raise UnknownError("cooperative state present; automatic reconciliation is unsupported")
+            if is_native_task(record):
+                if record["transition_intent"]:
+                    recovery_reservations(root, record, False)
+                else:
+                    verify_reservations(root, record)
+                    verify_native_capacity_release(root, record)
         records: dict[str, dict[str, Any]] = {}
         for path in paths:
             if not path.exists():
                 raise UnknownError("task record missing")
-            record = validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name)
+            record = validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name, allow_native=True)
             records[record["task_id"]] = record
             record, did_change = reconcile_one(root, record)
             if did_change:
@@ -1872,7 +2265,7 @@ def command_reconcile(args: argparse.Namespace, root: Path) -> list[dict[str, An
                 task_id = owner.get("task_id")
                 if not isinstance(task_id, str) or not task_path(root, task_id).exists():
                     raise UnknownError(f"{group} reservation {lock.name} has no task record")
-                record = records.get(task_id) or read_task(root, task_id)
+                record = records.get(task_id) or read_task(root, task_id, allow_native=True)
                 if group == "scopes" and record["state"] in TERMINAL:
                     raise UnknownError(f"terminal task {task_id} retains a scope reservation")
                 if group == "slots" and record["state"] not in ACTIVE:
@@ -1887,13 +2280,17 @@ def command_reconcile(args: argparse.Namespace, root: Path) -> list[dict[str, An
                 )
                 if owner.get("token") != expected_token or lock.name != expected_name:
                     raise UnknownError(f"{group} reservation {lock.name} disagrees with task {task_id}")
+                if is_native_task(record):
+                    owner = native_reservation_owner(lock)
+                    verify_native_reservation_owner(record, group, owner)
     return changed
 
 
-def command_list(root: Path, *, allow_bound: bool = False) -> list[dict[str, Any]]:
+def command_list(root: Path, *, allow_bound: bool = False, allow_native: bool = False) -> list[dict[str, Any]]:
     records = []
     for path in sorted((root / "tasks").glob("*/task.json")):
-        records.append(validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name, allow_bound=allow_bound))
+        records.append(validate_record(read_json(path, f"task {path.parent.name}"), path.parent.name,
+                                       allow_bound=allow_bound, allow_native=allow_native))
     return records
 
 
@@ -1987,9 +2384,9 @@ def main() -> int:
         elif args.command == "transition":
             emit(command_transition(args, root))
         elif args.command == "show":
-            emit(read_task(root, args.task_id, allow_bound=True))
+            emit(read_task(root, args.task_id, allow_bound=True, allow_native=True))
         elif args.command == "list":
-            emit(command_list(root, allow_bound=True))
+            emit(command_list(root, allow_bound=True, allow_native=True))
         elif args.command == "reconcile":
             emit({"state": "CURRENT", "changed": command_reconcile(args, root)})
         elif args.command == "record":

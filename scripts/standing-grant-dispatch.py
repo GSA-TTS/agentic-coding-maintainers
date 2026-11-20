@@ -95,7 +95,7 @@ def effect_gate(store, identity):
 def pending_targets(store, db, request):
     """Core marker fences survive even a failed SQLite reservation commit."""
     target = request["binding"]["target"]
-    for task in store.core.command_list(store.root, allow_bound=True):
+    for task in store.core.command_list(store.root, allow_bound=True, allow_native=True):
         marker = task.get("assignment_dispatch", {})
         if marker.get("phase") != "pending":
             continue
@@ -134,6 +134,9 @@ def resolve(store, db, grant, epoch):
 
 def admitted(store, task, definition):
     t = store.typed
+    # Shared ownership also serves native manual tasks. Standing authority is
+    # still exclusively legacy, before ownership, interaction, or transport.
+    t.require(type(task.get("schema_version")) is int and task["schema_version"] == 3)
     t.require(task["kind"] == "intake" and task["state"] == "Claimed")
     t.require(task["repo"] == definition["repository"] and task["scope"] == definition["repository"] +
               ":intake:" + definition["objective"] + ":" + definition["work_item"])

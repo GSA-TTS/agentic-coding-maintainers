@@ -17,6 +17,8 @@ test-rest: check-syntax
 	python3 -I -B tests/syntax-first-test.py
 	python3 -I -B tests/core-quality-check-test.py
 	python3 -I -B tests/cooperative-session-binding-test.py
+	python3 -I -B .agents/skills/workspace-orchestrator/tests/dual-format-core-test.py
+	python3 -I -B tests/dual-format-integration-test.py
 	python3 -I -B tests/release-config-test.py
 	python3 -I -B tests/shared-authority-admission-test.py
 	python3 -I -B tests/workspace-cleanup-test.py

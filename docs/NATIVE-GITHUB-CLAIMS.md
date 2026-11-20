@@ -10,12 +10,12 @@ look up the current-user identity through the configured `gh` transport.
 The codec commands use no network, subprocesses, or file writes; stdout is the result.
 Only GitHub.com issue comments are supported. No GitLab quick actions are supported.
 
-The [proposed operator-controlled publisher](CLAIM-PUBLISHER-PROTOCOL.md) specifies
+The [operator-controlled publisher protocol](CLAIM-PUBLISHER-PROTOCOL.md) specifies
 the separate assignment-first remote-effect path for #117: the exact authenticated
 human user, per-action interactive host approval, and a reviewed typed dispatch
-reservation enforced by the core. It is not implemented or activated by the
+reservation enforced by the core. The separate manual runner is not activated by the
 commands below. #116 ownership remains a separate dependency; #69 App automatic
-actions remain parked. Request v2/journal v5 and declared reviewer fields alone
+actions remain parked. Declared intent v2/v4 and reviewer fields alone
 cannot authorize publication, assignment or retries.
 The proposal distinguishes confirmed observed assignment from satisfied-without-POST
 and terminal failed observations. Its separate operator arbitration may durably
@@ -27,6 +27,28 @@ bounded monotonic age are revalidated before attempts and launch. Expiry never
 clears pending dispatch, and scripted interaction fixtures do not prove human identity.
 
 ## Prepare for explicit public review
+
+### Bounded native manual document family (issue #182)
+
+The dual-format integration retains legacy task 3 / declared intent 2 / manual
+request 1 / publisher binding 1 unchanged. The native manual family is exactly
+task 5 / declared intent 4 / request 3 / publisher binding 3. Native weak intent 3
+corresponds to legacy weak intent 1 and **never authorizes manual assignment**.
+Native private bindings add `task_schema_version: 5` to the existing task
+incarnation/digest/revision/session/generation/full-worker binding. Cross-family
+substitution and relabeling refuse; public claim marker version 1 is unchanged.
+
+SQLite layout and metadata versions are not a native-family discriminator. Mixed
+legacy/native history stays in the existing store; all rows participate in
+capacity, identifier collision, pending-target and consumed-opportunity checks.
+Old operational readers must refuse native documents even when SQLite metadata
+version is unchanged. Preparation and declared public review remain non-authorizing;
+only the separate controlling-terminal manual runner collects assignment approval.
+
+Native creation is still default off, full-backend qualification remains false,
+and unsupported consumers (including standing-grant dispatch) are fenced. This
+slice adds no conversion, deployment, activation, automated comments or remote
+write authorization. Historical #154 UNKNOWN and #158 pause are unchanged.
 
 Run in an independently justified isolated environment:
 

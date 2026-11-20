@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read selected schema-2 or schema-3 coordinator ownership evidence without mutation."""
+"""Read selected schema-2/3/4/5 coordinator ownership evidence without mutation."""
 
 import argparse
 import contextlib
@@ -127,14 +127,31 @@ def recovery_digest(value):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def validate_worker(worker, bound=False):
-    fields(worker, BOUND_WORKER_FIELDS if bound else WORKER_FIELDS)
+def validate_native_identity(identity):
+    # Independent reader: retain exact wire validation without importing plugins.
+    fields(identity, {"schema_version", "backend", "boot_id", "pid_namespace_inode", "start_ticks"})
+    require(type(identity["schema_version"]) is int and identity["schema_version"] == 1)
+    require(identity["backend"] == "linux-procfs")
+    matches(identity["boot_id"], re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"))
+    for key, minimum in (("pid_namespace_inode", 1), ("start_ticks", 0)):
+        value = identity[key]
+        require(type(value) is str and len(value) <= 20 and re.fullmatch(r"0|[1-9][0-9]*", value) is not None)
+        require(minimum <= int(value) < 2**64)
+
+
+def validate_worker(worker, bound=False, native=False):
+    expected = BOUND_WORKER_FIELDS if bound else WORKER_FIELDS
+    if native:
+        expected = expected - {"process_start"} | {"process_identity"}
+    fields(worker, expected)
     integer(worker["pid"], 1)
     for key in ("worker_id", "token"):
         matches(worker[key], HEX32)
     matches(worker["task_id"], TASK_ID)
-    for key in ("owner", "process_start", "hostname", "created_at"):
+    for key in ("owner", "hostname", "created_at") + (() if native else ("process_start",)):
         text(worker[key], nonempty=True)
+    if native:
+        validate_native_identity(worker["process_identity"])
     if bound:
         matches(worker["session_id"], SESSION_ID)
         integer(worker["generation"], 1)
@@ -175,7 +192,7 @@ def validate_base_task(task, bound=False):
         if task["leases"][key] is not None:
             integer(task["leases"][key], 0, maximum)
     if task["worker"] is not None:
-        validate_worker(task["worker"], bound=bound)
+        validate_worker(task["worker"], bound=bound, native=task["schema_version"] in {4, 5})
 
 
 def validate_cooperative_binding(task, check_worker_task=True):
@@ -224,7 +241,11 @@ def validate_transition_recovery(task):
     if "transition_recovery" not in task:
         return
     receipt = task["transition_recovery"]
-    fields(receipt, RECOVERY_FIELDS)
+    native = task["schema_version"] == 5
+    fields(receipt, RECOVERY_FIELDS | ({"version", "task_schema_version"} if native else set()))
+    if native:
+        require(type(receipt["version"]) is int and receipt["version"] == 1
+                and type(receipt["task_schema_version"]) is int and receipt["task_schema_version"] == 5)
     for key in ("phase", "source", "intent"):
         text(receipt[key])
     require(receipt["phase"] in {"pending", "settled"})
@@ -379,11 +400,25 @@ def validate_intake_completion(task):
 def validate_task(task):
     # No prototype upgrade and no imports of the state module or its plugins.
     schema = task.get("schema_version")
-    require(type(schema) is int and schema in {2, 3}, "UNSUPPORTED_SCHEMA")
+    require(type(schema) is int and schema in {2, 3, 4, 5}, "UNSUPPORTED_SCHEMA")
     if schema == 2:
         fields(task, TASK_FIELDS)
         validate_base_task(task, bound=False)
         return
+    if schema in {4, 5}:
+        allowed = TASK_FIELDS | {"legacy_finding_dispositions"}
+        if schema == 5:
+            allowed |= {"cooperative_binding", "transition_recovery", "assignment_dispatch"}
+        require(not set(task) - allowed and task.get("kind") in {"implementation", "review"})
+        if "assignment_dispatch" in task:
+            require(type(task["assignment_dispatch"]) is dict
+                    and type(task["assignment_dispatch"].get("version")) is int
+                    and task["assignment_dispatch"]["version"] == 1)
+        if schema == 4:
+            require(TASK_FIELDS <= set(task))
+            validate_base_task(task)
+            validate_legacy_dispositions(task)
+            return
     required = TASK_FIELDS | {"cooperative_binding"}
     require(type(task) is dict and required <= set(task) and set(task) - required <= BOUND_OPTIONAL_FIELDS)
     validate_base_task(task, bound=True)
@@ -457,7 +492,8 @@ def inspect(args):
         retained = []
         task = read_selected(store, ["tasks", args.task_id, "task.json"], stack, retained)
         validate_task(task)
-        bound = task["schema_version"] == 3
+        bound = task["schema_version"] in {3, 5}
+        native = task["schema_version"] in {4, 5}
         has_bound_args = args.expected_session_id is not None
         if not bound and has_bound_args:
             return result("UNVERIFIED", "UNEXPECTED_BOUND_EXPECTATIONS")
@@ -472,7 +508,7 @@ def inspect(args):
             return result("UNVERIFIED", "MISSING_WORKER_OR_SLOT")
         lane = task["leases"]["implementation_lane"]
         lane_owner = None
-        if bound:
+        if bound or native:
             if task["state"] == "Implementing":
                 require(task["kind"] == "implementation" and lane is not None)
             else:
@@ -484,10 +520,21 @@ def inspect(args):
         text(scope["scope"], 500, True)
         matches(scope["token"], HEX32)
         slot = read_selected(store, ["slots", str(task["leases"]["global_slot"]) + ".lock", "owner.json"], stack, retained)
-        validate_worker(slot, bound=bound)
-        if bound and lane is not None:
+        validate_worker(slot, bound=bound, native=native)
+        if (bound or native) and lane is not None:
             lane_owner = read_selected(store, ["implementation", str(lane) + ".lock", "owner.json"], stack, retained)
-            validate_worker(lane_owner, bound=True)
+            validate_worker(lane_owner, bound=bound, native=native)
+        if native:
+            # A matching selected lease cannot conceal another lease for this task.
+            for group, expected in (("slots", task["leases"]["global_slot"]), ("implementation", lane)):
+                group_fd = directory(store, group, stack, private=True)
+                for name in os.listdir(group_fd):
+                    require(re.fullmatch(r"[0-9]+\.lock", name) is not None)
+                    owner = read_selected(store, [group, name, "owner.json"], stack, retained)
+                    if owner.get("task_id") == task["task_id"]:
+                        require(expected is not None and name == str(expected) + ".lock", "RETAINED_LEASE_MISMATCH")
+                        validate_worker(owner, bound=bound, native=True)
+                        require(owner == worker, "RETAINED_LEASE_MISMATCH")
         require(all(fingerprint(os.fstat(fd)) == before for fd, before in retained), "CHANGED_DURING_READ")
         if task["task_id"] != args.task_id or worker["task_id"] != task["task_id"]:
             return result("CONFLICT", "TASK_MISMATCH")

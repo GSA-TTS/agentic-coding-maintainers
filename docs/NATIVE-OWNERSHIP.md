@@ -1,11 +1,84 @@
 # Native ownership: retained-state preflight and cooperative pilot
 
 Issue #116, retained-state preflight and cooperative pilot. **Implemented:** a
-read-only check of actual retained schema-2 and opt-in schema-3 task,
-global-slot, implementation-lane (for schema-3 `Implementing` tasks), and scope
-records. **Proposed:** native ownership and authenticated-caller enforcement.
+read-only check of retained legacy task schemas 2/3 and the bounded native task
+schemas 4/5 described below, including global-slot, implementation-lane and scope
+records. **Not implemented:** authenticated-caller enforcement.
 Existing coordinator task JSON remains the authority; there is no new claim
 store, capture envelope, or native API bridge.
+
+## Bounded dual-format integration (issue #182)
+
+Native creation remains **default off**: `create` still emits schema 2, and there
+is no supported conversion or new native-creation CLI. Explicit native fixture
+inputs exercise ordinary task 4 and cooperative task 5. A session-bound claim of
+an inactive schema-4 input produces schema 5; reclaim preserves the family.
+Legacy schema 2/3 and their `process_start` semantics remain unchanged. Native
+workers instead carry the strict `process_identity` object; absent, mixed or
+malformed identity fields refuse. Native claim and implementation-lane acquisition
+require fresh, exact native observation before capacity or task effects.
+
+Core lifecycle and the independent retained-state reader deliberately support
+these finite formats. Public core read/write/validation/list helpers retain
+separate `allow_native=False` and `allow_bound=False` defaults. Mixed admission
+scans validate every task and count all retained leases. Native slot/lane checks
+compare the complete worker and reverse-scan reservations. Process absence must
+come from the recorded boot/namespace context; wrong-context absence is not
+release authority. Cooperative session labels remain unauthenticated.
+
+Native physical lease selection opens every ancestor and lease directory with
+no-follow directory descriptors and reads a bounded private regular owner file
+through the held lease descriptor. Forward/reverse checks precede lifecycle
+intent writes; release repeats physical selection and uses descriptor-relative
+unlink/rmdir rather than following a replacement directory symlink. A concurrent
+same-account rename can still interrupt release after intent: it is not an atomic
+multi-file transaction or authenticated protection from that account. Such failure
+retains unresolved state, never permission to clear a different reservation.
+
+Native task/worker/lease JSON rejects duplicate decoded keys, including escaped
+spellings, before schema dispatch. Any native discriminator or `process_identity`
+key in the original pairs selects strict parsing even if a later duplicate would
+hide it. Repeated `schema_version`/`task_schema_version` keys are always ambiguous
+and refused, including repeated legacy values; unambiguously legacy non-discriminator
+duplicates otherwise retain the core's historical last-value behavior. Native
+scope metadata is selected strictly using its owning task's family. The independent
+reader remains strict for all families. Mixed scans do not downgrade ambiguous
+native bytes to legacy. These are parsing/selection fences, not migration.
+
+Core native reverse scans retain physical no-follow checks for every encountered
+lease, but select duplicate-key policy from its validated owning task rather than
+strictly decoding all unrelated legacy leases. A tentative owner projection is
+only a task lookup: the selected lease index and token must match that task before
+legacy non-discriminator duplicates are accepted. Native leases, including native
+scope metadata with outer schema 2, are re-read strictly. Repeated discriminators
+and native identity hints remain fail-closed even during tentative lookup; an
+unresolvable or misassociated owner cannot opt into legacy parsing. This restores
+legacy admission/lifecycle compatibility, not the independent reader's stricter
+contract or the existing explicit recovery scanner's strict parsing policy.
+
+This is a bounded lifecycle/manual-assignment slice, **not full backend
+qualification** (`full_backend_qualified` remains false). Native monitor/intake,
+foreground, review protocol, repair, execution, candidate/reservation, standing
+grant, intake and unknown extensions remain fenced. No identity migration is
+accepted. Ordinary `Reviewing` state does not grant review-protocol authority.
+Controller execution shape, deployment, activation and historical pilot state
+are not changed by this integration.
+
+**Recovery limitation:** an ordinary native terminal transition interrupted after
+scope release but before the final task write remains `UNVERIFIED`. Missing scope
+is not proof of a completed release, and reappearing or foreign scope metadata
+must not be loosely cleared. Exact metadata replay alone does not prove scope
+continuity. Existing retained-scope recovery and versioned cooperative recovery
+receipts do not provide universal terminal-crash recovery. Preserve the interrupted
+state for separately reviewed recovery work; do not delete fences to force progress.
+
+`dual-format-core-test.py` covers these core boundaries. The connected integration
+suite uses explicit native input, the real claim/intent producers, real PTY
+approval with mock transport, durable settlement and lifecycle release; its
+pinned old-reader fixtures test operational refusal rather than handwritten
+approximations. Synthetic observations are not deployment qualification evidence.
+The schema-3 pilot procedure below documents the legacy family; it is not a
+native creation, migration or activation procedure.
 
 ## Opt-in core lifecycle pilot (schema 3)
 
@@ -424,10 +497,10 @@ the validator must supply a real shared-Git primary rather than fabricate one.
 `2^63-1`; `--expected-worker-id` is the retained private lowercase 32-hex worker
 ID. Optional `--expected-session-id` (1–128 ASCII characters matching
 `[A-Za-z0-9][A-Za-z0-9._-]*`) and `--expected-generation` (positive canonical
-decimal integer in `1..2^63-1`) must be supplied together for schema-3 tasks and
-omitted for schema-2 tasks. Supplying only one of the pair is an argument error
-(`INVALID_ARGUMENTS`); supplying both for a schema-2 task yields
-`UNVERIFIED` (`UNEXPECTED_BOUND_EXPECTATIONS`); omitting them for a schema-3
+decimal integer in `1..2^63-1`) must be supplied together for schema-3/5 tasks and
+omitted for schema-2/4 tasks. Supplying only one of the pair is an argument error
+(`INVALID_ARGUMENTS`); supplying both for a schema-2/4 task yields
+`UNVERIFIED` (`UNEXPECTED_BOUND_EXPECTATIONS`); omitting them for a schema-3/5
 task yields `UNVERIFIED` (`MISSING_BOUND_EXPECTATIONS`). Optional branch and
 repository arguments compare exact existing strings; there is no forge lookup,
 ref resolution, normalization, or invented immutable repository ID. Worker IDs
@@ -438,21 +511,26 @@ into review evidence.
 
 ## Implemented check
 
-For schema 2 (and schema 3 in `Claimed` or `Reviewing`), these three files are
+For schema 2 (and schemas 3/4/5 in `Claimed` or `Reviewing`), these three files are
 read, with paths derived from the selected task:
 
 1. `.orchestrator/tasks/<task-id>/task.json`
 2. `.orchestrator/scopes/<scope_key>.lock/owner.json`
 3. `.orchestrator/slots/<global_slot>.lock/owner.json`
 
-For a schema-3 task in `Implementing`, the preflight requires
+For a schema-3/4/5 task in `Implementing`, the preflight requires
 `kind == "implementation"`, a non-null `leases.implementation_lane`, and also
 reads a fourth file:
 
 4. `.orchestrator/implementation/<implementation_lane>.lock/owner.json`
 
-For schema-3 tasks in `Claimed` or `Reviewing`, `leases.implementation_lane`
+For schema-3/4/5 tasks in `Claimed` or `Reviewing`, `leases.implementation_lane`
 must be `null`.
+
+For native schemas 4/5, the reader additionally scans the slot/lane directories
+for reverse ownership: no extra lease may name the selected task, and every
+matching worker must agree completely. Thus the native read set is not limited
+to the three/four selected files.
 
 All ancestors are opened with `O_NOFOLLOW`, directory descriptors remain open
 during comparison, and state directories must be current-user owned and private
@@ -469,7 +547,8 @@ The actual field sets and lease formats are taken from `validate_record`,
 `.agents/skills/workspace-orchestrator/bin/orchestrator-state.py`. This bounded
 reader accepts the base schema-2 shape and the opt-in schema-3 shape
 (`cooperative_binding = {session_id, generation}` plus optional
-`legacy_finding_dispositions` and `transition_recovery`). It does
+`legacy_finding_dispositions`, `transition_recovery`, and manual assignment
+metadata), plus the bounded native schema-4/5 profiles described above. It does
 not upgrade prototype schema 1. Unknown schema versions or additional fields
 (including richer optional coordinator protocol extensions) yield `UNVERIFIED`.
 It is not a substitute for the coordinator's full validators.
@@ -496,16 +575,17 @@ compared for:
 
 - selected task ID, expected revision, and expected worker ID;
 - retained worker task ID and owner versus the task;
-- for schema 3, expected session ID and generation versus `cooperative_binding`,
+- for schema 3/5, expected session ID and generation versus `cooperative_binding`,
   worker metadata, global slot, and (when `Implementing`) implementation lane;
 - optional exact repository and linked branch expectations;
-- the complete global-slot (and schema-3 `Implementing` lane) worker record
+- the complete global-slot (and schema-3/4/5 `Implementing` lane) worker record
   versus the task worker;
 - scope task ID, scope text, and token versus the task's scope reservation.
 
 For schema 2, the implementation-lane index is type/range validated in task
 metadata, but its reservation file is not read, preserving the three-file
-projection. Other slots, scope overlaps, review reservations, process liveness,
+projection. Apart from native reverse-slot/lane checks, other slots, scope
+overlaps, review reservations, process liveness,
 configuration, acceptance criteria, remote issue/PR status, and Git
 worktree/head identity are not checked. No timestamps grant freshness or
 takeover. File descriptor metadata is checked again after reads to detect

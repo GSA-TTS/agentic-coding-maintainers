@@ -38,6 +38,8 @@ class IntentObservationTests(unittest.TestCase):
 
     def setUp(self):
         task_fixture.PreparationTest.setUp(self)
+        if getattr(self, "native", False):
+            task_fixture.native_fixture(self)
         # Construct real schema-3 task and journal intent through their actual
         # CLIs; only GH is faked. No public-summary/capture input is accepted.
         options = self.options()
@@ -123,6 +125,17 @@ class IntentObservationTests(unittest.TestCase):
         output = json.loads(printed.call_args.args[0])
         self.sanitized(output)
         return code, output
+
+    def test_native_weak_intent_actual_observer_parser(self):
+        case = IntentObservationTests()
+        case.native = True
+        try:
+            case.setUp()
+            self.assertEqual(case.request["schema_version"], 3)
+            case.test_cli_exact_visible_match_remains_exit3_no_authority_or_storage_changes()
+            case.test_stale_private_public_and_store_fences_fail_before_get()
+        finally:
+            case.doCleanups()
 
     def test_cli_exact_visible_match_remains_exit3_no_authority_or_storage_changes(self):
         code, output = self.invoke([self.comment()])

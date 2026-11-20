@@ -1,10 +1,11 @@
-# Proposed operator-controlled GitHub claim publisher
+# Operator-controlled GitHub claim publisher protocol
 
-**Proposal only; no activation or remote-write authorization.** Issue #117 covers
+**Implemented manual runner plus deferred proposals; no activation or remote-write
+authorization from this document.** Issue #117 covers
 user/operator native claims. Issue #69's GitHub App automatic actions remain
 parked. Issue #116 ownership and #117 intent/observer work are separate dependencies;
-their retained evidence does not implement this publisher. First delivery is one
-human-approved assignment runner end to end; claim-comment delivery follows review.
+their retained evidence does not authorize this publisher. The bounded manual
+assignment runner is implemented separately; claim-comment delivery remains deferred.
 
 The [scoped autonomy contract](SCOPED-AUTONOMY.md) specifies a future separately
 activated grant path. It does not change this runner's current per-action
@@ -18,6 +19,37 @@ pilot work needs a fresh admission and separate grant. Future supervised
 containment is not an implemented release path for these historical records.
 
 ## Publisher and approval
+
+### Implemented bounded dual-format manual path (issue #182)
+
+The manual runner's finite document families are legacy task 3 / declared intent
+2 / request and publisher binding 1, and native task 5 / declared intent 4 /
+request and publisher binding 3. The native private task binding includes exact
+`task_schema_version: 5` and a fully validated native worker. Weak native intent
+3 cannot authorize dispatch. Request/binding 2 remains the separate standing
+family; native request/binding 4 is reserved and refused. Native standing-grant
+admission remains explicitly fenced before shared store ownership checks.
+
+Task marker 1, attempt 1, evidence 1/2 and settlement 1 retain their formats only
+after complete versioned manual request resolution. Existing SQLite table/layout
+and metadata versions are unchanged. Both manual families participate in pending
+target, all-row capacity, collision and replay checks. Every prior outcome consumes
+the intent's opportunity, including UNKNOWN, NOT_SENT and failed actual result;
+fresh IDs cannot authorize a second POST. Standing budget filters are not widened.
+
+The exact controlling-TTY challenge, payload/context/digest, process/fork and
+monotonic-expiry guards, one-POST limit and coordinator-before-SQLite durability
+ordering remain in force. A real PTY with a mock transport demonstrates wiring,
+not human authentication or remote endpoint qualification. Native observation
+failure before admission has no authority or capacity effects. Unknown producer
+completion still retains the reservation; no loose absence-based clearing is added.
+
+Native creation remains default off and `full_backend_qualified` remains false.
+This delivery does not change controller execution shape, activate a backend or
+grant, convert historical records, or resolve #154/#158. The native ordinary
+terminal crash after scope release but before final task write remains UNVERIFIED;
+see [the retained-state recovery limitation](NATIVE-OWNERSHIP.md). The remaining
+proposal text describes policy/design obligations, not an activation decision.
 
 Choose the exact current authenticated human user as first publisher. Fresh
 `GET /user` must return `type: User` and numeric ID, node ID and expected login
