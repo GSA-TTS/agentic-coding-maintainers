@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 spec = importlib.util.spec_from_file_location("reflection", sys.argv[1])
 assert spec and spec.loader
@@ -193,6 +193,141 @@ refuses([fresh_unknown, fresh_fix, dict(fresh_fix, event_id="e42", replacement="
 # A recorded correction must not claim to have been made before the intake was
 # actually recorded, even if the intake's backdated occurred_at came first.
 refuses([fresh_unknown, dict(fresh_fix, occurred_at="2026-10-10T00:30:00Z")])
+# Cross-cohort disposition includes every visible original unknown, not just
+# current intakes or resolved cases. Deliberately mix all original classes.
+old_pending = dict(older, case_id="old-pending", event_id="e50")
+eligible_to_unknown = dict(rows[0], case_id="eligible-to-unknown", event_id="e51")
+excluded_to_unknown = dict(rows[13], case_id="excluded-to-unknown", event_id="e52")
+eligible_fix = dict(fresh_fix, case_id="eligible-to-unknown", event_id="e53",
+                    intake_event_id="e51", replacement="unknown",
+                    occurred_at="2026-10-19T00:00:00Z", recorded_at="2026-10-19T00:00:00Z")
+excluded_fix = dict(eligible_fix, case_id="excluded-to-unknown", event_id="e54", intake_event_id="e52")
+at_cutoff = dict(fresh_fix, replacement="excluded", occurred_at="2026-10-10T02:00:00Z",
+                 recorded_at="2026-10-22T00:00:00Z")
+cutoff_intake = dict(recent, case_id="cutoff-intake", event_id="e55",
+                     occurred_at="2026-10-22T00:00:00Z", recorded_at="2026-10-22T00:00:00Z")
+start_intake = dict(recent, case_id="start-intake", event_id="e56",
+                    occurred_at="2026-09-24T00:00:00Z", recorded_at="2026-10-20T00:00:00Z")
+mixed_rows = sorted([older, old_pending, corrected, fresh_unknown, at_cutoff, recent, backdated,
+                     eligible_to_unknown, excluded_to_unknown, eligible_fix, excluded_fix,
+                     cutoff_intake, start_intake], key=lambda entry: entry["recorded_at"])
+mixed = module.reflect(read(mixed_rows), as_of, key)
+cross = mixed["cross_cohort_unknown_disposition"]
+expected_unknown = {entry["case_id"] for entry in mixed_rows
+                    if entry["event_type"] == "intake" and entry["eligibility"] == "unknown"}
+assert cross["coverage"] == "recorded_events_only"
+assert cross["denominator_original_unknown_first_intakes"] == 7
+assert cross["original_unknown_case_labels"] == sorted(module.pseudonym(cid, key) for cid in expected_unknown)
+assert cross["resolved_count"] == 2 and cross["pending_count"] == 5
+resolved = {entry["case_label"]: entry for entry in cross["resolved"]}
+pending = {entry["case_label"]: entry for entry in cross["pending"]}
+assert not resolved.keys() & pending.keys()
+assert resolved.keys() | pending.keys() == set(cross["original_unknown_case_labels"])
+assert list(resolved) == sorted(resolved) and list(pending) == sorted(pending)
+assert resolved[module.pseudonym("older-unknown", key)] == {
+    "case_label": module.pseudonym("older-unknown", key), "in_current_intake_cohort": False,
+    "recorded_delay_hours": 1872.0}
+assert resolved[module.pseudonym("new-unknown", key)] == {
+    "case_label": module.pseudonym("new-unknown", key), "in_current_intake_cohort": True,
+    "recorded_delay_hours": 287.0}  # correction occurrence was backdated, recording was not
+for cid, hours, in_cohort in (("old-pending", 1967.0, False), ("recent-unknown", 47.0, True),
+                               ("backdated", 48.0, False), ("cutoff-intake", 0.0, False),
+                               ("start-intake", 48.0, True)):
+    assert pending[module.pseudonym(cid, key)] == {
+        "case_label": module.pseudonym(cid, key), "in_current_intake_cohort": in_cohort,
+        "recorded_pending_hours": hours}
+assert cross["other_original_eligibility_now_unknown_labels"] == {
+    "eligible": [module.pseudonym("eligible-to-unknown", key)],
+    "excluded": [module.pseudonym("excluded-to-unknown", key)]}
+assert mixed["recorded_event_availability"] == {
+    "visible_event_count": len(mixed_rows), "latest_recorded_at": as_of.isoformat(),
+    "hours_since_latest_recorded": 0.0, "source_freshness": "UNMEASURED", "source_completeness": "UNMEASURED"}
+# Current-intake correction quality and performance denominators stay frozen.
+assert mixed["original_eligibility_counts"] == {"eligible": 1, "excluded": 1, "unknown": 3}
+assert mixed["intake_cohort_count"] == 5 and mixed["eligibility_correction_count"] == 3
+assert mixed["eligible_ids"] == [module.pseudonym("eligible-to-unknown", key)]
+assert mixed["correction_quality"]["original_unknown_count"] == 3
+assert mixed["correction_quality"]["unknown_resolved_count"] == 1
+assert mixed["correction_quality"]["unknown_recorded_disposition_delays"] == [
+    {"case_label": module.pseudonym("new-unknown", key), "recorded_delay_hours": 287.0}]
+# Suppressing a disposition cannot shrink the original-unknown denominator:
+# it moves the case back to pending, with its full recorded age still visible.
+without_decision = module.reflect(read([entry for entry in mixed_rows if entry != at_cutoff]), as_of, key)
+undecided = without_decision["cross_cohort_unknown_disposition"]
+assert undecided["original_unknown_case_labels"] == cross["original_unknown_case_labels"]
+assert undecided["denominator_original_unknown_first_intakes"] == cross["denominator_original_unknown_first_intakes"]
+assert undecided["resolved_count"] == 1 and undecided["pending_count"] == 6
+assert {"case_label": module.pseudonym("new-unknown", key), "in_current_intake_cohort": True,
+        "recorded_pending_hours": 287.0} in undecided["pending"]
+assert {entry["case_label"] for entry in mixed["needs_maintainer_disposition"]} == set(pending) | {
+    module.pseudonym("eligible-to-unknown", key), module.pseudonym("excluded-to-unknown", key)}
+# Adding an aged-out resolved unknown cannot rewrite ANY existing report field.
+legacy_keys = [name for name in report if name not in {
+    "cross_cohort_unknown_disposition", "recorded_event_availability"}]
+augmented = module.reflect(read(sorted(rows + [older, corrected], key=lambda entry: entry["recorded_at"])), as_of, key)
+assert [name for name in augmented if name in legacy_keys] == legacy_keys
+for name in legacy_keys:
+    assert augmented[name] == (report[name] + 1 if name == "out_of_window_recorded_case_count" else report[name]), name
+# A still-pending case ages out of the occurrence cohort, not out of this view.
+aged = module.reflect(read([recent]), as_of + timedelta(days=40), key)
+assert aged["unknown_eligibility_ids"] == []
+assert aged["cross_cohort_unknown_disposition"]["denominator_original_unknown_first_intakes"] == 1
+assert aged["cross_cohort_unknown_disposition"]["pending"] == [{
+    "case_label": module.pseudonym("recent-unknown", key), "in_current_intake_cohort": False,
+    "recorded_pending_hours": 1007.0}]
+fractional = dict(recent, recorded_at="2026-10-20T01:00:20Z")
+assert module.reflect(read([fractional]), as_of, key)["cross_cohort_unknown_disposition"]["pending"][0]["recorded_pending_hours"] == 46.99
+fractional_fix = dict(fresh_fix, recorded_at="2026-10-11T01:00:20Z")
+assert module.reflect(read([fresh_unknown, fractional_fix]), as_of, key)["cross_cohort_unknown_disposition"]["resolved"][0]["recorded_delay_hours"] == 24.01
+assert module.reflect(read([fractional]), as_of, key)["recorded_event_availability"]["hours_since_latest_recorded"] == 46.99
+# Backdated future corrections and wholly future intakes stay invisible, even
+# when reproducing the exact instant before a correction becomes visible.
+before_cutoff = as_of - timedelta(microseconds=1)
+assert module.reflect(read(mixed_rows), before_cutoff, key) == module.reflect(
+    read([entry for entry in mixed_rows if module.timestamp(entry["recorded_at"]) <= before_cutoff]), before_cutoff, key)
+future_fix = dict(corrected, case_id="old-pending", event_id="e57", intake_event_id="e50",
+                  recorded_at="2026-10-23T00:00:00Z")
+future_intake = dict(recent, case_id="future-only", event_id="e58",
+                     occurred_at="2026-10-24T00:00:00Z", recorded_at="2026-10-24T00:00:00Z")
+future_rows = mixed_rows + [future_fix, future_intake]
+assert module.reflect(read(future_rows), as_of, key) == mixed
+empty_view = module.reflect(read([future_intake]), as_of, key)
+assert empty_view["cross_cohort_unknown_disposition"]["denominator_original_unknown_first_intakes"] == 0
+assert empty_view["cross_cohort_unknown_disposition"]["coverage"] == "no_recorded_evidence"
+assert empty_view["recorded_event_availability"] == {
+    "visible_event_count": 0, "latest_recorded_at": None, "hours_since_latest_recorded": None,
+    "source_freshness": "UNMEASURED", "source_completeness": "UNMEASURED"}
+assert only_excluded["cross_cohort_unknown_disposition"]["resolved"] == []
+assert only_excluded["cross_cohort_unknown_disposition"]["pending"] == []
+assert only_excluded["cross_cohort_unknown_disposition"]["coverage"] == "no_original_unknown_evidence"
+# Every label uses the existing keyed namespace. Rotation changes labels, not
+# counts or durations; colliding labels still fail closed across all ages.
+rotated_key = b"different-synthetic-key-32-bytes!!"
+rotated = module.reflect(read(mixed_rows), as_of, rotated_key)["cross_cohort_unknown_disposition"]
+assert not set(rotated["original_unknown_case_labels"]) & set(cross["original_unknown_case_labels"])
+for name in ("denominator_original_unknown_first_intakes", "resolved_count", "pending_count", "coverage"):
+    assert rotated[name] == cross[name]
+assert rotated["other_original_eligibility_now_unknown_labels"] == {
+    state: [module.pseudonym(f"{state}-to-unknown", rotated_key)] for state in ("eligible", "excluded")}
+for bucket, duration in (("resolved", "recorded_delay_hours"), ("pending", "recorded_pending_hours")):
+    assert sorted((entry[duration], entry["in_current_intake_cohort"]) for entry in rotated[bucket]) == sorted(
+        (entry[duration], entry["in_current_intake_cohort"]) for entry in cross[bucket])
+serialized = json.dumps(mixed)
+for entry in mixed_rows:
+    for field in ("case_id", "event_id", "intake_event_id", "reason_code"):
+        if field in entry:
+            assert json.dumps(entry[field]) not in serialized
+original_pseudonym = module.pseudonym
+try:
+    module.pseudonym = lambda cid, secret: "case-collision"
+    try:
+        module.reflect(read([older, recent]), as_of, key)
+    except module.Unverified:
+        pass
+    else:
+        raise AssertionError("cross-cohort label collision accepted")
+finally:
+    module.pseudonym = original_pseudonym
 try:
     module.events_from(b'{"truncated":true}', as_of)
 except module.Unverified:
@@ -236,7 +371,8 @@ def cli(input_rows, *, ledger_path=ledger):
             "coverage": "complete",
             "requests": [{"request_id": row["case_id"], "received_at": row["occurred_at"],
                           "eligibility": row["eligibility"]}
-                         for row in input_rows if row["event_type"] == "intake"],
+                         for row in input_rows if row["event_type"] == "intake" and
+                         as_of - timedelta(days=28) <= module.timestamp(row["occurred_at"]) < as_of],
         }],
     }), encoding="utf-8")
     os.chmod(inventory_file, 0o600)
@@ -256,6 +392,26 @@ assert all(raw not in output["eligible_ids"] + output["excluded_ids"] + output["
 no_eligible = cli([rows[13], rows[14]])
 assert no_eligible.returncode == 3 and json.loads(no_eligible.stdout)["coverage"] == "no_eligible_evidence"
 assert json.loads(no_eligible.stdout)["ledger_identity_hmac"] != output["ledger_identity_hmac"]
+# CLI binds the WHOLE ledger while the historical projection stays unchanged.
+mixed_cli = cli(mixed_rows)
+future_cli = cli(future_rows)
+assert mixed_cli.returncode == future_cli.returncode == 3  # inventory unknowns/corrections, not parser failure
+assert not mixed_cli.stderr and not future_cli.stderr
+mixed_output, future_output = json.loads(mixed_cli.stdout), json.loads(future_cli.stdout)
+assert mixed_output.pop("ledger_identity_hmac") != future_output.pop("ledger_identity_hmac")
+assert mixed_output == future_output
+for malformed_future in (dict(future_fix, intake_event_id="missing"),
+                         dict(future_fix, replacement="unknown"),
+                         dict(future_fix, secret="private-synthetic-text"),
+                         dict(future_fix, recorded_at="2026-10-17T00:00:00Z")):
+    failed = cli(mixed_rows + [malformed_future])
+    assert failed.returncode == 3 and not failed.stdout and "UNVERIFIED" in failed.stderr
+    assert "private-synthetic-text" not in failed.stderr and "old-pending" not in failed.stderr
+# Valid future append followed by an invalid schema/duplicate also fails before
+# any availability or disposition data can leak as a partial report.
+for malformed_future in (dict(future_intake, schema_version=2), dict(future_intake, event_id="e57")):
+    failed = cli(mixed_rows + [future_fix, malformed_future])
+    assert failed.returncode == 3 and not failed.stdout and "UNVERIFIED" in failed.stderr
 ledger.write_bytes(b"")
 assert subprocess.run([sys.executable, "-I", "-B", sys.argv[1], "--ledger", str(ledger),
                        "--key-file", str(key_file), "--as-of", "2026-10-22T00:00:00Z"],

@@ -39,9 +39,22 @@ classification and correction time so a high correction rate prompts a
 workflow review, not blame or pressure to suppress corrections. Report cases
 awaiting disposition beside corrected cases; otherwise avoiding a decision
 would falsely improve the rate. This slice counts corrected cases in the
-current intake cohort and preserves initial eligibility; correction delay,
-source/duplicate/rework corrections and full classification-quality measures
-are not yet implemented.
+current intake cohort and preserves initial eligibility. It reports recorded
+unknown-disposition delays in that cohort and, separately, in
+`cross_cohort_unknown_disposition` across all visible original-unknown first
+intakes. The all-ages denominator includes resolved cases and pending ages;
+originally eligible/excluded cases corrected to unknown are labelled separately,
+not added to that denominator. Recorded hours do not prove source-to-decision
+time, delivery or decision quality. Source/duplicate/rework corrections and
+full classification-quality measures are not yet implemented.
+
+The cross-cohort view does **not** expand this inventory's 28-day window or
+corroborate older corrections. Do not add aged-out ledger cases to a current
+window inventory merely to match the all-ages report. Existing correction and
+source-time restrictions on conditional coverage remain unchanged. Likewise,
+`recorded_event_availability` measures only visible ledger count and recording
+recency at the cutoff; its source freshness/completeness remain `UNMEASURED`,
+even when current-window inventory coverage is operator-asserted.
 
 The case ledger cannot reveal requests never recorded as cases. To measure a
 bounded intake denominator, capture a **separate**, private request inventory

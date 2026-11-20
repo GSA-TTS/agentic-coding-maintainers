@@ -73,8 +73,7 @@ report counts corrected cases in the
 current intake cohort, not correction cycles or all historical cases. Inventory
 classifications have no source-decision timestamp, so any corrected case makes
 inventory coverage UNVERIFIED until source-time evidence is designed. Other
-classification corrections and cross-cohort disposition delay remain work under
-issue #30. The fixed intake cohort does report writer-recorded disposition
+classification corrections remain work under issue #30. The fixed intake cohort reports writer-recorded disposition
 delay for corrected unknowns, not verified source-to-decision time.
 
 `correction_quality` reports recorded classifications, not a productivity
@@ -82,10 +81,55 @@ score: a fixed `denominator_first_intakes`, corrected-case counts and keyed
 labels grouped by **original** eligibility, original-unknown count, pending
 unknown labels, and resolved-unknown disposition delays. Delays use the
 writer-set `recorded_at` of intake and correction, not backdatable
-`occurred_at`. A correction appended after `--as-of` does not alter the
-historical report; correcting more cases can increase the count without
+`occurred_at`. A valid correction recorded after `--as-of` does not alter the
+historical reflection projection; correcting more cases can increase the count without
 implying that the process got worse. These figures are from recorded events
 only, not a complete independent intake inventory or verified outcomes.
+
+### Cross-cohort unknown disposition and recorded-event availability
+
+The additive `cross_cohort_unknown_disposition` section retains **all ages** of
+original-unknown first intakes with `recorded_at <= --as-of`, including old
+resolved cases and pending cases that have aged out of the performance cohort.
+`denominator_original_unknown_first_intakes` and
+`original_unknown_case_labels` identify that exact population. `resolved_count`
+and `pending_count`, with their `resolved` and `pending` rows, form a disjoint,
+exhaustive partition. Rows are sorted by the existing HMAC `case_label`; labels
+use the same private key and collision refusal as the rest of the report.
+No raw case IDs, event IDs, reason codes or source text are added.
+
+- Resolved rows carry `recorded_delay_hours`: correction recording minus intake
+  recording. A correction is visible at its exact recorded cutoff, even if its
+  occurrence was backdated. Resolution is a recorded classification decision,
+  not an independently verified outcome.
+- Pending rows carry `recorded_pending_hours`: cutoff minus intake recording.
+  Both durations are numeric hours rounded to two decimal places, not elapsed
+  time since source receipt or proof of when a human actually decided.
+- Both row types carry `in_current_intake_cohort`, using the unchanged half-open
+  occurrence window `[as_of - 28 days, as_of)`. An intake recorded at the cutoff
+  is visible here; an intake occurring at the cutoff is not in that cohort.
+- `other_original_eligibility_now_unknown_labels` separates originally eligible
+  and originally excluded cases corrected to unknown. They remain in the
+  existing operational queue, but **never enter this original-unknown
+  denominator**. Neither `correction_quality` nor original eligibility,
+  delivery/rework denominators, queue order or its seven-day rule changes.
+
+Coverage is `recorded_events_only` when an original unknown is visible,
+`no_original_unknown_evidence` when other events are visible, and
+`no_recorded_evidence` when no events are visible at the cutoff. Empty buckets are not evidence of complete
+intake or successful disposition. `recorded_event_availability` separately gives
+`visible_event_count`, `latest_recorded_at` and `hours_since_latest_recorded`
+(two-decimal numeric hours) for **all** events recorded at or before the cutoff.
+With no visible events, count is zero and timestamp/elapsed hours are `null`.
+`source_freshness` and `source_completeness` are explicitly `UNMEASURED`: a recent
+ledger record is not proof of fresh or complete upstream collection. Inventory
+coverage retains its separate, current-window meaning.
+
+The whole ledger is validated **before** cutoff filtering. A valid future
+append leaves the historical `reflect()` projection unchanged, including these
+sections; a malformed future record fails closed with no partial CLI report.
+This does not promise byte-identical CLI output after an append: the
+whole-ledger identity HMAC below must change with the consumed input bytes.
 
 The report includes `ledger_identity_hmac`, a domain-separated keyed HMAC over
 the complete input bytes. An unkeyed digest would let a reader test guessed

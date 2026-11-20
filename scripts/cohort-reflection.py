@@ -312,6 +312,24 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
     ), key=lambda entry: entry["case_label"])
     pending_unknown = sorted(label[cid] for cid, rows in cohort.items()
                              if rows[0]["eligibility"] == "unknown" and effective[cid] == "unknown")
+    # An all-ages disposition view is additive: never reuse its denominator
+    # for correction_quality, delivery, or post-review rework in the cohort.
+    all_unknown = sorted(cid for cid, rows in case_events.items() if rows[0]["eligibility"] == "unknown")
+    all_resolved = []
+    all_pending = []
+    for cid in all_unknown:
+        rows = case_events[cid]
+        entry = {"case_label": label[cid], "in_current_intake_cohort": cid in cohort}
+        correction = next((row for row in rows if row["event_type"] == "eligibility_correction"), None)
+        recorded_intake = timestamp(rows[0]["recorded_at"])
+        if correction is not None:
+            all_resolved.append({**entry, "recorded_delay_hours": round(
+                (timestamp(correction["recorded_at"]) - recorded_intake).total_seconds() / 3600, 2)})
+        else:
+            all_pending.append({**entry, "recorded_pending_hours": round(
+                (as_of - recorded_intake).total_seconds() / 3600, 2)})
+    visible_recorded = [timestamp(row["recorded_at"]) for rows in case_events.values() for row in rows]
+    latest_recorded = max(visible_recorded, default=None)
     return {
         "as_of": as_of.isoformat(), "window_days": 28,
         "coverage": "recorded_eligible_cohort" if eligible else "no_eligible_evidence",
@@ -353,6 +371,30 @@ def reflect(events: list[dict], as_of: datetime, key: bytes) -> dict:
             "Reconcile the intake cohort against an independently defined request inventory.",
             "Verify category-specific delivery evidence before counting completion; report applicable check/review compliance separately.",
         ][:3],
+        "cross_cohort_unknown_disposition": {
+            "coverage": ("recorded_events_only" if all_unknown else
+                         "no_original_unknown_evidence" if visible_recorded else "no_recorded_evidence"),
+            "denominator_original_unknown_first_intakes": len(all_unknown),
+            "original_unknown_case_labels": sorted(label[cid] for cid in all_unknown),
+            "resolved_count": len(all_resolved),
+            "resolved": sorted(all_resolved, key=lambda entry: entry["case_label"]),
+            "pending_count": len(all_pending),
+            "pending": sorted(all_pending, key=lambda entry: entry["case_label"]),
+            "other_original_eligibility_now_unknown_labels": {
+                state: sorted(label[cid] for cid, rows in case_events.items()
+                              if rows[0]["eligibility"] == state and effective[cid] == "unknown")
+                for state in ("eligible", "excluded")
+            },
+            "scope": "all recorded original-unknown first intakes visible at cutoff; recorded decisions, not verified outcomes",
+        },
+        "recorded_event_availability": {
+            "visible_event_count": len(visible_recorded),
+            "latest_recorded_at": latest_recorded.isoformat() if latest_recorded is not None else None,
+            "hours_since_latest_recorded": round((as_of - latest_recorded).total_seconds() / 3600, 2)
+            if latest_recorded is not None else None,
+            "source_freshness": "UNMEASURED",
+            "source_completeness": "UNMEASURED",
+        },
     }
 
 

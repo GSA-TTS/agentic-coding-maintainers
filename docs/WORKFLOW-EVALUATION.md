@@ -18,9 +18,23 @@ is delivered but noncompliant; missing check evidence is UNVERIFIED compliance.
 An eligibility
 correction now preserves the original intake decision as an append-only event;
 source, duplicate-map and rework corrections remain follow-up work under issue
-#30. The reader now reports recorded unknown-disposition delay for cases in the
-fixed intake cohort; cross-cohort delays remain unmeasured. Corrections are a
-process-quality signal, not a productivity target.
+#30. The reader reports recorded unknown-disposition delay for cases in the
+fixed intake cohort and an additive `cross_cohort_unknown_disposition` view:
+all visible original-unknown first intakes, resolved delays beside pending ages,
+including cases outside the current occurrence window. The denominator stays
+original-unknown; eligible/excluded cases later corrected to unknown are shown
+separately, not silently added. These recording-to-recording/cutoff durations
+are not independently verified source-to-decision times. Existing intake,
+correction-quality and rework denominators stay unchanged. Corrections are a
+process-quality signal, not a productivity target; suppressing a disposition
+leaves a pending case in view rather than improving a resolved-only measure.
+
+`recorded_event_availability` exposes visible event count, latest recording and
+hours since that recording at the fixed cutoff. Source freshness and completeness
+remain `UNMEASURED`; ledger recency is not collection health. The whole ledger
+is validated before filtering, and its CLI identity HMAC changes on a valid
+future append even though the historical reflection projection does not. See
+[`COHORT-REFLECTION.md`](COHORT-REFLECTION.md) for exact fields and boundaries.
 
 ## V1: what is measurable now
 
