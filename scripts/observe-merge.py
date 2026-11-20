@@ -30,7 +30,7 @@ COMMIT_FIELDS = "{sha}"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CASE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
-VALIDATOR_SHA256 = "d8613320df169ecb6bfafce10f3bee5a4a11102a74d0433ab90cd3db14d88975"
+VALIDATOR_SHA256 = "2732878cd7e11470a9c51dafe4e4e8269e545b0940a5988c995b2cdc29794f9f"
 MAX_VALIDATOR_BYTES = 65536
 
 
