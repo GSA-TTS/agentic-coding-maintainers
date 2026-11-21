@@ -1,0 +1,73 @@
+{
+  "kind": "portable-work-bundle",
+  "version": 1,
+  "work": {
+    "id": "work:link-repair",
+    "revision": {"kind": "exact", "value": "work:1"},
+    "outcome": "Describe a one-link repair and exported patch in a synthetic repository.",
+    "authority": {"id": "source:synthetic-request", "revision": {"kind": "exact", "value": "request:1"}},
+    "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
+    "constraints": ["One documentation link only; isolated checks and independent review remain external gates."],
+    "acceptance": [{"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}, "description": "The replacement link resolves in the exact-source check."}],
+    "profile": {
+      "kind": "coding", "repository": "repository:synthetic",
+      "source": {"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}
+    }
+  },
+  "workflow": {
+    "id": "workflow:link-repair", "revision": {"kind": "exact", "value": "workflow:1"},
+    "steps": [{"id": "step:repair", "description": "Describe a bounded patch."}, {"id": "step:check", "description": "Describe exact-source verification; do not execute."}]
+  },
+  "runs": [{
+    "id": "run:link", "work_id": "work:link-repair",
+    "work_revision": {"kind": "exact", "value": "work:1"},
+    "workflow_revision": {"kind": "exact", "value": "workflow:1"},
+    "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
+    "configurations": [{"id": "config:check", "revision": {"kind": "exact", "value": "config:1"}}],
+    "budget": {"duration_seconds": 1800, "model_calls": 2, "currency_micros": 1000000},
+    "acceptance": [{"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}, "description": "The replacement link resolves in the exact-source check."}],
+    "coordinator": {"schema": 2, "task_id": "task:synthetic", "task_revision": {"kind": "exact", "value": "task:1"}, "task_digest": "digest:synthetic-1"}
+  }],
+  "attempts": [
+    {
+      "id": "attempt:repair", "run_id": "run:link", "operation_id": "operation:repair", "step_id": "step:repair",
+      "coordinator": {"schema": 2, "task_id": "task:synthetic", "task_revision": {"kind": "exact", "value": "task:1"}, "task_digest": "digest:synthetic-1"},
+      "capacity": {
+        "kind": "request", "work_id": "work:link-repair", "run_id": "run:link", "operation_id": "operation:repair", "attempt_id": "attempt:repair",
+        "domain_id": "domain:synthetic", "class": "implementation",
+        "policy_revision": {"kind": "exact", "value": "policy:1"}, "config_revision": {"kind": "exact", "value": "capacity-config:1"},
+        "resources": {"workers": {"quantity": 1, "unit": "count"}, "memory": {"quantity": 1048576, "unit": "bytes"}},
+        "max_fanout": 0, "duration_seconds": 1800, "max_retries": 0
+      }
+    },
+    {
+      "id": "attempt:check", "run_id": "run:link", "operation_id": "operation:check", "step_id": "step:check",
+      "coordinator": {"schema": 2, "task_id": "task:synthetic", "task_revision": {"kind": "exact", "value": "task:1"}, "task_digest": "digest:synthetic-1"}
+    }
+  ],
+  "artifacts": [
+    {"id": "artifact:patch", "revision": {"kind": "exact", "value": "patch:1"}, "kind": "patch", "producer_attempt_id": "attempt:repair", "provenance": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}]},
+    {"id": "artifact:check", "revision": {"kind": "exact", "value": "check:1"}, "kind": "verification", "producer_attempt_id": "attempt:check", "provenance": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}]}
+  ],
+  "evidence": [{
+    "id": "evidence:link", "producer_attempt_id": "attempt:check",
+    "artifact": {"id": "artifact:check", "revision": {"kind": "exact", "value": "check:1"}},
+    "subject": {"id": "artifact:patch", "revision": {"kind": "exact", "value": "patch:1"}},
+    "acceptance": {"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}}, "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
+    "configurations": [{"id": "config:check", "revision": {"kind": "exact", "value": "config:1"}}],
+    "workflow_revision": {"kind": "exact", "value": "workflow:1"}
+  }],
+  "target": {
+    "acceptance": [{"id": "accept:link", "revision": {"kind": "exact", "value": "criterion:1"}}],
+    "subject": {"id": "artifact:patch", "revision": {"kind": "exact", "value": "patch:1"}},
+    "inputs": [{"id": "input:source", "revision": {"kind": "exact", "value": "source:1"}}],
+    "configurations": [{"id": "config:check", "revision": {"kind": "exact", "value": "config:1"}}],
+    "workflow_revision": {"kind": "exact", "value": "workflow:1"}, "support": ["evidence:link"]
+  },
+  "effects": [{
+    "kind": "export-artifact", "operation_id": "operation:export", "attempt_id": "attempt:repair",
+    "artifact": {"id": "artifact:patch", "revision": {"kind": "exact", "value": "patch:1"}},
+    "target": "destination:synthetic-export", "authority": {"id": "source:synthetic-request", "revision": {"kind": "exact", "value": "request:1"}},
+    "precondition": {"kind": "exact", "value": "destination:0"}, "observation": "unobserved"
+  }]
+}

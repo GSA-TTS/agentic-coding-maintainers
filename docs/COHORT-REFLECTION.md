@@ -69,13 +69,13 @@ shows both original counts and effective eligibility labels; its correction
 count uses the fixed first-intake cohort as denominator. A queue removal is a recorded maintainer
 decision, **not proof that the decision was corroborated by an older source
 inventory**; the inventory report covers only the current 28-day window. The
-report counts corrected cases in the
-current intake cohort, not correction cycles or all historical cases. Inventory
+cohort correction count covers the current intake cohort, not correction cycles
+or all historical cases. Inventory
 classifications have no source-decision timestamp, so any corrected case makes
 inventory coverage UNVERIFIED until source-time evidence is designed. Other
-classification corrections and cross-cohort disposition delay remain work under
-issue #30. The fixed intake cohort does report writer-recorded disposition
-delay for corrected unknowns, not verified source-to-decision time.
+classification correction designs remain work under issue #30. The fixed intake
+cohort reports writer-recorded disposition delay for corrected unknowns, not
+verified source-to-decision time.
 
 `correction_quality` reports recorded classifications, not a productivity
 score: a fixed `denominator_first_intakes`, corrected-case counts and keyed
@@ -86,6 +86,30 @@ writer-set `recorded_at` of intake and correction, not backdatable
 historical report; correcting more cases can increase the count without
 implying that the process got worse. These figures are from recorded events
 only, not a complete independent intake inventory or verified outcomes.
+
+`all_retained_intake_disposition_ages` is a **separate operational projection**,
+not a widened performance cohort or a new denominator. It includes all retained
+intakes recorded by the fixed `as_of`, including intakes older than 28 days:
+
+- `retained_intake_count` counts those intakes, not all real-world requests.
+- `corrected_cases` lists each recorded correction with its keyed `case_label`,
+  original and effective eligibility, and `recorded_delay_hours` from
+  writer-recorded intake to writer-recorded correction. Older unknowns corrected
+  to either eligible or excluded remain visible here after leaving the queue.
+- `pending_unknown_cases` lists every effectively unknown case with the same
+  label/classifications and `recorded_age_hours` from writer-recorded intake to
+  `as_of`. A correction *to* unknown appears in both lists; it does not reset
+  the pending age. Both lists sort by keyed label; hours round to two decimals.
+
+Backdating either event's `occurred_at` cannot shorten these durations. Events
+recorded after the cutoff are absent from this projection even if their claimed
+occurrence is earlier. `coverage` is `recorded_events_only`, or `no_evidence`
+when no intake is visible at the cutoff. Empty lists do not prove timely
+disposition or complete coverage. These ages are not independent source timing,
+delivery credit, or a productivity score. The 28-day original/effective labels,
+correction-quality denominator, rework counts, and empty verified-completion
+semantics remain unchanged. This is a bounded partial delivery under issue #30,
+not completion of its remaining correction or source-evidence work.
 
 The report includes `ledger_identity_hmac`, a domain-separated keyed HMAC over
 the complete input bytes. An unkeyed digest would let a reader test guessed
