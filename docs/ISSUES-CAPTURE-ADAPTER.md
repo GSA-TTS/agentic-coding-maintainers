@@ -2,10 +2,20 @@
 
 `scripts/adapt-issues-capture.py` converts **two private, full-terminal captured
 passes** of the same GraphQL Issues query to one private `github_issues` source
-entry in the registry format checked by `check-intake-sources.py`. The captures
-must be collected separately; the current `observe-github-issues.py` emits
-only a summary and **cannot** supply the raw per-page cursor evidence this
-adapter needs. This adapter performs no network request.
+entry in the registry format checked by `check-intake-sources.py`.
+`observe-github-issues.py --capture-output` can collect the two full-terminal
+passes into the private capture artifact this adapter consumes. Its default
+summary output is not a capture and cannot replace that artifact. See
+[bounded Issues observation](GITHUB-ISSUES-OBSERVATION.md) for the opt-in producer,
+transport restrictions and collection limits. This adapter performs no network
+request and does not invoke the producer itself.
+
+Capture mode continues to the real API terminal page, retaining validated input
+cursors and continuation metadata; a non-null terminal end cursor is normalized
+to null as a continuation in this v1 format. The raw private output includes
+issue identifiers and must not be committed or shared. Two matching passes do
+not authenticate collection provenance or create an atomic historical snapshot;
+the resulting registry entry remains `coverage: partial`.
 
 ```bash
 python3 -I -B scripts/adapt-issues-capture.py \
