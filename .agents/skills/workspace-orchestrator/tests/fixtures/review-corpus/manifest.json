@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "corpus_id": "ordinary-arithmetic-v1",
+  "integrity_status": "HASHED",
+  "label_status": "PENDING_INDEPENDENT_REVIEW",
+  "semantic_quality": "UNMEASURED",
+  "exposure": "PUBLIC_EXPOSED",
+  "runtime_qualification": false,
+  "provenance": {
+    "repository": "GSA-TTS/agentic-coding-maintainers",
+    "base_revision": "938077298a08e253f582c68637960db65a2a7df6",
+    "seed_path": ".agents/skills/workspace-orchestrator/tests/qualify-review-repair.py",
+    "seed_sha256": "af61a7580370ec893206153c7d1c16a7e855a6397c8d438758b8d99eafb58df1",
+    "adaptation": "Reuse init-phase README, x + 1 seed and shared tests; author clean, negative-regression, hostile-comment and synthetic refutation variants. No external import."
+  },
+  "acceptance": "double(x) must equal 2*x for Python integers, including negative, zero and arbitrarily large inputs.",
+  "manifest_integrity": "The enclosing skill CANONICAL-SHA256SUMS binds this manifest; no recursive self-hash.",
+  "artifacts": {
+    "README.md": {"sha256": "fd2f12704412e846b955d17570edc8edc789cf3a71967386bbb6e00cc2204fd8", "bytes": 4947, "mode": "100644", "role": "controller-documentation"},
+    "oracle.json": {"sha256": "634ba9274a0ffe975e9eba0a169998a3bd30cb62eb9d145e0e777c3dedcd3d73", "bytes": 1959, "mode": "100644", "role": "controller-oracle"},
+    "base/README": {"sha256": "5d6751565042aee4230005201005b253f28d65922377a45f8083496238998da6", "bytes": 36, "mode": "100644", "role": "base-source"},
+    "specimens/clean.py.txt": {"sha256": "9404b654a1d5e1739b5aaf3027b7fab314d6f510ae914d0d6e069ba14c330fa1", "bytes": 32, "mode": "100644", "role": "candidate-source"},
+    "specimens/defect.py.txt": {"sha256": "ff9b8f0728d4a91d50eda3d56b565a1ff0eb0498530c8343066d2464ac5fd76b", "bytes": 32, "mode": "100644", "role": "candidate-source"},
+    "specimens/negative-regression.py.txt": {"sha256": "9da6b0e721dc76a23dc059b81835de410ce5f3ef4cc820affe43a3dac35358a0", "bytes": 71, "mode": "100644", "role": "candidate-source"},
+    "specimens/hostile.py.txt": {"sha256": "abd422b9bfcb6dc246b6149f6f8404d1ccda3c79237a00292ce037914761b4a0", "bytes": 180, "mode": "100644", "role": "candidate-source"},
+    "shared/test_calc.py.txt": {"sha256": "e87afe6d88960f8c61e7e39c4d8194c0eb360b70e38af10fd9f048a3c05fc5e2", "bytes": 92, "mode": "100644", "role": "candidate-source"},
+    "context/refutation.json": {"sha256": "31d78604142028585e2b835de764ababec72b4503ab94f0f4f16164ca69edb2c", "bytes": 422, "mode": "100644", "role": "review-context"}
+  },
+  "base_files": {"README": "base/README"},
+  "variants": {
+    "clean": {"calc.py": "specimens/clean.py.txt", "test_calc.py": "shared/test_calc.py.txt"},
+    "defect": {"calc.py": "specimens/defect.py.txt", "test_calc.py": "shared/test_calc.py.txt"},
+    "negative-regression": {"calc.py": "specimens/negative-regression.py.txt", "test_calc.py": "shared/test_calc.py.txt"},
+    "hostile": {"calc.py": "specimens/hostile.py.txt", "test_calc.py": "shared/test_calc.py.txt"}
+  },
+  "cases": [
+    {"id": "clean", "stages": [{"name": "candidate", "variant": "clean"}], "context": []},
+    {"id": "defect", "stages": [{"name": "candidate", "variant": "defect"}], "context": []},
+    {"id": "refutation", "stages": [{"name": "candidate", "variant": "clean"}], "context": ["context/refutation.json"]},
+    {"id": "changed-head", "stages": [{"name": "old", "variant": "clean"}, {"name": "new", "variant": "negative-regression"}], "context": []},
+    {"id": "hostile-comment", "stages": [{"name": "candidate", "variant": "hostile"}], "context": []}
+  ]
+}

@@ -22,6 +22,30 @@ other content in the source repository.
 
 ## Canonical adaptation: cooperative lifecycle binding pilot
 
+### Source-bearing arithmetic corpus candidate (2026-11-20)
+
+Repository-owned static adaptation based at
+`938077298a08e253f582c68637960db65a2a7df6`: the additive
+`tests/fixtures/review-corpus/` reuses the README, increment-defect `double(x)`
+seed and shared tests from `tests/qualify-review-repair.py`. Clean doubling,
+negative-input regression, hostile-comment and synthetic overflow-refutation
+variants are authored adaptations, not externally imported source. Inert
+`.py.txt` specimens and a manifest retain path/mode/byte/hash provenance; the
+manifest's seed digest records the base revision's existing canonical checksum.
+The unchanged 15-case `tests/review-baseline.json` remains the protocol baseline.
+
+The existing packet acceptance suite gains integrity/path negatives and real
+disposable Git materialization/capture checks, with actual IDs in temporary
+controller-side receipts. It neither runs candidate Python nor calls models.
+Expected arithmetic tables are fixed outside worker input, but labels remain
+`PENDING_INDEPENDENT_REVIEW`, semantic quality `UNMEASURED`, and exposure public.
+No independent approval, measured review quality or runtime qualification is
+asserted. Manifest hashes and sizes have been populated and checked; enclosing
+canonical checksums must be refreshed after every artifact edit. Host pressure
+still prevents execution qualification in this round. All execution validation remains assigned to
+the primary's approved isolated sandbox. Original import provenance and
+`SOURCE-SHA256SUMS` are preserved.
+
 ### Bounded dual-format integration candidate (2026-11-19)
 
 Fixed-head review follow-up adds descriptor-relative, no-follow native lease

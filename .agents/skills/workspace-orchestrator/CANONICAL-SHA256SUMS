@@ -1,5 +1,5 @@
 be4d2ced9594ab11857aee376c394e8c00169aacd83562d4ec0cc4852d0bc5ab  ./IMPORT-METADATA.json
-2c336f275b12e8ad6a4d7d13f8368ce243bec6064db3ee635ad4b9792a715872  ./PROVENANCE.md
+1ffa9d525c4cd071f34cfd389b57a4f3f609dc5ab9e17340582d78f48968c9b1  ./PROVENANCE.md
 ef39d9113c781e78d81c1d38aae4c23bb2ade38dafafbd137eeb0ddc560b55ba  ./SKILL.md
 e271fe14c33ce47654addc8aa65442188c62bc22e227bedfaa27ade31e1e5531  ./SOURCE-SHA256SUMS
 c61a47f681fa7aa0bdb5b7e772c2b50912e2bd1244cf0f29908f606ea6ebd31d  ./bin/assignment-journal.py
@@ -44,7 +44,7 @@ a58cfdc32501cffcfa3c88c3de899272b77d34a08fef4fb752097d0e84fc198b  ./docs/OWNER-R
 5da200894e5cd4544a00795f59cb559b86976607e011b10a8d8a6ef7537c0696  ./docs/REVIEW-COLLECTION.md
 8884a29fa04fe2f428a1093788b4bcf90c48644ed8b100d08880dd303943de7d  ./docs/REVIEW-HANDOFF.md
 2114d7f7b51286c9ddf0d67d99f2f5d03a4bbf6f3a73cfdfdd16060f57db62bb  ./docs/REVIEW-OUTPUT.md
-2cd48d3f3fed2084fbe987070df1945ac0a99339bc0ba554e66afa23ccde5f60  ./docs/REVIEW-PROTOCOL.md
+fa000babd6b790234a6ed7004523449922f9723f8afbb588ce7f6dc0a3a40a9a  ./docs/REVIEW-PROTOCOL.md
 0fc15db361f2069459611cc86a15c01ad5dd389d0b32a16ca8dc584834f29acd  ./docs/REVIEW-RUNNER.md
 3f61b89c94e7c6ba9bd57fac1ae5e5b075d6b20f5bf99e1b1034b567dcf49ff5  ./examples/commands/orchestrate-start.md
 532877ba1c91464c7efb09f0b3e39dfd3699b961508d5c55b081ef3afbceb58e  ./examples/gsa-agentic-coding.json
@@ -61,6 +61,16 @@ c662ddea707257f9942aed177348b5e5d95fe9e3ab5d9b38b9561ea49a0d7a63  ./tests/dual-f
 507309e4d2e19056689cc9ff565702de6b598ef7fd3f77c0c3e8001e09fd3543  ./tests/execution-observe-test.py
 166713c268aacfdb70ad273d890b29359824ba2b2f42f5ade268b3d5d8e99e0f  ./tests/execution-plan-test.py
 5629f62a5c7785f9ecb6ce48f44d8f96076d672c17448f26fe26ad67f07b6894  ./tests/fixtures/orchestrator-monitor-bin/gh
+fd2f12704412e846b955d17570edc8edc789cf3a71967386bbb6e00cc2204fd8  ./tests/fixtures/review-corpus/README.md
+5d6751565042aee4230005201005b253f28d65922377a45f8083496238998da6  ./tests/fixtures/review-corpus/base/README
+31d78604142028585e2b835de764ababec72b4503ab94f0f4f16164ca69edb2c  ./tests/fixtures/review-corpus/context/refutation.json
+8cf69208cf8b9359a76a0655a6396d5982de59438deb0972ab10c87aae2923f0  ./tests/fixtures/review-corpus/manifest.json
+634ba9274a0ffe975e9eba0a169998a3bd30cb62eb9d145e0e777c3dedcd3d73  ./tests/fixtures/review-corpus/oracle.json
+e87afe6d88960f8c61e7e39c4d8194c0eb360b70e38af10fd9f048a3c05fc5e2  ./tests/fixtures/review-corpus/shared/test_calc.py.txt
+9404b654a1d5e1739b5aaf3027b7fab314d6f510ae914d0d6e069ba14c330fa1  ./tests/fixtures/review-corpus/specimens/clean.py.txt
+ff9b8f0728d4a91d50eda3d56b565a1ff0eb0498530c8343066d2464ac5fd76b  ./tests/fixtures/review-corpus/specimens/defect.py.txt
+abd422b9bfcb6dc246b6149f6f8404d1ccda3c79237a00292ce037914761b4a0  ./tests/fixtures/review-corpus/specimens/hostile.py.txt
+9da6b0e721dc76a23dc059b81835de410ce5f3ef4cc820affe43a3dac35358a0  ./tests/fixtures/review-corpus/specimens/negative-regression.py.txt
 68a769e6c16f28321581bf109f0fb4341676d93f3e996935d94931d5ebfd963a  ./tests/foreground-admission-cases.py
 588f86092b6da88368aa3664f770765f11de57b0336a03985faf6d497a1f983c  ./tests/foreground-adopt-cases.py
 0847bdcf582fec97ee7f1200d2969f16f4216b0794fbc5d93f2639fcbc973321  ./tests/foreground-cli-diagnostic.py
@@ -85,7 +95,7 @@ c526f47ace61d8cac44d5375d62c0557c379c6ba87597d61d85a42dd905bdfe8  ./tests/review
 7c19eaff2282857e8df186e2bb57926f368111c4776ddbc8c21295e63b545a32  ./tests/review-collect-test.py
 4c5c11f8190942963cc2995b1e91e400ed19f6006860f9f312a8bf7e0452742c  ./tests/review-evidence-test.py
 f23a3c65205e4f516ada032b5bea554c8e58a3d1cd7999f5f840b00b8621b18b  ./tests/review-handoff-test.py
-26ae85a438c8ba8e6ff30be79147eecc5db009ac585805f502cfdb82cd2f786b  ./tests/review-packet-test.py
+5f5d9052eba787b53406abd4bd1bb540f303299a1b78b5a1c944225166acd791  ./tests/review-packet-test.py
 01cd0620783fe018e446b3323a7abbad7f9e60ff89144ac58f7c88d249b5648b  ./tests/review-reservation-test.py
 47884a2338d1db1fab1ef4106859c8556d0f4b66702c1bba3e72991ad1cd6375  ./tests/review-run-test.py
 181861c3b9f2c9c49fb6896821000568830818179269f0f662a152f2fd6e9e5e  ./tests/runtime-observation-test.py
