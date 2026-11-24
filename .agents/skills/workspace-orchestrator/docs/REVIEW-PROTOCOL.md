@@ -127,3 +127,30 @@ python3 -I -B .agents/skills/workspace-orchestrator/tests/review-packet-test.py
 The baseline case manifest distinguishes protocol tests from the still-required
 real review, repair and independently labeled semantic comparison. See
 `tests/review-baseline.json` in this skill.
+
+### Additive source-bearing corpus
+
+`tests/fixtures/review-corpus/` adds five ordinary-arithmetic source cases without
+changing the frozen 15-case baseline: clean doubling, increment defect, a
+synthetic overflow allegation to refute, a negative-input regression on a changed
+head, and hostile source comments alongside the increment defect. It reuses the
+`qualify-review-repair.py` seed, not manufactured worker responses.
+
+The existing `review-packet-test.py` entry point checks manifest integrity and
+safe paths, materializes disposable Git commits, and captures complete source
+through the existing helpers. It checks exact source/modes/blob identities,
+distinct old/new heads, retained injection bytes, and separation of controller
+oracle data from candidate trees. It does not execute candidate Python or call a
+model. Git IDs are recorded from actual materialization, not promised identical
+across runs. Temporary unit-test receipts are not durable runtime evidence.
+
+Corpus labels are `PENDING_INDEPENDENT_REVIEW`, semantic quality is `UNMEASURED`,
+and the corpus is public/exposed. The fixed expected tables are outside worker
+input but are not a hidden benchmark. The initial static candidate requires
+primary calculation of manifest artifact hashes/lengths and canonical checksums;
+the suite refuses missing integrity values rather than skipping them. Hashing
+does not approve labels or establish semantic quality. See the corpus README
+for exact hash finalization and future matched-experiment requirements. Actual
+semantic measurement requires independently reviewed labels and matched runs
+through a separately qualified adapter; protocol capture alone gives no review,
+repair, readiness or runtime-qualification credit.
