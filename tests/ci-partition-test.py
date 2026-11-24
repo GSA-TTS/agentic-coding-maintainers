@@ -106,6 +106,8 @@ DUAL_FORMAT_TESTS = [
     "python3 -I -B .agents/skills/workspace-orchestrator/tests/dual-format-core-test.py",
     "python3 -I -B tests/dual-format-integration-test.py",
 ]
+PORTABLE_WORK_TEST = "python3 -I -B tests/portable-work-contract-test.py"
+CAPACITY_PARSER_TEST = "python3 -I -B tests/capacity-linux-parser-test.py"
 PREFLIGHT_SYNTAX = "sh -n scripts/review-workspace-preflight.sh"
 
 
@@ -142,10 +144,12 @@ class CIPartitionTests(unittest.TestCase):
                              INVENTORY_TEST)
         dual_index = expected_rest.index("python3 -I -B tests/cooperative-session-binding-test.py") + 1
         expected_rest[dual_index:dual_index] = DUAL_FORMAT_TESTS
+        expected_rest.insert(dual_index + len(DUAL_FORMAT_TESTS), PORTABLE_WORK_TEST)
+        expected_rest.insert(dual_index + len(DUAL_FORMAT_TESTS) + 1, CAPACITY_PARSER_TEST)
         self.assertEqual(rest, syntax + expected_rest)
         self.assertEqual(Counter(FOREGROUND + expected_rest + [PREFLIGHT_SYNTAX]),
                          Counter(ORIGINAL_TESTS + [PARTITION_TEST, SYNTAX_TEST, CORE_QUALITY_TEST, INVENTORY_TEST]
-                                 + DUAL_FORMAT_TESTS))
+                                 + DUAL_FORMAT_TESTS + [PORTABLE_WORK_TEST, CAPACITY_PARSER_TEST]))
         self.assertEqual(self.dry_run("test"), syntax + FOREGROUND + expected_rest)
 
     def test_syntax_inventory_and_partition_prerequisites(self):
