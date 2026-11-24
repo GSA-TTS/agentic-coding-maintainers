@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.7.0...v0.8.0) (2026-11-24)
+
+
+### Features
+
+* **capacity:** parse bounded Linux resource observations ([e53b666](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/e53b666fda8933918c14f80652ddd480ce40a84c))
+* **evaluation:** report retained intake disposition ages ([#209](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/209)) ([9380772](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/938077298a08e253f582c68637960db65a2a7df6))
+* **identity:** add native observer foundation ([#188](https://github.com/GSA-TTS/agentic-coding-maintainers/issues/188)) ([638763a](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/638763a521d2c86f8d453b603d3bdcb983eba116))
+* **identity:** integrate bounded native lifecycle and manual formats ([c731688](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/c731688d2439e051ea08692901c613bf2a3f195a))
+* **portability:** validate inert work and evidence contracts ([c6d6a6a](https://github.com/GSA-TTS/agentic-coding-maintainers/commit/c6d6a6a7a08d4502614bc68da8e33f0a580d6df7))
+
 ## [0.7.0](https://github.com/GSA-TTS/agentic-coding-maintainers/compare/v0.6.0...v0.7.0) (2026-11-16)
 
 
