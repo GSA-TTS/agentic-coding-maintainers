@@ -1,0 +1,13 @@
+{
+  "prior_findings": [
+    {
+      "id": "synthetic-overflow-allegation",
+      "synthetic": true,
+      "path": "calc.py",
+      "invariant": "double(x) must equal 2*x for Python integers",
+      "trigger": "x = 9223372036854775808 (2**63)",
+      "impact": "Alleged signed 64-bit overflow yields an incorrect result.",
+      "evidence": "Synthetic prior allegation; no observed runtime result is supplied."
+    }
+  ]
+}
